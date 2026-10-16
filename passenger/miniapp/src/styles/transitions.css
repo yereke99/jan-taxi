@@ -1,0 +1,100 @@
+/* Shared with the other Mini App — keep both copies identical (make verify-shared). */
+/* iOS-like navigation transitions used by App.vue's <Transition :name>. */
+
+.jt-page {
+  position: absolute;
+  inset: 0;
+  background: var(--jt-color-bg);
+}
+
+.jt-push-enter-active,
+.jt-push-leave-active,
+.jt-pop-enter-active,
+.jt-pop-leave-active {
+  transition:
+    transform var(--jt-duration-slow) var(--jt-ease),
+    opacity var(--jt-duration-slow) var(--jt-ease);
+  will-change: transform;
+}
+
+/* Push: new page slides in from the right over the old one, which shifts left. */
+.jt-push-enter-active,
+.jt-pop-leave-active {
+  z-index: 2;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.08);
+}
+
+.jt-push-enter-from {
+  transform: translateX(100%);
+}
+
+.jt-push-leave-to {
+  transform: translateX(-30%);
+  opacity: 0.6;
+}
+
+/* Pop: the reverse. */
+.jt-pop-enter-from {
+  transform: translateX(-30%);
+  opacity: 0.6;
+}
+
+.jt-pop-leave-to {
+  transform: translateX(100%);
+}
+
+.jt-fade-enter-active,
+.jt-fade-leave-active {
+  transition: opacity var(--jt-duration-fast) var(--jt-ease);
+}
+
+.jt-fade-enter-from,
+.jt-fade-leave-to {
+  opacity: 0;
+}
+
+/* Glass chrome appears with a short fade and 0.96 → 1 scale (§15.1). */
+.jt-glass-pop-enter-active,
+.jt-glass-pop-leave-active {
+  transition:
+    transform var(--jt-duration-spring) var(--jt-ease-spring),
+    opacity var(--jt-duration-fast) var(--jt-ease);
+}
+
+.jt-glass-pop-enter-from,
+.jt-glass-pop-leave-to {
+  transform: scale(0.96);
+  opacity: 0;
+}
+
+/* Content swap inside a persistent sheet. */
+.jt-sheet-swap-enter-active,
+.jt-sheet-swap-leave-active {
+  transition:
+    opacity var(--jt-duration-fast) var(--jt-ease),
+    transform var(--jt-duration-base) var(--jt-ease);
+}
+
+.jt-sheet-swap-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.jt-sheet-swap-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jt-glass-pop-enter-active,
+  .jt-glass-pop-leave-active,
+  .jt-sheet-swap-enter-active,
+  .jt-sheet-swap-leave-active,
+  .jt-push-enter-active,
+  .jt-push-leave-active,
+  .jt-pop-enter-active,
+  .jt-pop-leave-active,
+  .jt-fade-enter-active,
+  .jt-fade-leave-active {
+    transition: none;
+  }
+}

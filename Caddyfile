@@ -1,0 +1,146 @@
+# Jan Taxi edge: TLS, security headers, static single-page apps and the API proxy.
+#
+# Environment (substituted when Caddy loads this file):
+#   APP_DOMAIN            Mini Apps host, e.g. app.jantaxi.example
+#   ADMIN_DOMAIN          admin panel host, e.g. admin.jantaxi.example
+#   ACME_EMAIL            contact address for Let's Encrypt / ZeroSSL
+#   MAP_CONNECT_SRC       extra connect-src origins for map tiles, glyphs and sprites
+#                         (default https://tiles.openfreemap.org)
+#   CADDY_GLOBAL_OPTIONS  extra global options, empty in production
+#
+# Local development without TLS (see docs/DEPLOYMENT.md, "Local edge"):
+#   APP_DOMAIN=http://localhost:8088
+#   ADMIN_DOMAIN=http://localhost:8089
+#   CADDY_GLOBAL_OPTIONS="auto_https off"
+#
+# Only /api/* is proxied. The API's internal listener (:8081) and its probes
+# (/healthz, /readyz) are never exposed through Caddy.
+{
+	{$CADDY_GLOBAL_OPTIONS}
+	email {$ACME_EMAIL}
+	servers {
+		timeouts {
+			read_header 15s
+			idle 2m
+		}
+	}
+}
+
+# Headers and behaviour shared by both hosts.
+(common) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		?Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+		defer
+	}
+
+	# Neither the Mini Apps nor the admin panel should be indexed.
+	handle /robots.txt {
+		header Content-Type "text/plain; charset=utf-8"
+		respond <<TXT
+			User-agent: *
+			Disallow: /
+			TXT 200
+	}
+
+	# Access log on stdout (rotated by Docker). Search text and coordinates are
+	# removed from logged query strings; Cookie and Authorization are redacted
+	# by Caddy itself.
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete q
+					delete lat
+					delete lon
+				}
+			}
+		}
+	}
+}
+
+# REST + WebSocket API (WebSocket upgrades pass through reverse_proxy).
+(api_proxy) {
+	handle /api/* {
+		request_body {
+			max_size 12MiB
+		}
+		@compressible not path /api/v1/ws
+		encode @compressible zstd gzip
+		reverse_proxy api:8080 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 120s
+			}
+		}
+	}
+}
+
+# A Vite build directory: hashed assets are immutable, everything else
+# (index.html and unknown paths that fall back to it) is revalidated.
+(spa) {
+	root * {args[0]}
+	encode zstd gzip
+	@hashed path /assets/*
+	handle @hashed {
+		# Only files that exist are cacheable; a 404 must not be cached.
+		@present file
+		header @present Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# Passenger and driver Telegram Mini Apps.
+{$APP_DOMAIN} {
+	import common
+	import api_proxy
+
+	# Mini Apps are framed by Telegram Web (web.telegram.org) and opened in the
+	# native Telegram WebView elsewhere; no other site may frame them.
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss://{host} {$MAP_CONNECT_SRC:https://tiles.openfreemap.org}; worker-src 'self' blob:; child-src 'self' blob:; frame-ancestors https://web.telegram.org https://*.telegram.org; base-uri 'self'; form-action 'self'; object-src 'none'; manifest-src 'self'"
+		Permissions-Policy "geolocation=(self), microphone=(), usb=(), payment=()"
+		defer
+	}
+
+	redir /passenger /passenger/ 308
+	redir /driver /driver/ 308
+	redir / /passenger/ 302
+
+	handle_path /passenger/* {
+		import spa /srv/passenger
+	}
+	handle_path /driver/* {
+		import spa /srv/driver
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
+
+# Admin panel (same API; cookie session scoped to Path=/api on this host).
+{$ADMIN_DOMAIN} {
+	import common
+	import api_proxy
+
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss://{host} {$MAP_CONNECT_SRC:https://tiles.openfreemap.org}; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		X-Frame-Options "DENY"
+		Permissions-Policy "geolocation=(), camera=(), microphone=(), usb=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		defer
+	}
+
+	handle {
+		import spa /srv/admin
+	}
+}

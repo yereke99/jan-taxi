@@ -1,0 +1,44 @@
+# Build context for Dockerfile.api, Dockerfile.*-bot and Dockerfile.web.
+# Keep secrets, data and local build output out of every image.
+
+.git
+.gitignore
+.claude
+.idea
+.vscode
+**/.DS_Store
+
+# Secrets and local environment files
+.env
+.env.*
+**/*.pem
+**/*.key
+
+# Runtime data and backups
+backups
+data
+**/*.osm.pbf
+**/*.osrm
+**/*.osrm.*
+
+# Frontend dependencies and build output (rebuilt inside the image)
+node_modules
+**/node_modules
+**/dist
+**/coverage
+**/.vite
+**/*.tsbuildinfo
+
+# Go build and test output
+**/*.test
+**/*.out
+**/cover.html
+bin
+
+# Documentation and ops files that no image needs
+docs
+README.md
+compose.yaml
+compose.override*.yaml
+Makefile
+Dockerfile.*

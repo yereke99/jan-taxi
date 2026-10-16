@@ -1,0 +1,106 @@
+/*
+ * Admin design tokens — the Mini Apps' palette (ARCHITECTURE §15) at desktop
+ * density (13–15px body text, 32–36px controls) with the iOS 26 shapes of
+ * §15.1: capsule buttons, 22px cards, glass only on floating chrome.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Colours (iOS/macOS system palette, light) */
+  --jt-color-bg: #ffffff;
+  --jt-color-grouped-bg: #f2f2f7;
+  --jt-color-fill-secondary: #f2f2f7;
+  --jt-color-fill-tertiary: #e5e5ea;
+  --jt-color-hover: rgba(0, 0, 0, 0.04);
+  --jt-color-selected: rgba(0, 0, 0, 0.07);
+  --jt-color-separator: rgba(60, 60, 67, 0.29);
+  --jt-color-border: rgba(60, 60, 67, 0.18);
+  --jt-color-label: #000000;
+  --jt-color-label-secondary: rgba(60, 60, 67, 0.6);
+  --jt-color-label-tertiary: rgba(60, 60, 67, 0.3);
+  --jt-color-primary: #000000;
+  --jt-color-on-primary: #ffffff;
+  /* Accents carry meaning only. */
+  --jt-color-green: #34c759;
+  --jt-color-red: #ff3b30;
+  --jt-color-blue: #007aff;
+  --jt-color-orange: #ff9500;
+  --jt-color-gray: #8e8e93;
+  --jt-color-green-text: #248a3d;
+  --jt-color-red-text: #d70015;
+  --jt-color-blue-text: #0040dd;
+  --jt-color-orange-text: #c93400;
+  --jt-color-green-tint: rgba(52, 199, 89, 0.15);
+  --jt-color-red-tint: rgba(255, 59, 48, 0.12);
+  --jt-color-blue-tint: rgba(0, 122, 255, 0.12);
+  --jt-color-orange-tint: rgba(255, 149, 0, 0.14);
+  --jt-color-overlay: rgba(0, 0, 0, 0.32);
+
+  /* Glass material (§15.1) for floating chrome only. */
+  --jt-glass-bg: rgba(255, 255, 255, 0.72);
+  --jt-glass-border: rgba(255, 255, 255, 0.65);
+  --jt-glass-blur: blur(24px) saturate(180%);
+  --jt-glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 8px 24px rgba(0, 0, 0, 0.1);
+
+  /* Typography (system fonts; Kazakh glyphs must render) */
+  --jt-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', Roboto, 'Segoe UI',
+    'Helvetica Neue', Arial, sans-serif;
+  --jt-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --jt-font-large-title: 700 28px/34px var(--jt-font-family);
+  --jt-font-title: 700 22px/28px var(--jt-font-family);
+  --jt-font-title3: 600 17px/22px var(--jt-font-family);
+  --jt-font-headline: 600 15px/20px var(--jt-font-family);
+  --jt-font-body: 400 14px/20px var(--jt-font-family);
+  --jt-font-body-strong: 600 14px/20px var(--jt-font-family);
+  --jt-font-callout: 400 15px/20px var(--jt-font-family);
+  --jt-font-small: 400 13px/18px var(--jt-font-family);
+  --jt-font-caption: 400 12px/16px var(--jt-font-family);
+
+  /* Radii (concentric: inner = outer − padding) */
+  --jt-radius-control: 10px;
+  --jt-radius-card: 22px;
+  --jt-radius-inner: 12px;
+  --jt-radius-modal: 26px;
+  --jt-radius-round: 9999px;
+
+  /* Spacing 4/8/12/16/20/24/32 */
+  --jt-space-1: 4px;
+  --jt-space-2: 8px;
+  --jt-space-3: 12px;
+  --jt-space-4: 16px;
+  --jt-space-5: 20px;
+  --jt-space-6: 24px;
+  --jt-space-8: 32px;
+
+  /* Control metrics */
+  --jt-control-height: 32px;
+  --jt-control-height-lg: 36px;
+  --jt-control-height-sm: 28px;
+  --jt-row-height: 40px;
+  --jt-sidebar-width: 248px;
+  --jt-topbar-height: 60px;
+  --jt-hairline: 0.5px;
+
+  /* Shadows */
+  --jt-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --jt-shadow-popover: 0 12px 40px rgba(0, 0, 0, 0.18);
+  --jt-shadow-toast: 0 8px 24px rgba(0, 0, 0, 0.12);
+
+  /* Motion */
+  --jt-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --jt-ease-spring: cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  --jt-duration-fast: 150ms;
+  --jt-duration-base: 260ms;
+
+  /* States */
+  --jt-opacity-pressed: 0.55;
+  --jt-opacity-disabled: 0.3;
+
+  /* Layers */
+  --jt-z-sticky: 10;
+  --jt-z-drawer: 40;
+  --jt-z-modal: 50;
+  --jt-z-viewer: 55;
+  --jt-z-toast: 60;
+}

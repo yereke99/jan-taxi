@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1.7
+#
+# Jan Taxi passenger bot: Telegram long polling, talks only to api:8081.
+# Health endpoint on :8090 (HEALTH_PORT).
+#
+#   docker build -f Dockerfile.passenger-bot -t jantaxi/passenger-bot .
+
+ARG GO_IMAGE=golang:1.26-alpine
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /src
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local \
+    GOFLAGS=-buildvcs=false
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# Bots may import only the public client packages under admin/backend/pkg.
+COPY admin/backend/pkg ./admin/backend/pkg
+COPY passenger/bot ./passenger/bot
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags "-s -w" -o /out/passenger-bot ./passenger/bot/cmd
+
+FROM ${RUNTIME_IMAGE}
+COPY --from=build /out/passenger-bot /usr/local/bin/passenger-bot
+USER nonroot:nonroot
+ENV HEALTH_PORT=8090
+EXPOSE 8090
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["/usr/local/bin/passenger-bot", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/passenger-bot"]

@@ -1,0 +1,147 @@
+/* Shared with the other Mini App — keep both copies identical (make verify-shared). */
+/*
+ * Design tokens — ARCHITECTURE §15 "iOS-native, Uber-white" and §15.1
+ * (iOS 26 Liquid Glass on floating chrome only).
+ * Light palette only: the product is white/black regardless of Telegram theme.
+ * Components use these variables exclusively; no raw colours elsewhere.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Colours (iOS system palette, light) */
+  --jt-color-bg: #ffffff;
+  --jt-color-grouped-bg: #f2f2f7;
+  --jt-color-fill-secondary: #f2f2f7;
+  --jt-color-fill-tertiary: #e5e5ea;
+  /* Secondary button fill. Screens on the grouped background (#F2F2F7) switch
+     it to the tertiary fill so the button stays visible there (base.css
+     .jt-grouped). */
+  --jt-button-secondary-bg: var(--jt-color-fill-secondary);
+  --jt-color-separator: rgba(60, 60, 67, 0.29);
+  --jt-color-label: #000000;
+  --jt-color-label-secondary: rgba(60, 60, 67, 0.6);
+  --jt-color-label-tertiary: rgba(60, 60, 67, 0.3);
+  --jt-color-primary: #000000;
+  --jt-color-on-primary: #ffffff;
+  /* Accents carry meaning only: green = online/money in/success, red =
+     destructive/errors, blue = GPS dot and text links. */
+  --jt-color-green: #34c759;
+  --jt-color-red: #ff3b30;
+  --jt-color-blue: #007aff;
+  --jt-color-gray: #8e8e93;
+  /* Darker accent variants for text on tinted fills (iOS accessible colours). */
+  --jt-color-green-text: #248a3d;
+  --jt-color-red-text: #d70015;
+  --jt-color-blue-text: #0040dd;
+  --jt-color-green-tint: rgba(52, 199, 89, 0.15);
+  --jt-color-red-tint: rgba(255, 59, 48, 0.12);
+  --jt-color-blue-tint: rgba(0, 122, 255, 0.12);
+  --jt-color-overlay: rgba(0, 0, 0, 0.4);
+  --jt-color-toast-bg: rgba(0, 0, 0, 0.88);
+
+  /* Liquid Glass material (§15.1): floating chrome only, never content. */
+  --jt-glass-bg: rgba(255, 255, 255, 0.72);
+  --jt-glass-bg-strong: rgba(255, 255, 255, 0.86);
+  --jt-glass-fallback-bg: #ffffff;
+  --jt-glass-blur: blur(24px) saturate(180%);
+  --jt-glass-border: 0.5px solid rgba(255, 255, 255, 0.65);
+  --jt-glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 8px 24px rgba(0, 0, 0, 0.1);
+  --jt-glass-fallback-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  /* Selected item inside a glass control (tab bar pill). */
+  --jt-glass-selected: rgba(0, 0, 0, 0.08);
+
+  /* Typography (system fonts only; must render ә ғ қ ң ө ұ ү һ і) */
+  --jt-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', Roboto, 'Segoe UI',
+    'Helvetica Neue', Arial, sans-serif;
+  --jt-font-large-title: 700 34px/41px var(--jt-font-family);
+  --jt-tracking-large-title: -0.4px;
+  --jt-font-title1: 700 28px/34px var(--jt-font-family);
+  --jt-font-title2: 700 22px/28px var(--jt-font-family);
+  --jt-font-title3: 600 20px/25px var(--jt-font-family);
+  --jt-font-headline: 600 17px/22px var(--jt-font-family);
+  --jt-font-body: 400 17px/22px var(--jt-font-family);
+  --jt-font-callout: 400 16px/21px var(--jt-font-family);
+  --jt-font-subheadline: 400 15px/20px var(--jt-font-family);
+  --jt-font-footnote: 400 13px/18px var(--jt-font-family);
+  --jt-font-caption: 400 12px/16px var(--jt-font-family);
+
+  /* Radii (§15.1: capsule buttons, 32px sheets, 22px cards; concentric
+     inner radius = outer radius − padding). */
+  --jt-radius-capsule: 999px;
+  --jt-radius-button: var(--jt-radius-capsule);
+  --jt-radius-card: 22px;
+  --jt-radius-cell: 10px;
+  --jt-radius-field: 12px;
+  --jt-radius-sheet: 32px;
+  --jt-radius-segmented: var(--jt-radius-capsule);
+  --jt-radius-segment: var(--jt-radius-capsule);
+  --jt-radius-badge: 6px;
+  --jt-radius-round: 9999px;
+
+  /* Spacing scale 4/8/12/16/20/24/32 */
+  --jt-space-1: 4px;
+  --jt-space-2: 8px;
+  --jt-space-3: 12px;
+  --jt-space-4: 16px;
+  --jt-space-5: 20px;
+  --jt-space-6: 24px;
+  --jt-space-8: 32px;
+  --jt-side-margin: 16px;
+
+  /* Control metrics */
+  --jt-tap-target: 44px;
+  --jt-button-height: 52px;
+  --jt-button-height-medium: 44px;
+  --jt-button-height-small: 34px;
+  --jt-row-min-height: 44px;
+  --jt-field-height: 44px;
+  --jt-fab-size: 48px;
+  --jt-segmented-height: 36px;
+  --jt-switch-width: 51px;
+  --jt-switch-height: 31px;
+  --jt-grabber-width: 36px;
+  --jt-grabber-height: 5px;
+  --jt-hairline: 0.5px;
+  --jt-separator-inset: 16px;
+  /* Floating inset sheet / tab bar distance from the screen edges. */
+  --jt-float-inset: 8px;
+  --jt-tabbar-height: 62px;
+
+  /* Shadows */
+  --jt-shadow-floating: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --jt-shadow-sheet: 0 -1px 12px rgba(0, 0, 0, 0.08);
+  --jt-shadow-marker: 0 1px 4px rgba(0, 0, 0, 0.3);
+  --jt-shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.16);
+
+  /* Motion (iOS-like). Spring for sheet snapping and thumbs (§15.1). */
+  --jt-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --jt-ease-spring: cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  --jt-duration-fast: 200ms;
+  --jt-duration-base: 250ms;
+  --jt-duration-slow: 300ms;
+  --jt-duration-spring: 320ms;
+
+  /* States */
+  --jt-opacity-pressed: 0.55;
+  --jt-opacity-disabled: 0.3;
+
+  /* Layers */
+  --jt-z-map: 0;
+  --jt-z-floating: 10;
+  --jt-z-sheet: 20;
+  --jt-z-navbar: 25;
+  --jt-z-banner: 30;
+  --jt-z-overlay: 40;
+  --jt-z-toast: 50;
+
+  /* Viewport — overwritten at runtime by useTelegramFullscreen(). These are
+     the pre-boot values only. */
+  --jt-safe-top: env(safe-area-inset-top, 0px);
+  --jt-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --jt-safe-left: env(safe-area-inset-left, 0px);
+  --jt-safe-right: env(safe-area-inset-right, 0px);
+  --jt-vh: 100%;
+  --jt-vh-live: 100%;
+  --jt-keyboard: 0px;
+}

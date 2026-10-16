@@ -1,0 +1,16 @@
+{
+  "name": "jantaxi",
+  "private": true,
+  "description": "Jan Taxi frontends: passenger and driver Telegram Mini Apps, admin panel.",
+  "packageManager": "pnpm@10.34.7",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "verify-shared": "node passenger/miniapp/scripts/verify-shared.mjs"
+  }
+}

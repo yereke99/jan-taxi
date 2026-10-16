@@ -1,0 +1,55 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Runtime data, backups and map data
+/backups/
+/data/
+*.osm.pbf
+*.osm.pbf.md5
+*.osrm
+*.osrm.*
+*.jsonl.zst
+photon_data/
+
+# Go
+/bin/
+/api
+/passenger-bot
+/driver-bot
+/devlink
+__debug_bin*
+*.test
+*.out
+*.prof
+cover.html
+coverage.txt
+go.work
+go.work.sum
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+coverage/
+.vite/
+*.tsbuildinfo
+*.local
+npm-debug.log*
+pnpm-debug.log*
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~
+
+# Compose overrides are machine-specific (the example is tracked)
+compose.override.yaml
+docker-compose.override.yml

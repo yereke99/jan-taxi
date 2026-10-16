@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+#
+# Jan Taxi central API: REST + WebSocket on :8080, internal bot API on :8081.
+# The same image runs the one-shot "api migrate up" and "api admin create".
+#
+#   docker build -f Dockerfile.api -t jantaxi/api .
+
+ARG GO_IMAGE=golang:1.26-alpine
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /src
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local \
+    GOFLAGS=-buildvcs=false
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY admin/backend ./admin/backend
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags "-s -w" -o /out/api ./admin/backend/cmd/api
+
+# The private file volume is mounted at /data/files. Creating the directory in
+# the image makes Docker initialise a fresh named volume with nonroot ownership.
+RUN mkdir -p /out/data/files && chmod 0700 /out/data/files
+
+FROM ${RUNTIME_IMAGE}
+COPY --from=build /out/api /usr/local/bin/api
+COPY --from=build --chown=65532:65532 /out/data /data
+USER nonroot:nonroot
+ENV FILE_STORAGE_DIR=/data/files
+EXPOSE 8080 8081
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
+    CMD ["/usr/local/bin/api", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/api"]
+CMD ["serve"]

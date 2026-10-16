@@ -1,0 +1,111 @@
+/* Shared with the other Mini App — keep both copies identical (make verify-shared). */
+/* Map marker visuals (§14/§15): monochrome, blue only for the GPS dot. */
+
+.jt-stop-marker {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--jt-color-primary, #000);
+  color: var(--jt-color-on-primary, #fff);
+  border: 2px solid #fff;
+  box-shadow: var(--jt-shadow-marker, 0 1px 4px rgba(0, 0, 0, 0.3));
+  font: 600 15px/24px var(--jt-font-family, sans-serif);
+  text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.jt-stop-marker.is-draggable {
+  cursor: grab;
+}
+
+/* Completed stop on an active trip. */
+.jt-stop-marker.is-done {
+  background: var(--jt-color-gray, #8e8e93);
+}
+
+/* Restrained pulse around the pickup while a driver is being searched for. */
+.jt-stop-marker.is-pulsing {
+  position: relative;
+}
+
+.jt-stop-marker.is-pulsing::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid var(--jt-color-primary, #000);
+  opacity: 0;
+  animation: jt-stop-pulse 2.4s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes jt-stop-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.35;
+  }
+  70% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+.jt-car-marker {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+}
+
+.jt-car-marker svg {
+  width: 22px;
+  height: 36px;
+  display: block;
+}
+
+.jt-user-location {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+}
+
+.jt-user-location__halo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 50%;
+  background: rgba(0, 122, 255, 0.14);
+  border: 1px solid rgba(0, 122, 255, 0.28);
+  transform: translate(-50%, -50%);
+  transition:
+    width var(--jt-duration-fast, 200ms) linear,
+    height var(--jt-duration-fast, 200ms) linear;
+}
+
+.jt-user-location__dot {
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--jt-color-blue, #007aff);
+  border: 3px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jt-user-location__halo {
+    transition: none;
+  }
+
+  .jt-stop-marker.is-pulsing::after {
+    animation: none;
+  }
+}

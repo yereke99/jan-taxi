@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+#
+# Jan Taxi web edge: Caddy (TLS, security headers, reverse proxy to the API)
+# serving the three single-page apps:
+#   /srv/passenger  passenger Mini App   https://APP_DOMAIN/passenger/
+#   /srv/driver     driver Mini App      https://APP_DOMAIN/driver/
+#   /srv/admin      admin panel          https://ADMIN_DOMAIN/
+#
+#   docker build -f Dockerfile.web -t jantaxi/web .
+
+ARG NODE_IMAGE=node:24-alpine
+ARG CADDY_IMAGE=caddy:2-alpine
+
+FROM ${NODE_IMAGE} AS build
+# Must match "packageManager" in package.json.
+ARG PNPM_VERSION=10.34.7
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    CI=true \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
+WORKDIR /src
+
+# Dependency layer: only manifests and the lockfile, so source edits reuse it.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+COPY passenger/miniapp/package.json passenger/miniapp/
+COPY driver/miniapp/package.json driver/miniapp/
+COPY admin/frontend/package.json admin/frontend/
+RUN --mount=type=cache,id=jantaxi-pnpm-store,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store && \
+    pnpm install --frozen-lockfile
+
+COPY passenger/miniapp passenger/miniapp
+COPY driver/miniapp driver/miniapp
+COPY admin/frontend admin/frontend
+RUN pnpm -r build
+
+FROM ${CADDY_IMAGE}
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /src/passenger/miniapp/dist /srv/passenger
+COPY --from=build /src/driver/miniapp/dist /srv/driver
+COPY --from=build /src/admin/frontend/dist /srv/admin
+EXPOSE 80 443 443/udp
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]

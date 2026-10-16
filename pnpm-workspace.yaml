@@ -1,0 +1,4 @@
+packages:
+  - passenger/miniapp
+  - driver/miniapp
+  - admin/frontend

@@ -1,0 +1,45 @@
+/* Shared layout of the registration steps. */
+
+.step {
+  display: flex;
+  flex-direction: column;
+}
+
+.step__text {
+  margin: 0 calc(var(--jt-side-margin) + var(--jt-space-1)) var(--jt-space-5);
+  font: var(--jt-font-subheadline);
+  color: var(--jt-color-label-secondary);
+}
+
+.step__block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-2);
+  margin: 0 var(--jt-side-margin) var(--jt-space-6);
+  padding: var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-bg);
+}
+
+.step__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-3);
+  padding: var(--jt-space-4);
+}
+
+.step__error {
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-red-text);
+}
+
+.step__note {
+  margin: calc(-1 * var(--jt-space-4)) calc(var(--jt-side-margin) + var(--jt-space-4)) var(--jt-space-6);
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+}
+
+/* Locked (not flagged) values read as fixed text. */
+.step :deep(.jt-field__input[readonly]) {
+  color: var(--jt-color-label-secondary);
+}

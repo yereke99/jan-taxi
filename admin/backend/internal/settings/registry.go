@@ -1,0 +1,554 @@
+package settings
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"net/url"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
+)
+
+// Kind is the value type of a setting, exposed to the admin UI.
+type Kind string
+
+const (
+	KindInt        Kind = "int"
+	KindBool       Kind = "bool"
+	KindString     Kind = "string"
+	KindURL        Kind = "url"
+	KindText       Kind = "localized_text" // {"kk","ru","en"}
+	KindIntList    Kind = "int_list"
+	KindCodeList   Kind = "code_list" // machine codes the apps translate, e.g. "weapons"
+	KindStringList Kind = "string_list"
+)
+
+// Validation reason codes returned in validation_failed fields.
+const (
+	ReasonUnknown     = "unknown_setting"
+	ReasonInvalidType = "invalid_type"
+	ReasonInvalid     = "invalid"
+	ReasonOutOfRange  = "out_of_range"
+	ReasonTooLong     = "too_long"
+	ReasonTooShort    = "too_short"
+	ReasonTooMany     = "too_many"
+	ReasonDuplicate   = "duplicate"
+	ReasonIncomplete  = "incomplete" // localized text filled for some languages only
+	ReasonRequired    = "required"
+)
+
+// Def declares one admin-editable setting.
+type Def struct {
+	Key         string
+	Kind        Kind
+	Description Localized
+	// Default is the built-in value used when neither the database nor the
+	// environment provides one; it matches the seed migration.
+	Default  any
+	Min, Max int64 // bounds for int and int_list values
+	MinLen   int   // code points per string (string_list)
+	MaxLen   int   // code points per string
+	MaxItems int   // list length
+	Required bool  // string/url may not be empty
+
+	// env returns the environment-provided default, if configured.
+	env func(Env) (any, bool)
+	// check replaces generic text cleaning for strings with a strict format.
+	check func(string) (string, bool)
+}
+
+// HasEnvDefault reports whether the key falls back to an environment variable.
+func (d Def) HasEnvDefault() bool { return d.env != nil }
+
+// DefaultValue returns the env default when configured, else the built-in default.
+func (d Def) DefaultValue(e Env) any {
+	if d.env != nil {
+		if v, ok := d.env(e); ok {
+			return v
+		}
+	}
+	return d.Default
+}
+
+var (
+	codeRe     = regexp.MustCompile(`^[a-z][a-z0-9_]{1,39}$`)
+	tgUserRe   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{3,31}$`)
+	digitsOnly = regexp.MustCompile(`^[0-9]+$`)
+)
+
+var registry = []Def{
+	{
+		Key: "support.telegram_username", Kind: KindString, Default: "",
+		Description: Localized{
+			KK: "Қолдау қызметінің Telegram пайдаланушы аты (@ белгісінсіз)",
+			RU: "Имя пользователя службы поддержки в Telegram (без @)",
+			EN: "Support Telegram username (without @)",
+		},
+		check: checkTelegramUsername,
+	},
+	{
+		Key: "support.phone", Kind: KindString, Default: "",
+		Description: Localized{
+			KK: "Қолдау қызметінің телефон нөмірі",
+			RU: "Телефон службы поддержки",
+			EN: "Support phone number",
+		},
+		check: checkSupportPhone,
+	},
+	{
+		Key: "support.hours", Kind: KindText, MaxLen: 60,
+		Default: Localized{KK: "Күн сайын 08:00–23:00", RU: "Ежедневно 08:00–23:00", EN: "Daily 08:00–23:00"},
+		Description: Localized{
+			KK: "Қолдау қызметінің жұмыс уақыты",
+			RU: "Часы работы поддержки",
+			EN: "Support working hours",
+		},
+	},
+	{
+		Key: "routing.max_points", Kind: KindInt, Min: 2, Max: 5, Default: int64(5),
+		Description: Localized{
+			KK: "Маршруттағы нүктелердің ең көп саны (A–E)",
+			RU: "Максимум точек маршрута (A–E)",
+			EN: "Maximum route points (A–E)",
+		},
+		env: func(e Env) (any, bool) {
+			if e.MaxRoutePoints < 2 {
+				return nil, false
+			}
+			return int64(min(e.MaxRoutePoints, 5)), true
+		},
+	},
+	{
+		Key: "commission.default_bps", Kind: KindInt, Min: 0, Max: 5000, Default: int64(1000),
+		Description: Localized{
+			KK: "Әдепкі комиссия, базистік пункт (1000 = 10%)",
+			RU: "Комиссия по умолчанию, базисные пункты (1000 = 10%)",
+			EN: "Default commission, basis points (1000 = 10%)",
+		},
+		env: func(e Env) (any, bool) {
+			if e.DefaultCommissionPercent <= 0 || e.DefaultCommissionPercent > 50 {
+				return nil, false
+			}
+			return int64(e.DefaultCommissionPercent) * 100, true
+		},
+	},
+	{
+		Key: "driver.min_online_balance", Kind: KindInt, Min: 0, Max: 1_000_000, Default: int64(50),
+		Description: Localized{
+			KK: "Желіге шығу үшін қажетті ең аз баланс, ₸",
+			RU: "Минимальный баланс для выхода на линию, ₸",
+			EN: "Minimum balance to go online, ₸",
+		},
+	},
+	{
+		Key: "driver.require_phone_verification", Kind: KindBool, Default: true,
+		Description: Localized{
+			KK: "Жүргізуші тіркелгенде телефонды растауды талап ету",
+			RU: "Требовать подтверждение телефона при регистрации водителя",
+			EN: "Require phone verification for driver registration",
+		},
+	},
+	{
+		Key: "driver.online_idle_hours", Kind: KindInt, Min: 1, Max: 72, Default: int64(12),
+		Description: Localized{
+			KK: "Белсенділік болмаған кезде жүргізушіні желіден шығару уақыты, сағат",
+			RU: "Через сколько часов без активности водитель снимается с линии",
+			EN: "Hours without activity before a driver is set offline",
+		},
+		env: func(e Env) (any, bool) {
+			if e.DriverOnlineIdleTimeout <= 0 {
+				return nil, false
+			}
+			h := int64((e.DriverOnlineIdleTimeout + time.Hour - 1) / time.Hour) // round up to whole hours
+			return max(1, min(h, 72)), true
+		},
+	},
+	{
+		Key: "topup.min_amount", Kind: KindInt, Min: 1, Max: 10_000_000, Default: int64(500),
+		Description: Localized{
+			KK: "Балансты толтырудың ең аз сомасы, ₸",
+			RU: "Минимальная сумма пополнения, ₸",
+			EN: "Minimum top-up amount, ₸",
+		},
+	},
+	{
+		Key: "topup.max_amount", Kind: KindInt, Min: 1, Max: 10_000_000, Default: int64(100_000),
+		Description: Localized{
+			KK: "Балансты толтырудың ең көп сомасы, ₸",
+			RU: "Максимальная сумма пополнения, ₸",
+			EN: "Maximum top-up amount, ₸",
+		},
+	},
+	{
+		Key: "topup.expiry_hours", Kind: KindInt, Min: 1, Max: 720, Default: int64(48),
+		Description: Localized{
+			KK: "Толтыру өтінімінің жарамдылық мерзімі, сағат",
+			RU: "Срок действия заявки на пополнение, часов",
+			EN: "Top-up request lifetime, hours",
+		},
+	},
+	{
+		Key: "topup.presets", Kind: KindIntList, Min: 1, Max: 10_000_000, MaxItems: 8,
+		Default: []int64{1000, 2000, 5000, 10000},
+		Description: Localized{
+			KK: "Толтыруға арналған жылдам сомалар, ₸",
+			RU: "Быстрые суммы пополнения, ₸",
+			EN: "Top-up quick amounts, ₸",
+		},
+	},
+	{
+		Key: "delivery.prohibited_items", Kind: KindCodeList, MaxItems: 30,
+		Default: []string{"weapons", "explosives", "drugs", "alcohol_tobacco", "money_valuables", "animals", "hazardous", "illegal_goods"},
+		Description: Localized{
+			KK: "Жеткізуге тыйым салынған заттар (кодтар)",
+			RU: "Запрещённые к доставке предметы (коды)",
+			EN: "Items prohibited for delivery (codes)",
+		},
+	},
+	{
+		Key: "delivery.blocked_keywords", Kind: KindStringList, MinLen: 2, MaxLen: 40, MaxItems: 200,
+		Default: []string{"қару", "оружие", "weapon", "патрон", "есірткі", "наркот", "drug", "взрывчат", "жарылғыш"},
+		Description: Localized{
+			KK: "Жүк сипаттамасында тыйым салынған сөздер",
+			RU: "Запрещённые слова в описании груза",
+			EN: "Blocked words in cargo descriptions",
+		},
+	},
+	{
+		Key: "kaspi.payment_url", Kind: KindURL, Default: "",
+		Description: Localized{
+			KK: "Kaspi төлем сілтемесі",
+			RU: "Ссылка на оплату Kaspi",
+			EN: "Kaspi payment link",
+		},
+		check: httpsURLCheck(false, "kaspi.kz"),
+		env: func(e Env) (any, bool) {
+			s := strings.TrimSpace(e.KaspiPaymentURL)
+			return s, s != ""
+		},
+	},
+	{
+		Key: "kaspi.recipient_name", Kind: KindString, MaxLen: 120, Default: "",
+		Description: Localized{
+			KK: "Төлем алушының аты (Kaspi)",
+			RU: "Получатель платежа (Kaspi)",
+			EN: "Payment recipient name (Kaspi)",
+		},
+		env: func(e Env) (any, bool) {
+			s := strings.TrimSpace(e.KaspiRecipientName)
+			return s, s != ""
+		},
+	},
+	{
+		Key: "kaspi.instructions", Kind: KindText, MaxLen: 500,
+		Default: Localized{
+			KK: "Kaspi.kz қосымшасында көрсетілген соманы аударыңыз және хабарламаға төлем кодын жазыңыз. Төлемді әкімші тексергеннен кейін сома балансыңызға түседі.",
+			RU: "Переведите указанную сумму в приложении Kaspi.kz и укажите код платежа в сообщении. Сумма поступит на баланс после проверки платежа администратором.",
+			EN: "Transfer the shown amount in the Kaspi.kz app and enter the payment code in the message. The amount is added to your balance after an administrator verifies the payment.",
+		},
+		Description: Localized{
+			KK: "Kaspi арқылы төлеу нұсқаулығы",
+			RU: "Инструкция по оплате через Kaspi",
+			EN: "Kaspi payment instructions",
+		},
+		env: func(e Env) (any, bool) { return envInstructions(e.KaspiInstructions) },
+	},
+	{
+		Key: "navigation.twogis_base_url", Kind: KindURL, Required: true, Default: "https://2gis.ru",
+		Description: Localized{
+			KK: "2GIS навигация сілтемелерінің негізгі мекенжайы",
+			RU: "Базовый адрес ссылок навигации 2GIS",
+			EN: "Base URL for 2GIS navigation links",
+		},
+		check: httpsURLCheck(true, "2gis.ru", "2gis.kz", "2gis.com"),
+		env: func(e Env) (any, bool) {
+			s := strings.TrimRight(strings.TrimSpace(e.TwoGISBaseURL), "/")
+			return s, s != ""
+		},
+	},
+}
+
+var byKey = func() map[string]Def {
+	m := make(map[string]Def, len(registry))
+	for _, d := range registry {
+		if _, dup := m[d.Key]; dup {
+			panic("settings: duplicate key " + d.Key)
+		}
+		m[d.Key] = d
+	}
+	return m
+}()
+
+// Lookup returns the definition of an admin-editable key.
+func Lookup(key string) (Def, bool) {
+	d, ok := byKey[key]
+	return d, ok
+}
+
+// Defs returns all definitions in display order.
+func Defs() []Def { return slices.Clone(registry) }
+
+// Normalize validates raw JSON against the definition and returns the canonical
+// JSON to store, or a reason code.
+func (d Def) Normalize(raw json.RawMessage) (json.RawMessage, string) {
+	v, reason := d.normalize(raw)
+	if reason != "" {
+		return nil, reason
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, ReasonInvalid
+	}
+	return b, ""
+}
+
+func (d Def) normalize(raw json.RawMessage) (any, string) {
+	v, ok := decodeStrict(raw)
+	if !ok {
+		return nil, ReasonInvalidType
+	}
+	switch d.Kind {
+	case KindInt:
+		n, ok := asInt(v)
+		if !ok {
+			return nil, ReasonInvalidType
+		}
+		if n < d.Min || n > d.Max {
+			return nil, ReasonOutOfRange
+		}
+		return n, ""
+	case KindBool:
+		b, ok := v.(bool)
+		if !ok {
+			return nil, ReasonInvalidType
+		}
+		return b, ""
+	case KindString, KindURL:
+		s, ok := v.(string)
+		if !ok {
+			return nil, ReasonInvalidType
+		}
+		return d.cleanString(s)
+	case KindText:
+		return d.normalizeText(v)
+	case KindIntList:
+		return d.normalizeIntList(v)
+	case KindCodeList, KindStringList:
+		return d.normalizeStringList(v)
+	}
+	return nil, ReasonInvalid
+}
+
+func (d Def) cleanString(s string) (string, string) {
+	s = strings.TrimSpace(s)
+	if d.check != nil {
+		if s == "" {
+			if d.Required {
+				return "", ReasonRequired
+			}
+			return "", ""
+		}
+		out, ok := d.check(s)
+		if !ok {
+			return "", ReasonInvalid
+		}
+		return out, ""
+	}
+	out, err := textutil.CleanText(s, d.MaxLen)
+	if errors.Is(err, textutil.ErrTooLong) {
+		return "", ReasonTooLong
+	}
+	if err != nil {
+		return "", ReasonInvalid
+	}
+	if out == "" && d.Required {
+		return "", ReasonRequired
+	}
+	return out, ""
+}
+
+func (d Def) normalizeText(v any) (any, string) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, ReasonInvalidType
+	}
+	var out Localized
+	filled := 0
+	for k, val := range m {
+		s, ok := val.(string)
+		if !ok {
+			return nil, ReasonInvalidType
+		}
+		clean, reason := d.cleanString(s)
+		if reason != "" {
+			return nil, reason
+		}
+		switch k {
+		case "kk":
+			out.KK = clean
+		case "ru":
+			out.RU = clean
+		case "en":
+			out.EN = clean
+		default:
+			return nil, ReasonInvalid
+		}
+		if clean != "" {
+			filled++
+		}
+	}
+	// Either every language has text or none does, so no screen mixes languages.
+	if filled != 0 && filled != 3 {
+		return nil, ReasonIncomplete
+	}
+	return out, ""
+}
+
+func (d Def) normalizeIntList(v any) (any, string) {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, ReasonInvalidType
+	}
+	if len(arr) > d.MaxItems {
+		return nil, ReasonTooMany
+	}
+	out := make([]int64, 0, len(arr))
+	for _, item := range arr {
+		n, ok := asInt(item)
+		if !ok {
+			return nil, ReasonInvalidType
+		}
+		if n < d.Min || n > d.Max {
+			return nil, ReasonOutOfRange
+		}
+		if slices.Contains(out, n) {
+			return nil, ReasonDuplicate
+		}
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out, ""
+}
+
+func (d Def) normalizeStringList(v any) (any, string) {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, ReasonInvalidType
+	}
+	if len(arr) > d.MaxItems {
+		return nil, ReasonTooMany
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		s, ok := item.(string)
+		if !ok {
+			return nil, ReasonInvalidType
+		}
+		s = strings.TrimSpace(s)
+		if d.Kind == KindCodeList {
+			if !codeRe.MatchString(s) {
+				return nil, ReasonInvalid
+			}
+		} else {
+			clean, err := textutil.CleanText(s, d.MaxLen)
+			if errors.Is(err, textutil.ErrTooLong) {
+				return nil, ReasonTooLong
+			}
+			if err != nil {
+				return nil, ReasonInvalid
+			}
+			s = strings.ToLower(clean)
+			if textutil.Len(s) < d.MinLen {
+				return nil, ReasonTooShort
+			}
+		}
+		if slices.Contains(out, s) {
+			return nil, ReasonDuplicate
+		}
+		out = append(out, s)
+	}
+	return out, ""
+}
+
+// decodeStrict parses exactly one JSON value, keeping numbers exact.
+func decodeStrict(raw json.RawMessage) (any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || dec.More() {
+		return nil, false
+	}
+	return v, v != nil
+}
+
+func asInt(v any) (int64, bool) {
+	num, ok := v.(json.Number)
+	if !ok {
+		return 0, false
+	}
+	n, err := num.Int64()
+	return n, err == nil
+}
+
+func checkTelegramUsername(s string) (string, bool) {
+	s = strings.TrimPrefix(s, "https://t.me/")
+	s = strings.TrimPrefix(s, "@")
+	return s, tgUserRe.MatchString(s)
+}
+
+// checkSupportPhone accepts Kazakhstan numbers (mobile or landline) written as
+// +7…, 8… or 7… and stores them as E.164.
+func checkSupportPhone(s string) (string, bool) {
+	r := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "", " ", "")
+	d := strings.TrimPrefix(r.Replace(s), "+")
+	if !digitsOnly.MatchString(d) {
+		return "", false
+	}
+	switch {
+	case len(d) == 11 && d[0] == '8':
+		d = "7" + d[1:]
+	case len(d) == 10 && d[0] == '7':
+		d = "7" + d
+	}
+	if len(d) != 11 || !strings.HasPrefix(d, "77") {
+		return "", false
+	}
+	return "+" + d, true
+}
+
+// httpsURLCheck validates an https URL on one of the allowed registrable
+// domains (subdomains included). baseOnly additionally forbids paths, queries
+// and fragments and strips a trailing slash.
+func httpsURLCheck(baseOnly bool, domains ...string) func(string) (string, bool) {
+	return func(s string) (string, bool) {
+		if len(s) > 500 {
+			return "", false
+		}
+		u, err := url.Parse(s)
+		if err != nil || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Port() != "" {
+			return "", false
+		}
+		host := strings.ToLower(u.Hostname())
+		allowed := false
+		for _, d := range domains {
+			if host == d || strings.HasSuffix(host, "."+d) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return "", false
+		}
+		if baseOnly {
+			if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
+				return "", false
+			}
+			return "https://" + host, true
+		}
+		return u.String(), true
+	}
+}

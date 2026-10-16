@@ -1,0 +1,14 @@
+# Lint rules for admin/backend/api/openapi.yaml (make openapi-lint).
+# Recommended preset plus example validation, so every example in the
+# contract must match its schema.
+extends:
+  - recommended
+rules:
+  no-invalid-schema-examples: error
+  no-invalid-media-type-examples: error
+  no-required-schema-properties-undefined: error
+  no-ambiguous-paths: error
+  operation-tag-defined: error
+  operation-singular-tag: warn
+  parameter-description: off
+  path-segment-plural: off

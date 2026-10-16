@@ -1,0 +1,468 @@
+# Jan Taxi production stack.
+#
+#   cp .env.example .env    # fill in real values (docs/DEPLOYMENT.md)
+#   make build && make up
+#
+# Networks:
+#   backend  internal only (no internet): db, migrate, api, bots, db-backup, osrm, photon
+#   edge     Caddy <-> api:8080; also gives api its outbound internet access
+#            (Telegram Bot API, geocoder)
+#   egress   outbound internet for the bots (Telegram getUpdates) and data downloads
+# Only the web (Caddy) service publishes ports. The database, OSRM, Photon and
+# the API's internal listener :8081 are never published to the host; Caddy
+# proxies only /api/* to api:8080, and :8081 additionally requires the bots'
+# service secret.
+#
+# Profiles (COMPOSE_PROFILES in .env, or --profile on the command line):
+#   osrm             self-hosted OSRM router (required for route previews)
+#   osrm-prepare     one-shot download + preprocessing of the Kazakhstan extract
+#   geocoder         self-hosted Photon geocoder (optional)
+#   geocoder-import  one-shot Photon index import (optional)
+
+name: ${COMPOSE_PROJECT_NAME:-jantaxi}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: ${LOG_MAX_SIZE:-20m}
+    max-file: ${LOG_MAX_FILE:-5}
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+# API configuration, passed explicitly so that `docker compose --env-file <file>`
+# feeds the same file to interpolation and to the container. Empty values fall
+# back to the API's built-in defaults; the API validates everything at start
+# (production refuses missing bot tokens, short secrets and non-https URLs).
+# Add new API variables here and in .env.example.
+x-api-env: &api-env
+  APP_ENV: ${APP_ENV:-production}
+  DATABASE_URL: postgres://${POSTGRES_USER:-jantaxi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-jantaxi}?sslmode=disable
+  DATABASE_MAX_CONNS: ${DATABASE_MAX_CONNS:-}
+  PASSENGER_BOT_TOKEN: ${PASSENGER_BOT_TOKEN:-}
+  PASSENGER_BOT_USERNAME: ${PASSENGER_BOT_USERNAME:-}
+  DRIVER_BOT_TOKEN: ${DRIVER_BOT_TOKEN:-}
+  DRIVER_BOT_USERNAME: ${DRIVER_BOT_USERNAME:-}
+  PASSENGER_MINIAPP_SHORT_NAME: ${PASSENGER_MINIAPP_SHORT_NAME:-}
+  DRIVER_MINIAPP_SHORT_NAME: ${DRIVER_MINIAPP_SHORT_NAME:-}
+  PASSENGER_MINIAPP_URL: ${PASSENGER_MINIAPP_URL:-}
+  DRIVER_MINIAPP_URL: ${DRIVER_MINIAPP_URL:-}
+  ADMIN_FRONTEND_URL: ${ADMIN_FRONTEND_URL:-}
+  API_PUBLIC_URL: ${API_PUBLIC_URL:-}
+  SESSION_SECRET: ${SESSION_SECRET:-}
+  INTERNAL_BOT_SERVICE_SECRET: ${INTERNAL_BOT_SERVICE_SECRET:-}
+  TELEGRAM_INITDATA_MAX_AGE: ${TELEGRAM_INITDATA_MAX_AGE:-}
+  TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-}
+  APP_TOKEN_TTL: ${APP_TOKEN_TTL:-}
+  ADMIN_SESSION_IDLE_TTL: ${ADMIN_SESSION_IDLE_TTL:-}
+  ADMIN_SESSION_ABSOLUTE_TTL: ${ADMIN_SESSION_ABSOLUTE_TTL:-}
+  ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-}
+  ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
+  ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+  MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-}
+  KASPI_PAY_PAYMENT_URL: ${KASPI_PAY_PAYMENT_URL:-}
+  KASPI_PAY_RECIPIENT_NAME: ${KASPI_PAY_RECIPIENT_NAME:-}
+  KASPI_PAY_PAYMENT_INSTRUCTIONS: ${KASPI_PAY_PAYMENT_INSTRUCTIONS:-}
+  MAP_STYLE_URL: ${MAP_STYLE_URL:-}
+  MAP_API_KEY: ${MAP_API_KEY:-}
+  GEOCODING_PROVIDER: ${GEOCODING_PROVIDER:-}
+  GEOCODING_BASE_URL: ${GEOCODING_BASE_URL:-}
+  GEOCODING_API_KEY: ${GEOCODING_API_KEY:-}
+  OSRM_BASE_URL: ${OSRM_BASE_URL:-http://osrm:5000}
+  OSRM_TIMEOUT: ${OSRM_TIMEOUT:-}
+  TWOGIS_BASE_URL: ${TWOGIS_BASE_URL:-}
+  DEFAULT_CITY: ${DEFAULT_CITY:-}
+  DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE:-}
+  MAX_ROUTE_POINTS: ${MAX_ROUTE_POINTS:-}
+  DEFAULT_COMMISSION_PERCENT: ${DEFAULT_COMMISSION_PERCENT:-}
+  DRIVER_ONLINE_IDLE_TIMEOUT: ${DRIVER_ONLINE_IDLE_TIMEOUT:-}
+  NOTIFICATION_WORKER_ENABLED: ${NOTIFICATION_WORKER_ENABLED:-}
+  JOBS_ENABLED: ${JOBS_ENABLED:-}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  # Fixed for the container.
+  API_PORT: "8080"
+  INTERNAL_PORT: "8081"
+  FILE_STORAGE_DIR: /data/files
+
+x-api-image: &api-image
+  image: ${IMAGE_REGISTRY:-jantaxi}/api:${IMAGE_TAG:-latest}
+  build:
+    context: .
+    dockerfile: Dockerfile.api
+
+x-osrm-image: &osrm-image
+  image: ${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:v26.10.0-debian}
+
+x-photon-image: &photon-image
+  image: ${IMAGE_REGISTRY:-jantaxi}/photon:${PHOTON_VERSION:-1.3.0}
+  build:
+    context: deploy/photon
+    args:
+      PHOTON_VERSION: ${PHOTON_VERSION:-1.3.0}
+
+services:
+  db:
+    # PostgreSQL 17 + PostGIS 3.5. The official image is amd64-only; on Apple
+    # Silicon development machines set POSTGIS_IMAGE=imresamu/postgis:17-3.5-alpine
+    # (multi-arch build of the same versions).
+    image: ${POSTGIS_IMAGE:-postgis/postgis:17-3.5}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jantaxi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-jantaxi}
+      TZ: UTC
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1536MB}
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-100}
+      - -c
+      - log_min_duration_statement=${PG_LOG_MIN_DURATION_MS:-1000}
+      - -c
+      - log_lock_waits=on
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    shm_size: 256m
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${DB_MEM_LIMIT:-2g}
+          cpus: "${DB_CPUS:-2}"
+    logging: *logging
+
+  migrate:
+    <<: [*api-image, *hardening]
+    command: ["migrate", "up"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-jantaxi}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-jantaxi}?sslmode=disable
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging: *logging
+
+  api:
+    <<: [*api-image, *hardening]
+    # Migrations run in the "migrate" service first.
+    command: ["serve", "--migrate=false"]
+    restart: unless-stopped
+    environment: *api-env
+    volumes:
+      - files:/data/files
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    expose: ["8080", "8081"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [backend, edge]
+    # Graceful shutdown takes up to 20s (drains HTTP and WebSocket clients).
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/api", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-1g}
+          cpus: "${API_CPUS:-2}"
+    logging: *logging
+
+  passenger-bot:
+    <<: *hardening
+    image: ${IMAGE_REGISTRY:-jantaxi}/passenger-bot:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.passenger-bot
+    restart: unless-stopped
+    # The bot never sees database credentials or the session secret.
+    environment:
+      PASSENGER_BOT_TOKEN: ${PASSENGER_BOT_TOKEN:-}
+      PASSENGER_BOT_USERNAME: ${PASSENGER_BOT_USERNAME:-}
+      DRIVER_BOT_USERNAME: ${DRIVER_BOT_USERNAME:-}
+      PASSENGER_MINIAPP_URL: ${PASSENGER_MINIAPP_URL:-}
+      PASSENGER_MINIAPP_SHORT_NAME: ${PASSENGER_MINIAPP_SHORT_NAME:-}
+      INTERNAL_API_URL: http://api:8081
+      INTERNAL_BOT_SERVICE_SECRET: ${INTERNAL_BOT_SERVICE_SECRET:-}
+      HEALTH_PORT: "8090"
+      TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-https://api.telegram.org}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [backend, egress]
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/passenger-bot", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    logging: *logging
+
+  driver-bot:
+    <<: *hardening
+    image: ${IMAGE_REGISTRY:-jantaxi}/driver-bot:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.driver-bot
+    restart: unless-stopped
+    environment:
+      DRIVER_BOT_TOKEN: ${DRIVER_BOT_TOKEN:-}
+      DRIVER_BOT_USERNAME: ${DRIVER_BOT_USERNAME:-}
+      PASSENGER_BOT_USERNAME: ${PASSENGER_BOT_USERNAME:-}
+      DRIVER_MINIAPP_URL: ${DRIVER_MINIAPP_URL:-}
+      DRIVER_MINIAPP_SHORT_NAME: ${DRIVER_MINIAPP_SHORT_NAME:-}
+      INTERNAL_API_URL: http://api:8081
+      INTERNAL_BOT_SERVICE_SECRET: ${INTERNAL_BOT_SERVICE_SECRET:-}
+      HEALTH_PORT: "8090"
+      TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-https://api.telegram.org}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [backend, egress]
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/driver-bot", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    logging: *logging
+
+  web:
+    image: ${IMAGE_REGISTRY:-jantaxi}/web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN:?set ADMIN_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+      MAP_CONNECT_SRC: ${MAP_CONNECT_SRC:-https://tiles.openfreemap.org}
+      CADDY_GLOBAL_OPTIONS: ${CADDY_GLOBAL_OPTIONS:-}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_started
+    networks: [edge]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "1"
+    logging: *logging
+
+  db-backup:
+    # The client major version must match the server (PostgreSQL 17).
+    image: ${BACKUP_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/bin/sh", "/opt/jantaxi/backup/backup-loop.sh"]
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-jantaxi}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-jantaxi}
+      BACKUP_DIR: /backups
+      BACKUP_HOST_DIR: ${BACKUP_HOST_DIR:-./backups}
+      FILES_DIR: /data/files
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_TIME: ${BACKUP_TIME:-03:30}
+      BACKUP_RETRY_MINUTES: ${BACKUP_RETRY_MINUTES:-60}
+      # uid:gid that owns the written backups (for the off-site copy job);
+      # empty keeps them owned by root.
+      BACKUP_OWNER: ${BACKUP_OWNER:-}
+      TZ: ${BACKUP_TZ:-Asia/Aqtobe}
+    volumes:
+      - ${BACKUP_HOST_DIR:-./backups}:/backups
+      - files:/data/files:ro
+      - ./deploy/backup:/opt/jantaxi/backup:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1"
+    logging: *logging
+
+  osrm:
+    <<: [*osrm-image, *hardening]
+    profiles: ["osrm"]
+    restart: unless-stopped
+    command:
+      - osrm-routed
+      - --algorithm
+      - mld
+      - --max-viaroute-size
+      - "25"
+      - --max-table-size
+      - "100"
+      - /data/kazakhstan-latest.osrm
+    volumes:
+      - osrm-data:/data:ro
+    expose: ["5000"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/5000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${OSRM_MEM_LIMIT:-3g}
+          cpus: "${OSRM_CPUS:-2}"
+    logging: *logging
+
+  osrm-download:
+    image: ${DOWNLOAD_IMAGE:-alpine:3.22}
+    profiles: ["osrm-prepare"]
+    restart: "no"
+    entrypoint: ["/bin/sh", "/opt/jantaxi/osrm/download.sh"]
+    environment:
+      OSRM_PBF_URL: ${OSRM_PBF_URL:-https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf}
+      OSRM_SKIP_MD5: ${OSRM_SKIP_MD5:-0}
+    volumes:
+      - osrm-data:/data
+      - ./deploy/osrm:/opt/jantaxi/osrm:ro
+    networks: [egress]
+    logging: *logging
+
+  osrm-prepare:
+    <<: *osrm-image
+    profiles: ["osrm-prepare"]
+    restart: "no"
+    entrypoint: ["/bin/bash", "/opt/jantaxi/osrm/prepare.sh"]
+    volumes:
+      - osrm-data:/data
+      - ./deploy/osrm:/opt/jantaxi/osrm:ro
+    depends_on:
+      osrm-download:
+        condition: service_completed_successfully
+    network_mode: none
+    deploy:
+      resources:
+        limits:
+          memory: ${OSRM_PREPARE_MEM_LIMIT:-6g}
+    logging: *logging
+
+  photon:
+    <<: *photon-image
+    profiles: ["geocoder"]
+    restart: unless-stopped
+    command: ["serve"]
+    environment:
+      JAVA_TOOL_OPTIONS: ${PHOTON_JAVA_OPTS:--Xmx1g}
+      PHOTON_SERVE_ARGS: ${PHOTON_SERVE_ARGS:-}
+    volumes:
+      - photon-data:/photon
+    expose: ["2322"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2322/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${PHOTON_MEM_LIMIT:-2g}
+          cpus: "1"
+    logging: *logging
+
+  photon-import:
+    <<: *photon-image
+    profiles: ["geocoder-import"]
+    restart: "no"
+    command: ["import"]
+    environment:
+      JAVA_TOOL_OPTIONS: ${PHOTON_JAVA_OPTS:--Xmx1g}
+      PHOTON_DUMP_URL: ${PHOTON_DUMP_URL:-https://download1.graphhopper.com/public/asia/central-asia/photon-dump-central-asia-1.0-latest.jsonl.zst}
+      PHOTON_COUNTRY_CODES: ${PHOTON_COUNTRY_CODES:-kz}
+      PHOTON_LANGUAGES: ${PHOTON_LANGUAGES:-}
+    volumes:
+      - photon-data:/photon
+    networks: [egress]
+    deploy:
+      resources:
+        limits:
+          memory: ${PHOTON_IMPORT_MEM_LIMIT:-4g}
+    logging: *logging
+
+networks:
+  backend:
+    internal: true
+  edge: {}
+  egress: {}
+
+volumes:
+  pgdata: {}
+  files: {}
+  caddy_data: {}
+  caddy_config: {}
+  osrm-data: {}
+  photon-data: {}
