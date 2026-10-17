@@ -28,6 +28,8 @@ const (
 	DefaultPollTimeout    = 30
 	DefaultPollLimit      = 50
 	DefaultHandlerTimeout = 20 * time.Second
+	DefaultStallTimeout   = 20 * time.Second
+	DefaultHandlerGrace   = 15 * time.Second
 
 	// maxLeaseMargin bounds how early polling stops before an unrenewed lease
 	// runs out, so a new holder never overlaps with this one.
@@ -39,6 +41,22 @@ type TelegramAPI interface {
 	GetUpdates(ctx context.Context, p telegram.GetUpdatesParams) ([]telegram.Update, error)
 	DeleteWebhook(ctx context.Context, dropPending bool) error
 }
+
+// ConnectionResetter is implemented by API clients that can drop their
+// pooled connections (*telegram.Client, *botapi.Client). The poller calls it
+// after a stalled or repeatedly failing request.
+type ConnectionResetter interface {
+	ResetConnections()
+}
+
+func resetConnections(c any) {
+	if r, ok := c.(ConnectionResetter); ok {
+		r.ResetConnections()
+	}
+}
+
+// errStalled is returned for a call that outlived its hard deadline.
+var errStalled = errors.New("request stalled")
 
 // StateAPI is the part of the internal bot API the poller uses.
 type StateAPI interface {
@@ -73,6 +91,14 @@ type PollerConfig struct {
 	Limit          int
 	AllowedUpdates []string
 	HandlerTimeout time.Duration
+	// HandlerGrace is how long the poller waits past HandlerTimeout for a
+	// handler that ignores its context before it moves on (default 15s).
+	HandlerGrace time.Duration
+	// StallTimeout is how long a getUpdates or deleteWebhook call may run
+	// past its long-poll timeout before the poller abandons it and rebuilds
+	// the Telegram connections (default 20s; the client's own deadline is
+	// 15s, so this fires only when that deadline did not work).
+	StallTimeout time.Duration
 
 	// MinBackoff/MaxBackoff bound network-error backoff (1s..60s);
 	// ConflictBackoff is the first delay after a Telegram 409 (2s).
@@ -99,7 +125,18 @@ type Poller struct {
 	lastPoll      time.Time
 	lastProgress  time.Time
 	lastLeaseTry  time.Time
+	lastLeaseOK   time.Time
+	leaseFailures int
 	started       time.Time
+
+	// Failure state of the Telegram calls (reset by a successful poll).
+	failures  int
+	stalled   bool
+	stalls    int64
+	abandoned int64
+	lastErr   string
+	// retryUntil is the end of a wait Telegram asked for (429 retry_after).
+	retryUntil time.Time
 
 	running atomic.Bool
 	wake    chan struct{}
@@ -140,6 +177,12 @@ func NewPoller(cfg PollerConfig) (*Poller, error) {
 	}
 	if cfg.HandlerTimeout <= 0 {
 		cfg.HandlerTimeout = DefaultHandlerTimeout
+	}
+	if cfg.HandlerGrace <= 0 {
+		cfg.HandlerGrace = DefaultHandlerGrace
+	}
+	if cfg.StallTimeout <= 0 {
+		cfg.StallTimeout = DefaultStallTimeout
 	}
 	if cfg.MinBackoff <= 0 {
 		cfg.MinBackoff = time.Second
@@ -229,12 +272,17 @@ func (p *Poller) checkLease(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		p.log.Warn("bot lease check failed", slog.String("err", err.Error()))
+		p.leaseFailures++
+		p.log.Warn("bot lease check failed", slog.String("err", err.Error()), slog.Int("failures", p.leaseFailures))
+		if _, isAPI := botapi.AsError(err); !isAPI && p.leaseFailures >= 2 {
+			resetConnections(p.cfg.State)
+		}
 		if p.leader && !time.Now().Before(p.leaseUntil.Add(-p.margin)) {
 			p.stepDownLocked("lease could not be renewed")
 		}
 		return
 	}
+	p.lastLeaseOK, p.leaseFailures = time.Now(), 0
 	if !lease.Acquired {
 		if p.leader {
 			p.stepDownLocked("lease taken by another instance")
@@ -324,6 +372,67 @@ func (p *Poller) endPoll(gen uint64, success bool) {
 	if success {
 		p.lastPoll = time.Now()
 		p.lastProgress = p.lastPoll
+		p.failures, p.stalled, p.lastErr = 0, false, ""
+	}
+}
+
+// callFailed records a failed Telegram call; after a stall or a repeated
+// network failure the Telegram connections are rebuilt.
+func (p *Poller) callFailed(method string, err error) {
+	stalled := errors.Is(err, errStalled)
+	p.mu.Lock()
+	p.failures++
+	failures := p.failures
+	msg := method + ": " + err.Error()
+	if len(msg) > 200 {
+		msg = strings.ToValidUTF8(msg[:200], "")
+	}
+	p.lastErr = msg
+	if stalled {
+		p.stalls++
+		p.stalled = true
+	}
+	p.mu.Unlock()
+	if stalled {
+		p.log.Error("telegram request stalled; rebuilding connections", slog.String("method", method),
+			slog.String("err", err.Error()))
+	}
+	if stalled || (telegram.IsNetworkError(err) && failures >= 2) {
+		resetConnections(p.cfg.Telegram)
+	}
+}
+
+// bounded runs fn and waits at most limit for it. A call still running then
+// has its context cancelled and is left to finish in the background, so a
+// transport that ignores its deadline cannot stop the poll loop.
+func bounded[T any](ctx context.Context, limit time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		v   T
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		v, err := fn(cctx)
+		ch <- result{v, err}
+	}()
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	var zero T
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-timer.C:
+		return zero, fmt.Errorf("%w after %s", errStalled, limit)
+	case <-ctx.Done():
+		// Shutdown or lease loss: a well-behaved call returns at once.
+		select {
+		case r := <-ch:
+			return r.v, r.err
+		case <-time.After(time.Second):
+			return zero, ctx.Err()
+		}
 	}
 }
 
@@ -342,7 +451,10 @@ func (p *Poller) pollLoop(ctx context.Context) {
 			continue
 		}
 		if deleteWebhook {
-			if err := p.cfg.Telegram.DeleteWebhook(pctx, false); err != nil {
+			_, err := bounded(pctx, p.cfg.StallTimeout, func(c context.Context) (struct{}, error) {
+				return struct{}{}, p.cfg.Telegram.DeleteWebhook(c, false)
+			})
+			if err != nil {
 				cancel()
 				p.endPoll(gen, false)
 				p.mu.Lock()
@@ -352,12 +464,17 @@ func (p *Poller) pollLoop(ctx context.Context) {
 					return
 				}
 				p.log.Warn("deleteWebhook failed", slog.String("err", err.Error()))
+				p.callFailed("deleteWebhook", err)
 				sleep(ctx, p.retryDelay(err, &netBackoff))
 				continue
 			}
 		}
-		updates, err := p.cfg.Telegram.GetUpdates(pctx, telegram.GetUpdatesParams{
+		params := telegram.GetUpdatesParams{
 			Offset: offset, Limit: p.cfg.Limit, Timeout: p.cfg.PollTimeout, AllowedUpdates: p.cfg.AllowedUpdates,
+		}
+		limit := time.Duration(p.cfg.PollTimeout)*time.Second + p.cfg.StallTimeout
+		updates, err := bounded(pctx, limit, func(c context.Context) ([]telegram.Update, error) {
+			return p.cfg.Telegram.GetUpdates(c, params)
 		})
 		cancel()
 		p.endPoll(gen, err == nil)
@@ -368,6 +485,7 @@ func (p *Poller) pollLoop(ctx context.Context) {
 			if !p.stillLeader(gen) {
 				continue // the lease was lost while polling
 			}
+			p.callFailed("getUpdates", err)
 			if telegram.IsConflict(err) {
 				p.log.Warn("telegram reports another consumer", slog.String("err", err.Error()))
 				if strings.Contains(strings.ToLower(err.Error()), "webhook") {
@@ -394,6 +512,9 @@ func (p *Poller) pollLoop(ctx context.Context) {
 // retryDelay honours retry_after on 429 and otherwise backs off exponentially.
 func (p *Poller) retryDelay(err error, b *telegram.Backoff) time.Duration {
 	if d, ok := telegram.RetryAfter(err); ok {
+		p.mu.Lock()
+		p.retryUntil = time.Now().Add(d)
+		p.mu.Unlock()
 		return d
 	}
 	return b.Next()
@@ -440,17 +561,35 @@ func (p *Poller) processBatch(ctx context.Context, gen uint64, updates []telegra
 	return complete
 }
 
+// handle runs the handler with its timeout. A handler that ignores its
+// context is given HandlerGrace more and then left running in the
+// background, so one stuck update cannot stop the bot.
 func (p *Poller) handle(ctx context.Context, u telegram.Update) {
 	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.cfg.HandlerTimeout)
 	defer cancel()
-	defer func() {
-		if r := recover(); r != nil {
-			p.log.Error("update handler panicked", slog.Int64("update_id", u.UpdateID),
-				slog.String("panic", fmt.Sprint(r)), slog.String("stack", string(debug.Stack())))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				p.log.Error("update handler panicked", slog.Int64("update_id", u.UpdateID),
+					slog.String("panic", fmt.Sprint(r)), slog.String("stack", string(debug.Stack())))
+			}
+		}()
+		if err := p.cfg.Handler.HandleUpdate(hctx, u); err != nil {
+			p.log.Warn("update handler failed", slog.Int64("update_id", u.UpdateID), slog.String("err", err.Error()))
 		}
 	}()
-	if err := p.cfg.Handler.HandleUpdate(hctx, u); err != nil {
-		p.log.Warn("update handler failed", slog.Int64("update_id", u.UpdateID), slog.String("err", err.Error()))
+	timer := time.NewTimer(p.cfg.HandlerTimeout + p.cfg.HandlerGrace)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		p.mu.Lock()
+		p.abandoned++
+		p.mu.Unlock()
+		p.log.Error("update handler did not return in time; continuing with the next update",
+			slog.Int64("update_id", u.UpdateID), slog.Duration("waited", p.cfg.HandlerTimeout+p.cfg.HandlerGrace))
 	}
 }
 

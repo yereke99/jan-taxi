@@ -272,6 +272,17 @@ func duplicateWarnings(ctx context.Context, q db.Querier, t TopUp) ([]DuplicateW
 	} else if rc != nil && rc.serial != nil && !slices.Contains(ids, *rc.serial) {
 		ids = append(ids, *rc.serial)
 	}
+	// A top-up rejected as a duplicate links no receipt of its own; the number
+	// it carried is kept in its duplicate_receipt event.
+	serials, err := duplicateEventSerials(ctx, q, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range serials {
+		if !slices.Contains(ids, s) {
+			ids = append(ids, s)
+		}
+	}
 	if len(ids) == 0 {
 		return out, nil
 	}
@@ -353,6 +364,22 @@ func duplicateWarnings(ctx context.Context, q db.Querier, t TopUp) ([]DuplicateW
 		out = append(out, w)
 	}
 	return out, rows.Err()
+}
+
+// duplicateEventSerials returns the receipt numbers recorded by the
+// duplicate_receipt events of a top-up.
+func duplicateEventSerials(ctx context.Context, q db.Querier, topupID uuid.UUID) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT meta->>'receipt_serial' FROM top_up_events
+		WHERE topup_id = $1 AND note = $2 AND COALESCE(meta->>'receipt_serial', '') <> ''`, topupID, NoteDuplicateReceipt)
+	if err != nil {
+		return nil, fmt.Errorf("payments: duplicate receipt events: %w", err)
+	}
+	serials, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("payments: duplicate receipt events: %w", err)
+	}
+	return serials, nil
 }
 
 func (s *Service) adminGetReceipt(w http.ResponseWriter, r *http.Request) error {

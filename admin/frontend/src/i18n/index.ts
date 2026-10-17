@@ -32,6 +32,8 @@ export const i18n = createI18n({
   messages: { kk, ru, en },
   missingWarn: import.meta.env.DEV,
   fallbackWarn: false,
+  // Messages are rendered by interpolation only (never v-html); some describe Telegram HTML tags.
+  warnHtmlMessage: false,
 })
 
 if (typeof document !== 'undefined') document.documentElement.lang = i18n.global.locale.value

@@ -15,9 +15,11 @@ func (c *Client) GetMe(ctx context.Context) (*User, error) {
 	return &u, nil
 }
 
-// GetUpdates long-polls for updates. The request deadline is the poll timeout
-// plus 15 seconds, so a healthy long poll never hits it.
+// GetUpdates long-polls for updates (timeout at most MaxPollTimeout). The
+// request deadline is the poll timeout plus the request timeout (15s), so a
+// healthy long poll never hits it.
 func (c *Client) GetUpdates(ctx context.Context, p GetUpdatesParams) ([]Update, error) {
+	p.Timeout = min(p.Timeout, MaxPollTimeout)
 	body := map[string]any{}
 	if p.Offset != 0 {
 		body["offset"] = p.Offset
@@ -112,6 +114,16 @@ func (c *Client) SetChatMenuButton(ctx context.Context, chatID *int64, button Me
 		ChatID     *int64           `json:"chat_id,omitempty"`
 		MenuButton MenuButtonWebApp `json:"menu_button"`
 	}{chatID, button}
+	return c.call(ctx, "setChatMenuButton", body, nil, 0)
+}
+
+// ResetChatMenuButton makes a private chat use the bot's default menu button
+// again, clearing a button set for that chat alone.
+func (c *Client) ResetChatMenuButton(ctx context.Context, chatID int64) error {
+	body := struct {
+		ChatID     int64             `json:"chat_id"`
+		MenuButton map[string]string `json:"menu_button"`
+	}{chatID, map[string]string{"type": "default"}}
 	return c.call(ctx, "setChatMenuButton", body, nil, 0)
 }
 

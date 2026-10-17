@@ -110,11 +110,21 @@ that form.
 ## 4. Menu button
 
 The menu button (left of the message field) opens the Mini App with signed user
-data. Each bot sets its default menu button itself on start
-(`setChatMenuButton`, title `Jan Taxi`, URL = `PASSENGER_MINIAPP_URL` or
-`DRIVER_MINIAPP_URL`), but only when that URL is https; the bot logs a warning
-otherwise. The same can be set by hand in @BotFather → `/mybots` → the bot →
-**Bot Settings** → **Menu Button**, for example before the first deployment.
+data. Only the bot's **default** menu button is used. Each bot publishes it itself
+every time it takes the polling lease (`setChatMenuButton` without `chat_id`,
+title `Jan Taxi` / `Jan Taxi Driver`, URL = `PASSENGER_MINIAPP_URL` or
+`DRIVER_MINIAPP_URL`, falling back to the URL from the API config), retrying
+until Telegram accepts it, but only when that URL is https; the bot logs a
+warning otherwise.
+
+Per-chat menu buttons are not used: Telegram keeps a chat's own button, URL
+included, until it is replaced, so it goes stale whenever the Mini App URL
+changes. A chat that still carries one (from an older version or a manual
+`setChatMenuButton` call with `chat_id`) is reset to the default the first time
+it sends the bot an update after a restart. The button label is therefore the
+same in every language. The default can also be set by hand in @BotFather →
+`/mybots` → the bot → **Bot Settings** → **Menu Button**, for example before the
+first deployment.
 
 ## 5. How the bots open the Mini Apps
 

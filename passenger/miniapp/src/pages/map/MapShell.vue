@@ -22,11 +22,17 @@ import { createMapStage, STAGE_KEY } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
-import { canOpenLocationSettings, isTelegram, LocationError, navigateBack, openLocationSettings } from '../../telegram'
+import { canOpenLocationSettings, isTelegram, LocationError, navigateBack, openLocationSettings, useTelegramFullscreen, type DeviceLocation } from '../../telegram'
+import { haversineMeters } from '../../utils/geo'
 import { motionMs } from '../../utils/motion'
 
 /** Gap between the sheet top and the floating buttons; clears the attribution row. */
 const CONTROLS_GAP_PX = 40
+/** Follow mode moves the camera only for position changes above this. */
+const FOLLOW_MIN_MOVE_M = 3
+/** Floating button size and the gap between stacked buttons. */
+const BUTTON_PX = 48
+const BUTTON_GAP_PX = 12
 
 const { t } = useI18n()
 const errorText = useErrorText()
@@ -49,8 +55,23 @@ const { stage, attach } = createMapStage(
 // the round in-map back button is for a plain browser only.
 const inTelegram = isTelegram()
 provide(STAGE_KEY, stage)
+const tg = useTelegramFullscreen()
 
-const pageStyle = computed(() => ({ '--jt-map-attribution-offset': `${stage.sheetHeight.value}px` }))
+// The attribution sits above the sheet, but never under Telegram's header
+// (a nearly full sheet then simply covers it).
+// The map opens where the passenger is (or at the chosen pickup); the city
+// centre from the config is only the fallback before the first GPS fix.
+const known = location.current ?? booking.stops[0]?.place ?? null
+const initialView = {
+  center: known ? { lat: known.lat, lon: known.lon } : session.config.map.default_center,
+  zoom: known ? 16 : session.config.map.default_zoom,
+}
+
+const pageStyle = computed(() => {
+  const viewport = tg.state.viewportHeight || window.innerHeight
+  const offset = Math.min(stage.sheetHeight.value, Math.max(0, viewport - stage.safe.value.top - 40))
+  return { '--jt-map-attribution-offset': `${offset}px` }
+})
 const topStyle = computed(() => ({
   top: `${stage.safe.value.top + 8}px`,
   left: `${stage.safe.value.left + 16}px`,
@@ -65,12 +86,27 @@ const chipStyle = computed(() => ({
 }))
 const showAccuracyChip = computed(() => stage.controls.accuracyChip && location.inaccurate)
 
+// Floating buttons above a tall sheet would slide under Telegram's header:
+// they are hidden while the sheet leaves no room for them.
+const sideCount = computed(() => (stage.controls.recenter ? 1 : 0) + (stage.controls.locate ? 1 : 0))
+const sideFits = computed(() => {
+  const n = sideCount.value
+  if (n === 0) return false
+  const viewport = tg.state.viewportHeight || window.innerHeight
+  const needed = n * BUTTON_PX + (n - 1) * BUTTON_GAP_PX + 8
+  return viewport - stage.safe.value.top - stage.sheetHeight.value - CONTROLS_GAP_PX >= needed
+})
+
 watch(
   () => location.current,
   (loc) => {
     stage.user.set(loc)
     // Follow mode: keep the camera on the dot, at the passenger's zoom.
-    if (loc && location.following) stage.map.value?.easeTo({ center: [loc.lon, loc.lat], duration: motionMs(800), easing: (t) => t })
+    if (!loc || !location.following) return
+    // Standing still keeps the camera (and the pin above it) at rest.
+    const c = stage.center()
+    if (c && haversineMeters(c, loc) < FOLLOW_MIN_MOVE_M) return
+    stage.centerOn(loc, stage.map.value?.getZoom(), { duration: motionMs(800), linear: true })
   },
 )
 
@@ -81,7 +117,7 @@ stage.onMoveStart((user) => {
 
 /** Fills pickup A from the device position unless the passenger already chose it. */
 async function fillPickup(): Promise<void> {
-  const loc = await location.locate()
+  const loc = await firstFix
   if (!loc || booking.stops[0]?.place) return
   try {
     await booking.setPickupFromLocation(loc)
@@ -89,6 +125,11 @@ async function fillPickup(): Promise<void> {
     // The passenger chooses the pickup manually.
   }
 }
+
+// Ask for the position right away (not after the map loads), so the first
+// frame of the map is usually already where the passenger is. The pickup is
+// filled from this same attempt: a denied permission is never asked twice.
+const firstFix: Promise<DeviceLocation | null> = location.current ? Promise.resolve(location.current) : location.locate()
 
 function onReady(m: MapLibreMap): void {
   stage.map.value = m
@@ -138,15 +179,12 @@ async function adjustPickup(): Promise<void> {
 
 <template>
   <div class="shell" :style="pageStyle">
-    <MapView
-      :style-url="session.config.map.style_url"
-      :center="session.config.map.default_center"
-      :zoom="session.config.map.default_zoom"
-      :padding="stage.padding.value"
-      @ready="onReady"
-    >
+    <!-- Camera padding is owned by the stage (it re-runs framing on changes). -->
+    <MapView :style-url="session.config.map.style_url" :center="initialView.center" :zoom="initialView.zoom" @ready="onReady">
+      <!-- The pin lifts under the passenger's finger, not during camera animations. -->
       <CenterPin
         v-if="stage.pin.visible"
+        :lifted="stage.gesture.value"
         :padding="stage.padding.value"
         :label="stage.pin.label"
         :callout="stage.pin.callout"
@@ -178,7 +216,7 @@ async function adjustPickup(): Promise<void> {
       </button>
     </Transition>
 
-    <div class="shell__side" :style="bottomStyle">
+    <div v-show="sideFits" class="shell__side" :style="bottomStyle">
       <Transition name="jt-glass-pop">
         <JMapButton v-if="stage.controls.recenter" :label="t('map.recenter')" @click="stage.controls.recenter?.()">
           <Crosshair :size="22" :stroke-width="2" aria-hidden="true" />

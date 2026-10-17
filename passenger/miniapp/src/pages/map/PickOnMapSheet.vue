@@ -15,7 +15,7 @@ import type { GeoReverse } from '../../api/types'
 import { JButton, JSheet, JSkeleton } from '../../components/ui'
 import { createLatest } from '../../domain/latest'
 import { useAddressText } from '../../i18n/core'
-import { ROUTE } from '../../router/names'
+import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
@@ -65,7 +65,7 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined
 let retried: LatLon | null = null
 
 watchEffect(() => {
-  stage.pin.callout = { caption: title.value, title: address.value, loading: resolving.value }
+  stage.pin.callout = { caption: title.value, title: outside.value ? t('home.outside_kz') : address.value, loading: resolving.value }
 })
 
 const runner = createLatest<LatLon, GeoReverse>({
@@ -154,7 +154,8 @@ function choosePoint(): void {
     source: 'map',
     inServiceArea: r ? r.in_service_area : null,
   })
-  navigateBack(router)
+  if (route.query.from === BOOKING_FROM_HOME) void router.replace({ name: ROUTE.book, query: { category: booking.category } })
+  else navigateBack(router)
 }
 </script>
 

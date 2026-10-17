@@ -8,6 +8,7 @@ import {
   moveStop,
   normalizeStops,
   outsideIndices,
+  removeEmptyStops,
   removeStop,
   routeFingerprint,
   setPlace,
@@ -153,5 +154,25 @@ describe('route editor rules', () => {
     expect(routeFingerprint(moveStop(s, 1, 2))).not.toBe(f)
     expect(routeFingerprint(setPlace(s, 4, place('Other', 49, 58)))).not.toBe(f)
     expect(routeFingerprint([...s])).toBe(f)
+  })
+})
+
+describe('removeEmptyStops', () => {
+  it('drops empty intermediate stops and keeps pickup and destination', () => {
+    const k = keys()
+    let s = createStops(k)
+    s = addStop(s, 5, k)
+    s = addStop(s, 5, k)
+    s = setPlace(s, 0, place('A'))
+    s = setPlace(s, 2, place('C'))
+    s = setPlace(s, 3, place('D'))
+    const out = removeEmptyStops(s)
+    expect(names(out)).toEqual(['A', 'C', 'D'])
+    expect(roles(out)).toEqual(['pickup', 'intermediate', 'destination'])
+  })
+
+  it('returns the same array when nothing is empty', () => {
+    const s = createStops(keys())
+    expect(removeEmptyStops(s)).toBe(s)
   })
 })

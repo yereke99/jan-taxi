@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"html"
 	"time"
 
@@ -10,6 +11,10 @@ import (
 
 // maxSendWait bounds how long one reply waits for Telegram's retry_after.
 const maxSendWait = 10 * time.Second
+
+// replyGrace is the budget of a reply sent after the handler's deadline has
+// passed (typically the error message after a timed-out API call).
+const replyGrace = 5 * time.Second
 
 // MessageSender sends Telegram messages (*telegram.Client satisfies it).
 type MessageSender interface {
@@ -22,8 +27,15 @@ func Esc(s string) string { return html.EscapeString(s) }
 // SendHTML sends an HTML message with link previews disabled. A 429 is
 // retried once after retry_after (up to 10s) and a transient failure once
 // after a second. markup may be an inline keyboard, a reply keyboard, a
-// keyboard removal or nil.
+// keyboard removal or nil. When ctx has already hit its deadline the reply
+// still gets a short budget of its own, so the user is not left without an
+// answer.
 func SendHTML(ctx context.Context, s MessageSender, chatID int64, text string, markup any) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), replyGrace)
+		defer cancel()
+	}
 	params := telegram.SendMessageParams{
 		ChatID: chatID, Text: text, ParseMode: "HTML", ReplyMarkup: cleanMarkup(markup), DisableWebPagePreview: true,
 	}

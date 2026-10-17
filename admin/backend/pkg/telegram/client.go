@@ -6,15 +6,18 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,8 +25,17 @@ const (
 	// DefaultBaseURL is the public Bot API endpoint.
 	DefaultBaseURL = "https://api.telegram.org"
 
-	// requestSlack is added to the long-poll timeout to get the per-request deadline.
-	requestSlack = 15 * time.Second
+	// DefaultRequestTimeout is the deadline of one call; getUpdates gets its
+	// long-poll timeout on top, so a healthy long poll never hits it.
+	DefaultRequestTimeout = 15 * time.Second
+
+	// MaxPollTimeout is the longest long poll (seconds) sent to Telegram.
+	MaxPollTimeout = 50
+
+	dialTimeout         = 10 * time.Second
+	tlsHandshakeTimeout = 10 * time.Second
+	idleConnTimeout     = 60 * time.Second
+	tcpKeepAlive        = 30 * time.Second
 
 	// maxResponseBytes bounds a single response body (100 updates fit easily).
 	maxResponseBytes = 32 << 20
@@ -33,7 +45,11 @@ const (
 type Client struct {
 	token   string
 	baseURL string
-	http    *http.Client
+	timeout time.Duration
+	tls     *tls.Config  // from WithTLSConfig
+	custom  *http.Client // from WithHTTPClient
+	http    *httpPool    // calls and file downloads
+	poll    *httpPool    // getUpdates
 	log     *slog.Logger
 }
 
@@ -45,14 +61,32 @@ func WithBaseURL(u string) Option {
 	return func(c *Client) { c.baseURL = strings.TrimRight(u, "/") }
 }
 
-// WithHTTPClient sets the HTTP client. Deadlines are applied per request via the
-// context, so the client should not set a Timeout shorter than the long-poll timeout.
+// WithHTTPClient sets the HTTP client. A client without a Transport gets the
+// package's own transports (timeouts, HTTP/1.1, rebuilt by ResetConnections);
+// a custom Transport is used as is for every call. Deadlines are applied per
+// request, so the client must not set a Timeout shorter than a long poll.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) {
 		if h != nil {
-			c.http = h
+			c.custom = h
 		}
 	}
+}
+
+// WithRequestTimeout sets the deadline of one call (default 15s); getUpdates
+// gets its long-poll timeout on top.
+func WithRequestTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		if d > 0 {
+			c.timeout = d
+		}
+	}
+}
+
+// WithTLSConfig sets the TLS configuration of the client's own transports
+// (e.g. a private CA of a local Bot API server).
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(c *Client) { c.tls = cfg }
 }
 
 // WithLogger sets the logger used for debug-level request tracing.
@@ -69,13 +103,95 @@ func New(token string, opts ...Option) *Client {
 	c := &Client{
 		token:   token,
 		baseURL: DefaultBaseURL,
-		http:    &http.Client{},
+		timeout: DefaultRequestTimeout,
 		log:     slog.New(slog.DiscardHandler),
 	}
 	for _, o := range opts {
 		o(c)
 	}
+	c.http, c.poll = newPools(c.custom, c.tls, c.timeout)
 	return c
+}
+
+// ResetConnections drops every pooled connection and replaces the client's
+// own transports, so the next call dials afresh. The bot runtime calls it
+// after a stalled or repeatedly failing request.
+func (c *Client) ResetConnections() {
+	c.http.reset()
+	if c.poll != c.http {
+		c.poll.reset()
+	}
+}
+
+// httpPool is an HTTP client that can be replaced while in use.
+type httpPool struct {
+	mu    sync.Mutex
+	c     *http.Client
+	build func() *http.Client // nil for a caller-supplied transport
+}
+
+func (p *httpPool) client() *http.Client {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.c
+}
+
+// Do sends req with the current client.
+func (p *httpPool) Do(req *http.Request) (*http.Response, error) { return p.client().Do(req) }
+
+// dropIdle closes idle connections, which may be dead after a failure.
+func (p *httpPool) dropIdle() { p.client().CloseIdleConnections() }
+
+// reset starts a new transport (own transports only) and closes the idle
+// connections of the old one; requests in flight end with their deadline.
+func (p *httpPool) reset() {
+	p.mu.Lock()
+	old := p.c
+	if p.build != nil {
+		p.c = p.build()
+	}
+	p.mu.Unlock()
+	old.CloseIdleConnections()
+}
+
+func newPools(custom *http.Client, tlsConfig *tls.Config, timeout time.Duration) (calls, poll *httpPool) {
+	if custom != nil && custom.Transport != nil {
+		p := &httpPool{c: custom}
+		return p, p
+	}
+	callClient := func() *http.Client {
+		hc := &http.Client{Transport: newTransport(tlsConfig, timeout+5*time.Second)}
+		if custom != nil {
+			hc.Timeout, hc.Jar, hc.CheckRedirect = custom.Timeout, custom.Jar, custom.CheckRedirect
+		}
+		return hc
+	}
+	pollClient := func() *http.Client {
+		return &http.Client{Transport: newTransport(tlsConfig, MaxPollTimeout*time.Second+timeout)}
+	}
+	return &httpPool{c: callClient(), build: callClient}, &httpPool{c: pollClient(), build: pollClient}
+}
+
+// newTransport bounds every phase of a request. It speaks HTTP/1.1 only: a
+// request that times out closes its own connection, so a connection that
+// died with the network is never used again, whereas HTTP/2 would keep
+// multiplexing new requests onto it.
+func newTransport(tlsConfig *tls.Config, responseHeaderTimeout time.Duration) *http.Transport {
+	dialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: tcpKeepAlive}
+	t := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		TLSClientConfig:       tlsConfig.Clone(),
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		ExpectContinueTimeout: time.Second,
+		IdleConnTimeout:       idleConnTimeout,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   8,
+	}
+	t.Protocols = new(http.Protocols)
+	t.Protocols.SetHTTP1(true)
+	return t
 }
 
 type apiResponse struct {
@@ -89,10 +205,15 @@ type apiResponse struct {
 }
 
 // call POSTs params as JSON to method and decodes the result into out (if non-nil).
-// pollTimeout is the long-poll duration; the request deadline is pollTimeout+15s.
+// pollTimeout is the long-poll duration; the request deadline is pollTimeout
+// plus the request timeout.
 func (c *Client) call(ctx context.Context, method string, params any, out any, pollTimeout time.Duration) error {
 	start := time.Now()
-	err := c.do(ctx, method, params, out, pollTimeout)
+	pool := c.http
+	if method == "getUpdates" {
+		pool = c.poll
+	}
+	err := c.do(ctx, pool, method, params, out, pollTimeout)
 	if err != nil {
 		c.log.Debug("telegram call failed", slog.String("method", method),
 			slog.Duration("dur", time.Since(start)), slog.String("err", err.Error()))
@@ -102,12 +223,12 @@ func (c *Client) call(ctx context.Context, method string, params any, out any, p
 	return err
 }
 
-func (c *Client) do(ctx context.Context, method string, params any, out any, pollTimeout time.Duration) error {
+func (c *Client) do(ctx context.Context, pool *httpPool, method string, params any, out any, pollTimeout time.Duration) error {
 	body, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("telegram %s: encode request: %w", method, err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, pollTimeout+requestSlack)
+	ctx, cancel := context.WithTimeout(ctx, pollTimeout+c.timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/bot"+c.token+"/"+method, bytes.NewReader(body))
@@ -117,15 +238,15 @@ func (c *Client) do(ctx context.Context, method string, params any, out any, pol
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := pool.Do(req)
 	if err != nil {
-		return c.transportError(method, err)
+		return c.failed(pool, method, err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return c.transportError(method, err)
+		return c.failed(pool, method, err)
 	}
 
 	var ar apiResponse
@@ -157,6 +278,15 @@ func (c *Client) do(ctx context.Context, method string, params any, out any, pol
 		}
 	}
 	return nil
+}
+
+// failed drops the pool's idle connections (they may have died together with
+// this one) unless the caller cancelled, and returns the redacted error.
+func (c *Client) failed(pool *httpPool, method string, err error) error {
+	if !errors.Is(err, context.Canceled) {
+		pool.dropIdle()
+	}
+	return c.transportError(method, err)
 }
 
 // transportError strips the *url.Error wrapper (whose message embeds the request

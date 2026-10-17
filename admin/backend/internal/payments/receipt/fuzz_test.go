@@ -21,6 +21,7 @@ func FuzzParse(f *testing.F) {
 	qr.QRPayload = "QR18149336524"
 	f.Add(good)
 	f.Add(receipttest.BuildEdited(s, edited))
+	f.Add(receipttest.BuildSpliced(s, edited))
 	f.Add(receipttest.Build(qr))
 	f.Add(good[:len(good)/2])
 	f.Add([]byte("%PDF-1.7\n1 0 obj <</Type /Catalog /Pages 2 0 R>> endobj 2 0 obj <</Type /Pages /Kids [2 0 R 3 0 R]>> endobj 3 0 obj <</Type /Page /Contents 4 0 R /Parent 2 0 R>> endobj 4 0 obj <</Length 12>> stream\nBT (x) Tj ET\nendstream endobj trailer <</Root 1 0 R>> %%EOF"))

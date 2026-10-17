@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,6 +65,14 @@ type ConfigSource interface {
 	Config(ctx context.Context) (botapi.Config, error)
 }
 
+// Config refresh bounds: one fetch may take configFetchTimeout, and after a
+// failure the cache waits configRetryAfter before asking again, so an
+// unreachable API costs one bounded call per reply at most.
+const (
+	configFetchTimeout = 5 * time.Second
+	configRetryAfter   = 15 * time.Second
+)
+
 // ConfigCache keeps the internal API configuration (support contacts, Mini
 // App URLs) for a while so replies do not need an extra call each time. When
 // a refresh fails, the last known value is used.
@@ -71,10 +80,12 @@ type ConfigCache struct {
 	src ConfigSource
 	ttl time.Duration
 	log *slog.Logger
+	now func() time.Time
 
 	mu      sync.Mutex
 	value   botapi.Config
 	fetched time.Time
+	failed  time.Time
 	ok      bool
 }
 
@@ -83,25 +94,48 @@ func NewConfigCache(src ConfigSource, ttl time.Duration, log *slog.Logger) *Conf
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &ConfigCache{src: src, ttl: ttl, log: log}
+	return &ConfigCache{src: src, ttl: ttl, log: log, now: time.Now}
 }
 
 // Get returns the configuration and whether any value is known.
 func (c *ConfigCache) Get(ctx context.Context) (botapi.Config, bool) {
 	c.mu.Lock()
-	fresh := c.ok && time.Since(c.fetched) < c.ttl
+	now := c.now()
+	fresh := c.ok && now.Sub(c.fetched) < c.ttl
+	waiting := !c.failed.IsZero() && now.Sub(c.failed) < configRetryAfter
 	value, ok := c.value, c.ok
 	c.mu.Unlock()
-	if fresh {
-		return value, true
+	if fresh || waiting {
+		return value, ok
 	}
-	cfg, err := c.src.Config(ctx)
+	fctx, cancel := context.WithTimeout(ctx, configFetchTimeout)
+	cfg, err := c.src.Config(fctx)
+	cancel()
 	if err != nil {
 		c.log.Warn("load bot config failed", slog.String("err", err.Error()))
+		if ctx.Err() == nil { // a handler that ran out of time says nothing about the API
+			c.mu.Lock()
+			c.failed = c.now()
+			c.mu.Unlock()
+		}
 		return value, ok
 	}
 	c.mu.Lock()
-	c.value, c.fetched, c.ok = cfg, time.Now(), true
+	c.value, c.fetched, c.ok, c.failed = cfg, c.now(), true, time.Time{}
 	c.mu.Unlock()
 	return cfg, true
+}
+
+// coordsRe matches a label that is only a coordinate pair ("48.83010, 58.15100").
+var coordsRe = regexp.MustCompile(`^[-+]?\d{1,3}(\.\d+)?\s*[,;]\s*[-+]?\d{1,3}(\.\d+)?$`)
+
+// PlaceLabel is the address to show for a stop: the address itself, or
+// fallback (e.g. "Картадағы нүкте") when it is empty or just coordinates.
+// Raw coordinates are never shown to users.
+func PlaceLabel(address, fallback string) string {
+	a := strings.TrimSpace(address)
+	if a == "" || coordsRe.MatchString(a) {
+		return fallback
+	}
+	return a
 }

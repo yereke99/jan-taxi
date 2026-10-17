@@ -166,8 +166,8 @@ function onDisputeSent(o: Order): void {
       </section>
 
       <section v-if="cancel" class="detail-card detail-text">
-        <p v-if="cancel.reasonKey">{{ t(cancel.reasonKey) }}</p>
-        <p v-else-if="cancel.byKey">{{ t(cancel.byKey) }}</p>
+        <p v-if="cancel.byKey">{{ t(cancel.byKey) }}</p>
+        <p v-if="cancel.reasonKey" :class="{ 'is-secondary': cancel.byKey }">{{ t(cancel.reasonKey) }}</p>
         <p v-if="cancel.text" class="is-secondary">{{ t('order.reason_text', { reason: cancel.text }) }}</p>
       </section>
 

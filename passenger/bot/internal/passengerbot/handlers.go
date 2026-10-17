@@ -80,7 +80,8 @@ func (b *Bot) orders(ctx context.Context, s *session) error {
 	for _, o := range items {
 		lines = append(lines, s.t("order_line", o.Number,
 			runtime.Esc(s.t("status_"+o.Status)), runtime.Esc(runtime.FormatMoney(o.Fare)),
-			runtime.Esc(o.PickupAddress), runtime.Esc(o.DestinationAddress)))
+			runtime.Esc(runtime.PlaceLabel(o.PickupAddress, s.t("map_point"))),
+			runtime.Esc(runtime.PlaceLabel(o.DestinationAddress, s.t("map_point")))))
 		row = append(row, runtime.WebAppButton(s.t("btn_order", o.Number), b.miniAppURL(ctx, "order_"+o.ID)))
 		if len(row) == 3 {
 			rows, row = append(rows, row), nil
@@ -160,19 +161,12 @@ func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) error {
 		_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
 		return b.blocked(ctx, s)
 	}
+	defer b.menus.Ensure(ctx, s.chatID)
 	if _, err := b.api.SetLanguage(ctx, q.From.ID, lang); err != nil {
 		_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: s.t("error")})
 		return fmt.Errorf("set language: %w", err)
 	}
 	s.lang = lang
 	_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: s.t("language_set")})
-	if url := b.miniAppURL(ctx, ""); runtime.IsHTTPS(url) {
-		chat := s.chatID
-		if err := b.tg.SetChatMenuButton(ctx, &chat, telegram.MenuButtonWebApp{
-			Text: s.t("menu_button"), WebApp: telegram.WebAppInfo{URL: url},
-		}); err != nil {
-			b.log.Warn("set chat menu button failed", "err", err.Error())
-		}
-	}
 	return b.send(ctx, s, s.t("language_set"), b.keyboard(lang))
 }

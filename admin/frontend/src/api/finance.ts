@@ -1,5 +1,5 @@
-// Top-ups (Kaspi manual verification, §6.1), ledger, adjustments and
-// wallet reconciliation.
+// Top-ups (Kaspi verification and PDF receipts, §6.1), ledger, adjustments
+// and wallet reconciliation.
 
 import { api } from '../services/api'
 import type { TopUpStatus } from '../utils/status'
@@ -26,6 +26,8 @@ export interface AdminTopUp {
   provider_transaction_id: string | null
   paid_at: string | null
   confirmed_by: AdminRef | null
+  /** Credited by the system from a Kaspi PDF receipt that passed every check. */
+  confirmed_automatically: boolean
   confirmed_at: string | null
   rejected_by: AdminRef | null
   rejected_at: string | null
@@ -56,13 +58,17 @@ export interface PaymentTransaction {
   currency: string
   paid_at: string | null
   payer_info: string | null
-  source: 'manual_admin' | 'webhook'
+  source: PaymentSource
   recorded_by: AdminRef | null
   created_at: string
 }
 
+export type PaymentSource = 'manual_admin' | 'webhook' | 'receipt_auto'
+
+export type DuplicateWarningKind = 'same_driver_payment_reference' | 'provider_transaction_recorded' | 'receipt_serial_used'
+
 export interface DuplicateWarning {
-  kind: string
+  kind: DuplicateWarningKind | (string & {})
   topup_id: string | null
   reference: string | null
   status: string | null
@@ -71,11 +77,58 @@ export interface DuplicateWarning {
   provider_transaction_id: string | null
 }
 
+export type ReceiptDecision = 'auto_confirmed' | 'manual_review'
+
+/** A parsed Kaspi PDF receipt (payments.AdminReceiptView). */
+export interface AdminReceipt {
+  id: string
+  provider: string
+  file_id: string
+  /** /api/v1/admin/files/{file_id}: the PDF exactly as uploaded. */
+  file_url: string
+  file_sha256: string
+  /** «№ чека», e.g. QR18149336524 — unique across all top-ups. */
+  receipt_serial: string | null
+  qr_payload_hash: string | null
+  amount: number | null
+  paid_at: string | null
+  recipient_name: string | null
+  recipient_bin: string | null
+  /** Payer as printed, masked by the API («Е*** Б.»). */
+  payer_masked: string | null
+  payment_method: string | null
+  producer: string | null
+  parse_status: 'parsed' | 'partial' | 'unreadable' | (string & {})
+  flags: string[]
+  decision: ReceiptDecision | (string & {})
+  reasons: string[]
+  created_at: string
+}
+
+/** Confirmation form values taken from the latest parsed receipt. */
+export interface ConfirmPrefill {
+  verified_amount: number | null
+  provider_transaction_id: string | null
+  paid_at: string | null
+  payer_info: string | null
+}
+
 export interface AdminTopUpDetail extends AdminTopUp {
   events: TopUpEvent[]
   payment_transaction: PaymentTransaction | null
   duplicate_warnings: DuplicateWarning[]
+  /** Latest parsed PDF receipt (null without one, or when only an image was sent). */
+  receipt: AdminReceipt | null
+  /** Every PDF receipt attached to the top-up, newest first. */
+  receipts: AdminReceipt[]
+  confirm_prefill: ConfirmPrefill | null
 }
+
+/** Receipt flags that never block automatic crediting (receipt.infoFlags). */
+export const INFO_RECEIPT_FLAGS: readonly string[] = ['qr_not_found', 'bin_missing', 'status_kazakh']
+
+/** top_up_requests.reject_reason of a top-up whose receipt was used before. */
+export const REJECT_DUPLICATE_RECEIPT = 'duplicate_receipt'
 
 export interface TopUpConfirmBody {
   verified_amount: number

@@ -22,8 +22,9 @@ function catalogue(locale: Locale): Map<string, string> {
   return new Map(leaves(i18n.global.getLocaleMessage(locale)))
 }
 
+/** Distinct placeholder names (plural forms "a | b" repeat them). */
 function placeholders(text: string): string[] {
-  return [...text.matchAll(/\{\s*([A-Za-z0-9_]+)\s*\}/g)].map((m) => m[1]!).sort()
+  return [...new Set([...text.matchAll(/\{\s*([A-Za-z0-9_]+)\s*\}/g)].map((m) => m[1]!))].sort()
 }
 
 // Raw sources of the app (Vite glob import), without message files and tests.

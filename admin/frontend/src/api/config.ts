@@ -14,14 +14,16 @@ export interface City {
   default_zoom: number
   timezone: string
   is_active: boolean
-  dispatch_radius_m: number
-  require_driver_location: boolean
-  driver_location_max_age_s: number
+  /** Legacy per-city dispatch columns: no longer read (dispatch.* settings, ARCHITECTURE §7). */
+  dispatch_radius_m?: number
+  require_driver_location?: boolean
+  driver_location_max_age_s?: number
   search_timeout_s: number
   created_at: string
   updated_at: string
 }
 
+/** City fields an admin edits; dispatch is configured globally in the settings. */
 export interface CityInput {
   code?: string
   name: LocalizedText
@@ -29,9 +31,6 @@ export interface CityInput {
   default_zoom: number
   timezone: string
   is_active: boolean
-  dispatch_radius_m: number
-  require_driver_location: boolean
-  driver_location_max_age_s: number
   search_timeout_s: number
 }
 

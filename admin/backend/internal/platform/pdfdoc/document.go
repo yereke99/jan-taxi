@@ -79,6 +79,11 @@ type Doc struct {
 	TrailingBytes int
 	// Encrypted is set when a trailer has /Encrypt.
 	Encrypted bool
+
+	// startXRef is the offset after the last "startxref" (-1 when absent);
+	// xrefTables are the positions of the classic "xref" keywords.
+	startXRef  int64
+	xrefTables []int
 }
 
 // Open parses data. It fails with ErrNotPDF when the header is missing and
@@ -94,7 +99,7 @@ func Open(data []byte, lim Limits) (doc *Doc, err error) {
 		return nil, ErrNotPDF
 	}
 	lim = lim.withDefaults()
-	d := &Doc{data: data, lim: lim, objects: map[int]entry{}, budget: lim.MaxTotalBytes}
+	d := &Doc{data: data, lim: lim, objects: map[int]entry{}, budget: lim.MaxTotalBytes, startXRef: -1}
 	d.Version = headerVersion(data)
 	d.EOFMarkers = bytes.Count(data, []byte("%%EOF"))
 	if i := bytes.LastIndex(data, []byte("%%EOF")); i >= 0 {
@@ -164,6 +169,9 @@ func (d *Doc) scan() error {
 			switch kw {
 			case "xref":
 				d.XRefTables++
+				if len(d.xrefTables) < maxXRefSections {
+					d.xrefTables = append(d.xrefTables, start)
+				}
 				l.skipXRefTable()
 			case "trailer":
 				if t, _ := l.next(0, true); t != nil {
@@ -173,6 +181,15 @@ func (d *Doc) scan() error {
 				}
 			case "startxref":
 				d.StartXRefs++
+				save := l.pos
+				d.startXRef = -1
+				if n, err := l.next(0, false); err == nil {
+					if v, ok := n.(int64); ok && v >= 0 {
+						d.startXRef = v
+					} else {
+						l.pos = save
+					}
+				}
 			}
 		}
 		if l.pos <= start {

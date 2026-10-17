@@ -193,5 +193,44 @@ func FuzzOpen(f *testing.F) {
 			_, _ = d.PageImages(p, 4)
 			_ = d.Annotations(p)
 		}
+		_ = d.XRefMismatches()
 	})
+}
+
+func TestXRefMismatches(t *testing.T) {
+	pdf := classicPDF("BT /F1 12 Tf (one) Tj ET")
+	open := func(data []byte) *Doc {
+		t.Helper()
+		d, err := Open(data, Limits{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if n := open(pdf).XRefMismatches(); n != 0 {
+		t.Fatalf("written once: %d mismatches", n)
+	}
+	// A longer content stream spliced in without fixing the offsets.
+	i := bytes.Index(pdf, []byte("4 0 obj"))
+	spliced := append(append(append([]byte{}, pdf[:i]...), []byte("% edited\n")...), pdf[i:]...)
+	if n := open(spliced).XRefMismatches(); n == 0 {
+		t.Fatal("stale offsets not detected")
+	}
+	// startxref pointing elsewhere.
+	j := bytes.LastIndex(pdf, []byte("startxref\n")) + len("startxref\n")
+	moved := append(append(append([]byte{}, pdf[:j]...), '1'), pdf[j:]...)
+	if n := open(moved).XRefMismatches(); n == 0 {
+		t.Fatal("stale startxref not detected")
+	}
+	// An object the cross-reference table does not list.
+	k := bytes.Index(pdf, []byte("xref\n"))
+	extra := append(append(append([]byte{}, pdf[:k]...), []byte("9 0 obj (x) endobj\n")...), pdf[k:]...)
+	if n := open(extra).XRefMismatches(); n == 0 {
+		t.Fatal("unlisted object not detected")
+	}
+	// No cross-reference data at all.
+	bare := []byte("%PDF-1.7\n1 0 obj <</Type /Catalog>> endobj\ntrailer <</Root 1 0 R>>\n%%EOF")
+	if n := open(bare).XRefMismatches(); n == 0 {
+		t.Fatal("missing cross-reference not detected")
+	}
 }

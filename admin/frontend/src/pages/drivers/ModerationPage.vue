@@ -32,6 +32,14 @@ watch(selectedId, (id) => (id ? void detail.reload() : detail.set(null)), { imme
 
 const actions = ref<InstanceType<typeof DriverActions> | null>(null)
 
+/** What was asked in the previous round, so a resubmission can be checked against it. */
+const previousRound = computed(() => {
+  const d = detail.data.value
+  if (!d || d.status !== 'pending') return null
+  const prev = d.applications.find((a) => a.status === 'changes_requested' && a.round < (d.applications[0]?.round ?? 0))
+  return prev && (prev.corrections.length > 0 || prev.decision_comment) ? prev : null
+})
+
 function select(id: string): void {
   void router.replace({ query: { ...route.query, driver: id } })
 }
@@ -121,6 +129,15 @@ useResync(() => void queue.reload({ silent: true }))
           {{ t('drivers.round_n', { n: detail.data.value.applications.length }) }} ·
           {{ t('drivers.submitted_at', { time: fmt.dateTime(detail.data.value.submitted_at) }) }}
         </p>
+        <div v-if="previousRound" class="previous" role="note">
+          <strong>{{ t('drivers.previous_corrections', { n: previousRound.round }) }}</strong>
+          <ul>
+            <li v-for="c in previousRound.corrections" :key="c.field">
+              {{ t(`correction_field.${c.field}`) }} — {{ t(`correction_reason.${c.reason}`) }}<template v-if="c.comment">: {{ c.comment }}</template>
+            </li>
+          </ul>
+          <p v-if="previousRound.decision_comment">{{ previousRound.decision_comment }}</p>
+        </div>
         <DriverReview :driver="detail.data.value" />
         <div class="review-actions">
           <DriverActions ref="actions" :driver="detail.data.value" only="moderation" @updated="onUpdated" />
@@ -131,6 +148,23 @@ useResync(() => void queue.reload({ silent: true }))
 </template>
 
 <style scoped>
+.previous {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--jt-space-4);
+  padding: 10px 14px;
+  border-radius: var(--jt-radius-inner);
+  background: var(--jt-color-blue-tint);
+  color: var(--jt-color-blue-text);
+  font: var(--jt-font-small);
+}
+
+.previous ul {
+  padding-left: var(--jt-space-4);
+  list-style: disc;
+}
+
 .queue {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);

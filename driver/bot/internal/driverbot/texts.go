@@ -30,7 +30,7 @@ var texts = runtime.Catalog{
 
 		"description":       "Jan Taxi жүргізушілеріне арналған бот: тіркелу, жұмысқа шығу, тапсырыстар, сапарлар және баланс.",
 		"short_description": "Jan Taxi жүргізушілеріне арналған бот",
-		"menu_button":       "Қосымшаны ашу",
+		"map_point":         "Картадағы нүкте",
 
 		"welcome":          "<b>Jan Taxi-ге қош келдіңіз!</b>\nБұл бот жүргізушілерге арналған.",
 		"welcome_approved": "<b>Сәлеметсіз бе!</b> Сіздің кодыңыз: <b>%s</b>.\nТапсырыс алу үшін «🚗 Жұмысқа шығу» батырмасын басыңыз.",
@@ -208,7 +208,7 @@ var texts = runtime.Catalog{
 
 		"description":       "Бот для водителей Jan Taxi: регистрация, выход на линию, заказы, поездки и баланс.",
 		"short_description": "Бот для водителей Jan Taxi",
-		"menu_button":       "Открыть приложение",
+		"map_point":         "Точка на карте",
 
 		"welcome":          "<b>Добро пожаловать в Jan Taxi!</b>\nЭтот бот — для водителей.",
 		"welcome_approved": "<b>Здравствуйте!</b> Ваш код: <b>%s</b>.\nЧтобы получать заказы, нажмите «🚗 Выйти на линию».",
@@ -386,7 +386,7 @@ var texts = runtime.Catalog{
 
 		"description":       "The Jan Taxi driver bot: registration, going online, orders, trips and balance.",
 		"short_description": "Bot for Jan Taxi drivers",
-		"menu_button":       "Open the app",
+		"map_point":         "Point on the map",
 
 		"welcome":          "<b>Welcome to Jan Taxi!</b>\nThis bot is for drivers.",
 		"welcome_approved": "<b>Hello!</b> Your driver code: <b>%s</b>.\nTap “🚗 Go online” to start receiving orders.",

@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
 import { getProfile } from '../api/driver'
 import type { DriverProfile } from '../api/types'
+import { useSessionStore } from './session'
 
 export const useProfileStore = defineStore('profile', () => {
   const profile = shallowRef<DriverProfile | null>(null)
@@ -18,7 +19,7 @@ export const useProfileStore = defineStore('profile', () => {
         profile.value = await getProfile()
         error.value = null
       } catch (err) {
-        error.value = err
+        error.value = useSessionStore().handleAccessError(err) ? null : err
       } finally {
         loading.value = false
       }

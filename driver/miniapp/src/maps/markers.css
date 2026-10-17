@@ -30,11 +30,9 @@
   background: var(--jt-color-gray, #8e8e93);
 }
 
-/* Restrained pulse around the pickup while a driver is being searched for. */
-.jt-stop-marker.is-pulsing {
-  position: relative;
-}
-
+/* Restrained pulse around the pickup while a driver is being searched for.
+   The marker element stays absolutely positioned by MapLibre (never override
+   its position), which also anchors the ring. */
 .jt-stop-marker.is-pulsing::after {
   content: '';
   position: absolute;
@@ -78,8 +76,9 @@
   display: block;
 }
 
+/* No `position` here: MapLibre positions marker elements absolutely, which
+   also anchors the halo and the dot. */
 .jt-user-location {
-  position: relative;
   width: 22px;
   height: 22px;
   pointer-events: none;

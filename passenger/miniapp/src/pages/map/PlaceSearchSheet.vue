@@ -14,8 +14,9 @@ import { JSheet, JSkeleton, JSpinner, JTextField, toast } from '../../components
 import { createLatest } from '../../domain/latest'
 import type { PlaceValue } from '../../domain/route'
 import { useAddressText, useErrorText } from '../../i18n/core'
-import { ROUTE } from '../../router/names'
-import type { LatLon } from '../../utils/geo'
+import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
+import { formatDistance } from '../../utils/format'
+import { haversineMeters, type LatLon } from '../../utils/geo'
 import { useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
@@ -66,7 +67,13 @@ function searchNear(): LatLon {
 
 const runner = createLatest<string, GeoPlace[]>({
   delayMs: SEARCH_DEBOUNCE_MS,
-  run: (q, signal) => searchPlaces(q, { near: searchNear(), lang: session.language, signal }),
+  run: (q, signal) => {
+    const near = searchNear()
+    return searchPlaces(q, { near, lang: session.language, signal }).then((list) => {
+      resultsNear.value = near
+      return list
+    })
+  },
   onStart: () => {
     searching.value = true
   },
@@ -97,8 +104,16 @@ watch(trimmed, (q) => {
 
 const recent = computed(() => orders.places)
 
+/** Distance from where the search was made, so far-away matches are obvious. */
+const resultsNear = ref<LatLon | null>(null)
+function distanceText(p: GeoPlace): string {
+  const near = resultsNear.value
+  return near ? formatDistance(haversineMeters(near, p), session.language) : ''
+}
+
 function done(): void {
-  navigateBack(router)
+  if (route.query.from === BOOKING_FROM_HOME) void router.replace({ name: ROUTE.book, query: { category: booking.category } })
+  else navigateBack(router)
 }
 
 function choose(place: PlaceValue): void {
@@ -129,7 +144,7 @@ async function useMyLocation(): Promise<void> {
 }
 
 function chooseOnMap(): void {
-  void router.replace({ name: ROUTE.bookPick, params: { index: String(index.value) } })
+  void router.replace({ name: ROUTE.bookPick, params: { index: String(index.value) }, query: route.query })
 }
 
 onMounted(() => {
@@ -205,6 +220,7 @@ onBeforeUnmount(() => runner.cancel())
             <span class="search-row__title">{{ p.title }}</span>
             <span v-if="p.subtitle" class="search-row__subtitle">{{ p.subtitle }}</span>
           </span>
+          <span v-if="resultsNear" class="search-row__meta jt-tabular">{{ distanceText(p) }}</span>
         </button>
       </template>
     </section>
@@ -290,6 +306,14 @@ onBeforeUnmount(() => runner.cancel())
   font: var(--jt-font-footnote);
   color: var(--jt-color-label-secondary);
   overflow-wrap: anywhere;
+}
+
+.search-row__meta {
+  flex: none;
+  max-width: 30%;
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+  white-space: nowrap;
 }
 
 .search-note {

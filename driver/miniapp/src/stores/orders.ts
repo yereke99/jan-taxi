@@ -6,6 +6,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import { listAvailable } from '../api/orders'
 import type { DriverOrderCard, Eligibility } from '../api/types'
+import { useSessionStore } from './session'
 
 export const useOrdersStore = defineStore('orders', () => {
   const items = ref<DriverOrderCard[]>([])
@@ -31,7 +32,15 @@ export const useOrdersStore = defineStore('orders', () => {
       error.value = null
       loaded.value = true
     } catch (err) {
-      error.value = err
+      // A stale status (profile no longer approved) re-routes instead of failing.
+      if (useSessionStore().handleAccessError(err)) {
+        items.value = []
+        eligibility.value = { eligible: false, reason: 'not_approved' }
+        error.value = null
+        loaded.value = true
+      } else {
+        error.value = err
+      }
     } finally {
       loading.value = false
     }

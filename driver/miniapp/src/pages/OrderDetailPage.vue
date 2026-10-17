@@ -29,7 +29,8 @@ import { useOrdersStore } from '../stores/orders'
 import { useSessionStore } from '../stores/session'
 import { useTripStore } from '../stores/trip'
 import { normalizeTwoGisBase, planNavigation } from '../features/navigation/twogis'
-import { canOpenLocationSettings, effectiveSafeInsets, haptics, navigateBack, openExternal, openLocationSettings, useTelegramFullscreen } from '../telegram'
+import { useEnsureLocation } from '../features/location/useEnsureLocation'
+import { effectiveSafeInsets, haptics, navigateBack, openExternal, useTelegramFullscreen } from '../telegram'
 import { orderStatusTone } from '../utils/status'
 
 const { t } = useI18n()
@@ -43,6 +44,7 @@ const duty = useDutyStore()
 const session = useSessionStore()
 const location = useLocationStore()
 const realtime = useRealtime()
+const gps = useEnsureLocation()
 
 const order = shallowRef<DriverOrderDetail | null>(null)
 const loading = ref(true)
@@ -114,17 +116,34 @@ function markGone(): void {
   }
 }
 
-/** Opens the location settings, or reads and sends a fresh fix where possible. */
+/** Opens the location settings after a denial, or reads and sends a fresh fix. */
 async function enableLocation(): Promise<void> {
-  if (canOpenLocationSettings() && location.issue === 'denied') {
-    void openLocationSettings()
-    return
-  }
+  if (await gps.fix()) toast.show(t('order.location_ready'))
+}
+
+/**
+ * Accepts the order. Without a recent location the API answers
+ * location_required: a fresh fix is sent and the acceptance tried once more.
+ */
+async function acceptWithLocation(orderId: string): Promise<DriverOrderDetail> {
   try {
-    await location.sendNow(await location.locateOnce())
-    toast.show(t('order.location_ready'))
-  } catch {
-    if (canOpenLocationSettings()) void openLocationSettings()
+    return await trip.accept(orderId)
+  } catch (err) {
+    if (classifyAcceptError(err).kind !== 'location_required' || !(await gps.ensure())) throw err
+    return trip.accept(orderId)
+  }
+}
+
+function locationProblemText(): string {
+  switch (gps.state.value) {
+    case 'denied':
+      return t('orders.location_denied')
+    case 'failed':
+      return t('orders.location_failed')
+    case 'outside':
+      return t('duty.outside_text')
+    default:
+      return t('order.location_toast')
   }
 }
 
@@ -133,7 +152,7 @@ async function accept(): Promise<void> {
   if (!o || accepting.value) return
   accepting.value = true
   try {
-    await trip.accept(o.id)
+    await acceptWithLocation(o.id)
     haptics.notification('success')
     orders.remove(o.id)
     toast.success(t('order.accepted_toast'))
@@ -143,7 +162,8 @@ async function accept(): Promise<void> {
     haptics.notification('error')
     switch (f.kind) {
       case 'taken':
-        toast.error(t('order.taken'))
+        // Another driver was faster: normal in dispatch, not an error.
+        toast.show(t('order.taken'))
         markGone()
         gone.value = true
         break
@@ -164,14 +184,20 @@ async function accept(): Promise<void> {
         break
       case 'location_required':
         toast.show({
-          message: t('order.location_toast'),
-          action: { label: t('orders.enable_location'), run: () => void enableLocation() },
-          duration: 6000,
+          message: locationProblemText(),
+          action:
+            gps.state.value === 'outside'
+              ? undefined
+              : { label: gps.state.value === 'denied' ? t('common.open_settings') : t('orders.enable_location'), run: () => void enableLocation() },
+          duration: 8000,
         })
         break
       case 'not_approved':
-        toast.error(errorText(err))
-        void session.refreshMe()
+        // The status changed (suspended, profile missing): re-reading /me re-routes the driver.
+        if (!session.handleAccessError(err)) {
+          toast.show(errorText(err))
+          void session.refreshMe()
+        }
         break
       default:
         toast.error(errorText(f.error))

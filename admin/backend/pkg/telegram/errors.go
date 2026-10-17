@@ -64,6 +64,18 @@ func IsRetryable(err error) bool {
 	return errors.As(err, &re)
 }
 
+// IsNetworkError reports a transport-level failure (DNS, TCP, TLS, timeout,
+// a connection dropped mid-response, a malformed response) as opposed to an
+// answer of the Bot API.
+// Cancellation by the caller is not a network error.
+func IsNetworkError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var re *requestError
+	return errors.As(err, &re)
+}
+
 // RetryAfter returns the server-requested delay of a 429 response.
 func RetryAfter(err error) (time.Duration, bool) {
 	var ae *APIError

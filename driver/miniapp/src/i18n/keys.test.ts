@@ -7,6 +7,7 @@ import { CORRECTION_REASONS, REGISTRATION_FIELDS } from '../api/types'
 import { CANCEL_REASONS } from '../features/trip/labels'
 import { CONSENT_SECTIONS } from '../features/registration/consent'
 import { STEP_IDS } from '../features/registration/form'
+import { RECEIPT_REASONS } from '../features/topup/receipt'
 import { CATEGORIES, MODERATION_STATUSES, ORDER_STATUSES, PAYMENT_METHODS, TOPUP_STATUSES } from '../utils/status'
 import { i18n } from './index'
 import { LOCALES } from './core'
@@ -70,13 +71,15 @@ describe('i18n keys', () => {
         'adjustment_debit',
       ].map((e) => `wallet.entry.${e}`),
       ...LOCALES.map((l) => `languages.${l}`),
+      ...RECEIPT_REASONS.map((r) => `topup.reasons.${r}`),
+      ...['duplicate', 'not_pdf', 'too_large', 'unreadable', 'not_allowed', 'closed', 'rate_limited', 'network', 'other'].map((e) => `topup.upload_errors.${e}`),
     ]
     expect(missing(keys)).toEqual([])
   })
 
   it('Kazakh texts are not left in Russian or English', () => {
     const kk = (key: string) => i18n.global.t(key, {}, { locale: 'kk' })
-    for (const key of ['trip.open_2gis', 'trip.next_only', 'order.accept', 'order.taken', 'trip.arrive', 'topup.pay_kaspi', 'topup.paid', 'topup.pending_title']) {
+    for (const key of ['trip.open_2gis', 'trip.next_only', 'order.accept', 'order.taken', 'trip.arrive', 'topup.open_kaspi', 'topup.upload_pdf', 'topup.review_title']) {
       expect(kk(key)).toMatch(/[әғқңөұүһі]|[А-Яа-я]/)
     }
     expect(kk('trip.open_2gis')).toBe('2GIS арқылы ашу')

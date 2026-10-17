@@ -3,7 +3,11 @@
 // Mini App authentication (ARCHITECTURE §4.1): the raw, signed initData goes
 // to POST /auth/telegram/{passenger|driver}; the API answers with a short-lived
 // app token. The token lives in memory and in sessionStorage (survives a
-// WebView reload, not a new launch). initDataUnsafe is never sent or trusted.
+// WebView reload, not a new launch). The stored token is bound to the launch
+// (the initData `hash`): where the storage outlives a launch (Telegram Web
+// keeps the iframe origin's sessionStorage in the browser tab, e.g. after an
+// account switch) another launch never reuses it. initDataUnsafe is never
+// sent or trusted.
 
 import { getRawInitData } from '../telegram'
 import { ApiError, bindAuth, createHttpClient } from './http'
@@ -14,6 +18,11 @@ export interface AuthSession {
   token: string
   /** RFC 3339 expiry from the API. */
   expires_at: string
+}
+
+interface StoredSession extends AuthSession {
+  /** initData `hash` of the launch that obtained the token. */
+  launch: string
 }
 
 /** Refresh slightly early so a request never leaves with an expiring token. */
@@ -45,11 +54,26 @@ function isSession(v: unknown): v is AuthSession {
   return typeof o.token === 'string' && o.token.length > 0 && typeof o.expires_at === 'string'
 }
 
+/** Identifies the current launch: the `hash` field of the signed initData. */
+function launchKey(): string | null {
+  const raw = getRawInitData()
+  if (!raw) return null
+  try {
+    return new URLSearchParams(raw).get('hash') || null
+  } catch {
+    return null
+  }
+}
+
 function readStored(app: AppKind): AuthSession | null {
   try {
     const raw = sessionStorage.getItem(storageKey(app))
     const parsed: unknown = raw ? JSON.parse(raw) : null
-    return isSession(parsed) ? { token: parsed.token, expires_at: parsed.expires_at } : null
+    if (!isSession(parsed)) return null
+    const launch = (parsed as Partial<StoredSession>).launch
+    const current = launchKey()
+    if (!current || launch !== current) return null
+    return { token: parsed.token, expires_at: parsed.expires_at }
   } catch {
     return null
   }
@@ -57,7 +81,8 @@ function readStored(app: AppKind): AuthSession | null {
 
 function writeStored(app: AppKind, s: AuthSession | null): void {
   try {
-    if (s) sessionStorage.setItem(storageKey(app), JSON.stringify(s))
+    const launch = launchKey()
+    if (s && launch) sessionStorage.setItem(storageKey(app), JSON.stringify({ ...s, launch } satisfies StoredSession))
     else sessionStorage.removeItem(storageKey(app))
   } catch {
     // Storage can be disabled in some WebViews; the in-memory token still works.

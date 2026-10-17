@@ -1,6 +1,7 @@
 // Driver registration, profile, availability and location endpoints.
 
-import { http, type RequestOptions } from '../services/http'
+import { http, isApiError, type RequestOptions } from '../services/http'
+import { REGISTRATION_FIELDS } from './types'
 import type {
   Availability,
   DriverProfile,
@@ -14,8 +15,23 @@ import type {
 import { normalizeRegistration } from './normalize'
 import { uploadWithProgress, type UploadProgress } from './upload'
 
+/** A new application: nothing saved yet, everything editable and missing. */
+export function emptyRegistration(): DriverRegistration {
+  return normalizeRegistration({ status: 'draft', editable: true, missing_fields: [...REGISTRATION_FIELDS] })
+}
+
+/**
+ * The application as saved on the server. Before the first save the API
+ * returns an empty draft; a 404 or 403 driver_not_registered from an API
+ * that has no profile yet means the same and is not an error.
+ */
 export async function getRegistration(opts?: RequestOptions): Promise<DriverRegistration> {
-  return normalizeRegistration(await http.get<unknown>('/driver/registration', opts))
+  try {
+    return normalizeRegistration(await http.get<unknown>('/driver/registration', opts))
+  } catch (err) {
+    if (isApiError(err) && (err.status === 404 || err.code === 'driver_not_registered')) return emptyRegistration()
+    throw err
+  }
 }
 
 export async function saveRegistration(body: DriverRegistrationUpdate): Promise<DriverRegistration> {

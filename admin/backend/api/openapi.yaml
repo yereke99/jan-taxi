@@ -7155,6 +7155,7 @@ components:
           properties:
             payment_url: {type: string, description: Empty when not configured.}
             recipient_name: {type: string, example: ЖШС «Jan Taxi»}
+            recipient_bin: {type: string, example: '000809500289', description: 'Payee BIN (`company.bin`); omitted when not set.'}
             instructions: {$ref: '#/components/schemas/LocalizedText'}
         topup:
           type: object
@@ -7333,11 +7334,14 @@ components:
         flags:
           type: array
           description: |
-            Parser findings, e.g. `incremental_update`, `object_redefined`, `trailing_data`,
-            `producer_unexpected`, `creator_present`, `moddate_present`, `xmp_metadata_present`,
-            `font_unexpected`, `annotations_present`, `qr_mismatch`, `serial_ambiguous`,
-            `amount_fractional`, `status_missing`, `filename_serial_mismatch` (block automatic
-            crediting) and the informational `qr_not_found`, `bin_missing`, `status_kazakh`.
+            Parser findings. Blocking (no automatic crediting): `pdf_unreadable`, `incremental_update`,
+            `object_redefined`, `trailing_data`, `structure_unexpected`, `xref_inconsistent`,
+            `header_unexpected`, `producer_unexpected`, `creator_present`, `moddate_present`,
+            `xmp_metadata_present`, `page_count_unexpected`, `font_unexpected`, `text_undecodable`,
+            `annotations_present`, `form_present`, `qr_mismatch`, `serial_ambiguous`,
+            `serial_label_missing`, `serial_format_unexpected`, `amount_ambiguous`, `amount_fractional`,
+            `status_missing`, `filename_serial_mismatch`. Informational: `qr_not_found`, `bin_missing`
+            (the receipt still goes to review as `receipt_incomplete`), `status_kazakh`.
           items: {type: string}
         decision: {type: string, enum: [auto_confirmed, manual_review]}
         reasons:

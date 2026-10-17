@@ -15,6 +15,7 @@ import { ROUTE } from '../../router/names'
 import { useDutyStore, type OnlineOutcome } from '../../stores/duty'
 import { useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
+import { useEnsureLocation } from '../../features/location/useEnsureLocation'
 import { canOpenLocationSettings, haptics, openLocationSettings } from '../../telegram'
 import { JButton, JSwitch, toast } from '../ui'
 
@@ -25,6 +26,7 @@ const router = useRouter()
 const duty = useDutyStore()
 const location = useLocationStore()
 const session = useSessionStore()
+const gps = useEnsureLocation()
 
 const problem = ref<Exclude<OnlineOutcome, { ok: true }> | null>(null)
 
@@ -71,10 +73,22 @@ function topUp(): void {
   void router.push({ name: ROUTE.topup, query: amount ? { amount: String(amount) } : {} })
 }
 
-function enableLocation(): void {
-  if (canOpenLocationSettings()) void openLocationSettings()
-  else void location.locateOnce().catch(() => undefined)
+/** Sends a fresh fix (or opens Telegram's location settings after a denial), then goes online. */
+async function enableLocation(): Promise<void> {
+  if (await gps.fix()) await toggle(true)
 }
+
+/** While online: the location settings after a denial, else one more fix. */
+function fixIssue(): void {
+  if (location.issue === 'denied' && canOpenLocationSettings()) void openLocationSettings()
+  else void gps.ensure()
+}
+
+const locationProblem = computed(() => {
+  if (gps.state.value === 'failed') return t('orders.location_failed')
+  if (gps.state.value === 'outside') return t('duty.outside_text')
+  return t('duty.location_text')
+})
 </script>
 
 <template>
@@ -97,8 +111,10 @@ function enableLocation(): void {
       </template>
       <template v-else-if="problem.reason === 'location_required'">
         <p class="online__problem-title">{{ t('duty.location_title') }}</p>
-        <p class="online__problem-text">{{ t('duty.location_text') }}</p>
-        <JButton size="medium" variant="secondary" block @click="enableLocation">{{ t('orders.enable_location') }}</JButton>
+        <p class="online__problem-text">{{ locationProblem }}</p>
+        <JButton size="medium" variant="secondary" block :loading="gps.state.value === 'locating'" @click="enableLocation">
+          {{ gps.state.value === 'denied' && canOpenLocationSettings() ? t('common.open_settings') : t('orders.enable_location') }}
+        </JButton>
       </template>
       <template v-else-if="problem.reason === 'outside_service_area'">
         <p class="online__problem-title">{{ t('duty.outside_title') }}</p>
@@ -109,8 +125,8 @@ function enableLocation(): void {
 
     <p v-else-if="locationIssue" class="online__issue" role="status">
       {{ locationIssue }}
-      <button v-if="location.issue === 'denied' && canOpenLocationSettings()" type="button" class="online__link" @click="enableLocation">
-        {{ t('common.open_settings') }}
+      <button type="button" class="online__link" @click="fixIssue">
+        {{ location.issue === 'denied' && canOpenLocationSettings() ? t('common.open_settings') : t('common.retry') }}
       </button>
     </p>
   </section>
@@ -168,7 +184,6 @@ function enableLocation(): void {
 
 .online__problem-title {
   font: var(--jt-font-headline);
-  color: var(--jt-color-red-text);
 }
 
 .online__problem-text {

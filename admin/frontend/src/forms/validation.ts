@@ -114,6 +114,15 @@ export function parseLocalDateTime(v: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
+/** RFC 3339 instant → datetime-local value (YYYY-MM-DDTHH:mm) in local time; '' when invalid. */
+export function toLocalDateTimeInput(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 /** Kaspi transaction/receipt numbers are compared without spaces and case. */
 export function normalizeTransactionId(s: string): string {
   return s.split(/\s+/).join('').toUpperCase()

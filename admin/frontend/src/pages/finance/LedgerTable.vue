@@ -29,6 +29,15 @@ const columns = computed<Column<AdminLedgerEntry>[]>(() => {
   )
   return cols
 })
+
+/** System descriptions arrive in English; known ones are shown in the operator's language. */
+function describe(text: string | null): string {
+  if (!text) return '—'
+  const cancelled = /^order cancelled by (passenger|driver|admin|system)$/.exec(text)
+  if (cancelled) return t('finance.desc_cancelled_by', { actor: t(`actor.${cancelled[1]}`) })
+  if (text === 'order re-assigned by operator') return t('finance.desc_reassigned')
+  return text
+}
 </script>
 
 <template>
@@ -60,7 +69,7 @@ const columns = computed<Column<AdminLedgerEntry>[]>(() => {
       <span v-else class="jt-muted">—</span>
     </template>
     <template #cell-description="{ row }">
-      <span class="desc" :title="row.description ?? ''">{{ row.description ?? '—' }}</span>
+      <span class="desc" :title="row.description ?? ''">{{ describe(row.description) }}</span>
     </template>
   </DataTable>
 </template>

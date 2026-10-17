@@ -13,7 +13,7 @@ export { useTelegramFullscreen, createTelegramFullscreen, sanitizeStartParam, ef
 export type { Insets, TelegramViewportState, TelegramFullscreen, FullscreenResult } from './useTelegramFullscreen'
 export { haptics } from './haptics'
 export type { ImpactStyle, NotificationType } from './haptics'
-export { openExternal, openTelegram, directLink } from './links'
+export { callPhone, openExternal, openTelegram, directLink } from './links'
 export { requestContact, requestWriteAccess } from './privacy'
 export type { ContactRequestResult, WriteAccessResult } from './privacy'
 export { canOpenLocationSettings, getLocation, openLocationSettings, LocationError, validateLocation, watchLocation } from './location'

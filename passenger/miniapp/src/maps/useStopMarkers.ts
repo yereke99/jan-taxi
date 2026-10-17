@@ -3,12 +3,14 @@
 // Lettered stop markers A–E (black circle, white letter). Optionally draggable;
 // a drag reports the new position so the caller can re-validate and re-quote.
 // Per-stop state: `done` greys a completed stop, `pulse` adds a restrained
-// pulse (pickup while searching for a driver).
+// pulse (pickup while searching for a driver). Markers that would cover each
+// other at the current zoom are fanned out side by side (declutter.ts).
 
-import { Marker } from 'maplibre-gl'
+import { Marker, type Map as MapLibreMap } from 'maplibre-gl'
 import { onScopeDispose, watch } from 'vue'
 import type { LatLon } from '../utils/geo'
 import { STOP_LETTERS } from './constants'
+import { declutterOffsets } from './declutter'
 import type { MapRef } from './context'
 import './markers.css'
 
@@ -50,14 +52,52 @@ function decorate(el: HTMLElement, letter: string, label: string, p: StopMarkerP
   el.setAttribute('aria-label', label)
 }
 
+/** Marker diameter (28px) plus a small gap: closer markers are fanned out. */
+const MARKER_MIN_DISTANCE_PX = 31
+
 export function useStopMarkers(map: MapRef, options: StopMarkersOptions = {}): StopMarkers {
   const markers: Marker[] = []
   let stops: StopMarkerPoint[] = []
   let draggable = options.draggable ?? false
+  let dragging = false
+  let frame = 0
+
+  /** Fans out markers that would cover each other at the current camera. */
+  function layout(): void {
+    const m = map.value
+    if (!m || markers.length === 0 || dragging) return
+    const c = m.getContainer()
+    const pts = markers.map((mk) => m.project(mk.getLngLat()))
+    const offsets = declutterOffsets(pts, { minDistance: MARKER_MIN_DISTANCE_PX, width: c.clientWidth, height: c.clientHeight })
+    markers.forEach((mk, i) => {
+      const [dx, dy] = offsets[i]!
+      const cur = mk.getOffset()
+      if (Math.abs(cur.x - dx) > 0.5 || Math.abs(cur.y - dy) > 0.5) mk.setOffset([dx, dy])
+    })
+  }
+
+  function scheduleLayout(): void {
+    if (frame) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      layout()
+    })
+  }
+
+  let boundTo: MapLibreMap | null = null
+  function bind(m: MapLibreMap | null): void {
+    if (boundTo === m) return
+    boundTo?.off('move', scheduleLayout)
+    boundTo?.off('resize', scheduleLayout)
+    boundTo = m
+    m?.on('move', scheduleLayout)
+    m?.on('resize', scheduleLayout)
+  }
 
   function render(): void {
     const m = map.value
     if (!m) return
+    bind(m)
     const wanted = stops.slice(0, STOP_LETTERS.length)
     while (markers.length > wanted.length) markers.pop()?.remove()
     wanted.forEach((p, i) => {
@@ -76,17 +116,24 @@ export function useStopMarkers(map: MapRef, options: StopMarkersOptions = {}): S
       const marker = new Marker({ element: el, anchor: 'center', draggable: canDrag })
         .setLngLat([p.lon, p.lat])
         .addTo(m)
+      marker.on('dragstart', () => {
+        dragging = true
+      })
       marker.on('dragend', () => {
-        const ll = marker.getLngLat()
+        dragging = false
+        // The point is where the marker was dropped, including a fan-out offset.
+        const ll = m.unproject(m.project(marker.getLngLat()).add(marker.getOffset()))
         const idx = markers.indexOf(marker)
         if (idx >= 0) options.onDragEnd?.(idx, { lat: ll.lat, lon: ll.lng })
       })
       markers.push(marker)
     })
+    layout()
   }
 
   function clear(): void {
     stops = []
+    dragging = false
     while (markers.length) markers.pop()?.remove()
   }
 
@@ -94,11 +141,15 @@ export function useStopMarkers(map: MapRef, options: StopMarkersOptions = {}): S
     // A new map instance invalidates markers attached to the old one.
     while (markers.length) markers.pop()?.remove()
     if (m) render()
+    else bind(null)
   })
 
   onScopeDispose(() => {
     stop()
     clear()
+    bind(null)
+    if (frame) cancelAnimationFrame(frame)
+    frame = 0
   })
 
   return {

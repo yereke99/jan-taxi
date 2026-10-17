@@ -448,7 +448,7 @@ func TestOrdersList(t *testing.T) {
 	}}
 	msgs := e.text(t, "📋 Тапсырыстар")
 	text := msgText(msgs[0])
-	for _, want := range []string{"<b>№1042</b> · Сәлемдеме · <b>1 500 ₸</b>", "Қайдан: Ембі &amp; вокзал", "Қайда: 48.83010, 58.15100",
+	for _, want := range []string{"<b>№1042</b> · Сәлемдеме · <b>1 500 ₸</b>", "Қайдан: Ембі &amp; вокзал", "Қайда: Картадағы нүкте",
 		"Аралық аялдамалар: 1", "Алу нүктесіне дейін: 650 м", "Маршрут: 1,8 км · Комиссия: 150 ₸", "Жүк: Құжаттар &lt;конверт&gt;"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("orders text %q lacks %q", text, want)
@@ -549,12 +549,13 @@ func TestLanguageChoice(t *testing.T) {
 	var menu bool
 	for _, c := range e.tg.Calls() {
 		if c.Method == "setChatMenuButton" {
+			// No per-chat button: the chat is switched back to the default one.
 			mb := c.Body["menu_button"].(map[string]any)
-			menu = c.Body["chat_id"] == float64(userID) && mb["text"] == "Open the app" && mb["web_app"].(map[string]any)["url"] == appURL
+			menu = c.Body["chat_id"] == float64(userID) && mb["type"] == "default" && mb["web_app"] == nil
 		}
 	}
 	if !menu {
-		t.Fatalf("per-chat menu button: %v", e.tg.Calls())
+		t.Fatalf("chat menu button: %v", e.tg.Calls())
 	}
 	if labels, _ := bottest.ReplyButtons(msgs[0]); labels[0] != "🚗 Go online" || msgText(msgs[0]) != "Language changed: English." {
 		t.Fatalf("keyboard in the new language: %v", msgs)
@@ -593,7 +594,7 @@ func TestIgnoresGroupsAndBots(t *testing.T) {
 
 func TestProfileMenu(t *testing.T) {
 	e := newEnv(t)
-	p := e.bot.Profile()
+	p := e.bot.Profile(context.Background())
 	if len(p.Commands) != 3 || len(p.Commands[""]) != len(menuCommands) || p.Commands[""][1].Command != "online" || p.Commands["ru"][1].Description != "Выйти на линию" {
 		t.Fatalf("commands: %v", p.Commands)
 	}
@@ -709,5 +710,63 @@ func TestReceiptDocuments(t *testing.T) {
 	e.driver["registered"], e.driver["status"] = false, nil
 	if msgs = e.message(t, telegram.Message{Document: doc}); !strings.Contains(msgText(msgs[0]), "Jan Taxi-де жүргізуші болу") || e.api.Count(route) != before {
 		t.Fatalf("unregistered: %v", msgs)
+	}
+}
+
+func TestProfileMenuButtonFallsBackToAPIConfig(t *testing.T) {
+	e := newEnv(t)
+	bot, err := New(Config{}, e.tg.Client(), e.api.Client(botapi.BotDriver), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := bot.Profile(context.Background()); p.MenuButton == nil || p.MenuButton.WebApp.URL != appURL {
+		t.Fatalf("menu button without DRIVER_MINIAPP_URL: %+v", p.MenuButton)
+	}
+}
+
+func TestChatMenuButtonIsResetOncePerChat(t *testing.T) {
+	e := newEnv(t)
+	e.approved(false)
+	count := func() (n int) {
+		for _, c := range e.tg.Calls() {
+			if c.Method == "setChatMenuButton" {
+				n++
+			}
+		}
+		return n
+	}
+	e.text(t, "/start")
+	if count() != 1 {
+		t.Fatalf("first update: %v", e.tg.Calls())
+	}
+	e.text(t, "/balance")
+	if count() != 0 {
+		t.Fatalf("second update: %v", e.tg.Calls())
+	}
+	// Live location edits arrive every few seconds and never trigger it.
+	e2 := newEnv(t)
+	e2.approved(true)
+	e2.api.Handle("POST "+tgPath+"/location", func(map[string]any, string) (int, any) { return 204, nil })
+	e2.update(t, telegram.Update{UpdateID: 9, EditedMessage: &telegram.Message{
+		MessageID: 3, From: &telegram.User{ID: userID}, Chat: telegram.Chat{ID: userID, Type: "private"},
+		Location: &telegram.Location{Latitude: 48.83, Longitude: 58.15, LivePeriod: 3600}, EditDate: 1,
+	}})
+	if len(e2.tg.Calls()) != 0 {
+		t.Fatalf("live location update: %v", e2.tg.Calls())
+	}
+}
+
+func TestTripWithoutAddressesShowsNoCoordinates(t *testing.T) {
+	e := newEnv(t)
+	e.approved(true)
+	e.api.Handle("GET "+tgPath+"/summary", func(map[string]any, string) (int, any) {
+		return 200, map[string]any{"registered": true, "status": "approved", "is_online": true, "phone_verified": true,
+			"active_order": map[string]any{"id": orderID, "number": 7, "status": "driver_arriving", "category": "taxi", "fare": 900,
+				"currency": "KZT", "pickup_address": "", "destination_address": "48.83010, 58.15100"}}
+	})
+	msgs := e.text(t, "/trip")
+	text := msgText(msgs[0])
+	if strings.Contains(text, "48.83") || !strings.Contains(text, "Қайдан: Картадағы нүкте") || !strings.Contains(text, "Қайда: Картадағы нүкте") {
+		t.Fatalf("trip: %s", text)
 	}
 }

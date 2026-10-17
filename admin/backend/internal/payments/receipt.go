@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -310,7 +311,7 @@ func (s *Service) attachPDF(ctx context.Context, d ReceiptDriver, id uuid.UUID, 
 			res.outcome, res.duplicate = OutcomeDuplicate, true
 			return s.rejectDuplicate(ctx, tx, t, f, parsed, conflict)
 		}
-		decision, reasons, err := evaluateReceipt(ctx, tx, t, parsed)
+		decision, reasons, err := evaluateReceipt(ctx, tx, t, parsed, s.kaspi.fallbackRecipient)
 		if err != nil {
 			return err
 		}
@@ -519,8 +520,9 @@ var duplicateReasonText = map[string]string{
 }
 
 // evaluateReceipt applies the automatic crediting conditions. An empty
-// reason list means the top-up may be credited now.
-func evaluateReceipt(ctx context.Context, tx pgx.Tx, t TopUp, r receipt.Receipt) (string, []string, error) {
+// reason list means the top-up may be credited now. fallbackSeller
+// (KASPI_PAY_RECIPIENT_NAME) names the seller when the settings do not.
+func evaluateReceipt(ctx context.Context, tx pgx.Tx, t TopUp, r receipt.Receipt, fallbackSeller string) (string, []string, error) {
 	var reasons []string
 	add := func(reason string) {
 		if !slices.Contains(reasons, reason) {
@@ -548,13 +550,20 @@ func evaluateReceipt(ctx context.Context, tx pgx.Tx, t TopUp, r receipt.Receipt)
 		}
 	}
 	company := settings.CompanyDetails(ctx, tx)
+	if strings.TrimSpace(company.Name) == "" {
+		company.Name = fallbackSeller
+	}
+	// The seller BIN identifies the payee; a receipt without one is never
+	// credited automatically (every calibrated receipt prints it), and a
+	// printed name must not contradict it.
 	switch {
 	case r.RecipientBIN != "":
 		if r.RecipientBIN != company.BIN {
 			add(ReasonRecipientMismatch)
 		}
-	case r.RecipientName != "":
-		if !receipt.SellerMatches(r.RecipientName, company.Name) {
+	case r.ParseStatus != receipt.StatusUnreadable:
+		add(ReasonReceiptIncomplete)
+		if r.RecipientName != "" && !receipt.SellerMatches(r.RecipientName, company.Name) {
 			add(ReasonRecipientMismatch)
 		}
 	}
@@ -661,10 +670,12 @@ func linkedReceipt(ctx context.Context, q db.Querier, t TopUp) (*linkedReceiptRo
 	return &r, nil
 }
 
-// AttachBotReceipt attaches a receipt sent to the driver bot to the
-// driver's most recent open top-up (created or pending_verification).
-// Without one it answers 409 receipt_already_used when this receipt was
-// already used, else 409 no_open_topup.
+// AttachBotReceipt attaches a receipt sent to the driver bot to one of the
+// driver's open top-ups (created or pending_verification): the one that
+// already holds this receipt (a re-send), else the most recent one whose
+// amount equals the receipt's, else the most recent one. Without an open
+// top-up it answers 409 receipt_already_used when the receipt was used
+// before, else 409 no_open_topup.
 func (s *Service) AttachBotReceipt(ctx context.Context, d ReceiptDriver, fileName string, data []byte) (BotReceiptResult, error) {
 	if int64(len(data)) > s.maxUpload {
 		return BotReceiptResult{}, storage.ErrFileTooLarge
@@ -673,19 +684,15 @@ func (s *Service) AttachBotReceipt(ctx context.Context, d ReceiptDriver, fileNam
 	if !up.isPDF() {
 		return BotReceiptResult{}, storage.ErrNotPDF
 	}
-	var id uuid.UUID
-	err := s.pool.QueryRow(ctx, `
-		SELECT id FROM top_up_requests
-		WHERE driver_id = $1 AND status IN ('created', 'pending_verification')
-		ORDER BY created_at DESC, number DESC LIMIT 1`, d.DriverID).Scan(&id)
-	if db.IsNoRows(err) {
-		parsed, err := s.checkAndParse(ctx, up)
-		if err != nil {
-			return BotReceiptResult{}, err
-		}
-		c, err := findReceiptConflict(ctx, s.pool, parsed)
-		if err != nil {
-			return BotReceiptResult{}, err
+	parsed, err := s.checkAndParse(ctx, up)
+	if err != nil {
+		return BotReceiptResult{}, err
+	}
+	id, err := botTopUpFor(ctx, s.pool, d.DriverID, parsed)
+	if errors.Is(err, errNoOpenTopUp) {
+		c, cerr := findReceiptConflict(ctx, s.pool, parsed)
+		if cerr != nil {
+			return BotReceiptResult{}, cerr
 		}
 		if c != nil {
 			return BotReceiptResult{}, errReceiptAlreadyUsed(nil, "")
@@ -693,9 +700,9 @@ func (s *Service) AttachBotReceipt(ctx context.Context, d ReceiptDriver, fileNam
 		return BotReceiptResult{}, errNoOpenTopUp
 	}
 	if err != nil {
-		return BotReceiptResult{}, fmt.Errorf("payments: find open top-up: %w", err)
+		return BotReceiptResult{}, err
 	}
-	res, err := s.attach(ctx, d, id, up)
+	res, err := s.attachPDF(ctx, d, id, up, parsed)
 	if err != nil {
 		return BotReceiptResult{}, err
 	}
@@ -711,6 +718,53 @@ func (s *Service) AttachBotReceipt(ctx context.Context, d ReceiptDriver, fileNam
 		return out, errReceiptAlreadyUsed(&id, StatusRejected)
 	}
 	return out, nil
+}
+
+// botTopUpFor picks the open top-up a receipt sent to the bot belongs to
+// (see AttachBotReceipt); errNoOpenTopUp when the driver has none.
+func botTopUpFor(ctx context.Context, q db.Querier, driverID uuid.UUID, parsed receipt.Receipt) (uuid.UUID, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, requested_amount FROM top_up_requests
+		WHERE driver_id = $1 AND status IN ('created', 'pending_verification')
+		ORDER BY created_at DESC, number DESC LIMIT $2`, driverID, 4*MaxOpenTopUps)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("payments: find open top-ups: %w", err)
+	}
+	type open struct {
+		id     uuid.UUID
+		amount int64
+	}
+	var list []open
+	for rows.Next() {
+		var o open
+		if err := rows.Scan(&o.id, &o.amount); err != nil {
+			rows.Close()
+			return uuid.Nil, fmt.Errorf("payments: scan open top-up: %w", err)
+		}
+		list = append(list, o)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return uuid.Nil, fmt.Errorf("payments: find open top-ups: %w", err)
+	}
+	if len(list) == 0 {
+		return uuid.Nil, errNoOpenTopUp
+	}
+	c, err := findReceiptConflict(ctx, q, parsed)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	for _, o := range list {
+		if c != nil && c.topupID != nil && *c.topupID == o.id {
+			return o.id, nil
+		}
+	}
+	for _, o := range list {
+		if parsed.Amount > 0 && o.amount == parsed.Amount {
+			return o.id, nil
+		}
+	}
+	return list[0].id, nil
 }
 
 // BotReceiptResult is the internal API answer to a receipt sent to the bot.

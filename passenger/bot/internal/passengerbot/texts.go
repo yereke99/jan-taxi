@@ -24,7 +24,7 @@ var texts = runtime.Catalog{
 
 		"description":       "Jan Taxi — Қазақстандағы такси және сәлемдеме жеткізу қызметі. Бару мекенжайын көрсетіп, бағаны таңдаңыз — жақын жердегі жүргізуші тапсырысты қабылдайды.",
 		"short_description": "Такси шақыру және сәлемдеме жеткізу",
-		"menu_button":       "Jan Taxi ашу",
+		"map_point":         "Картадағы нүкте",
 
 		"welcome":       "<b>Jan Taxi-ге қош келдіңіз!</b>\nТакси шақыру мен сәлемдеме жіберу — бір қосымшада.\nТөмендегі мәзірден әрекетті таңдаңыз.",
 		"welcome_open":  "Қосымшаны ашу үшін батырманы басыңыз:",
@@ -90,7 +90,7 @@ var texts = runtime.Catalog{
 
 		"description":       "Jan Taxi — такси и доставка посылок в Казахстане. Укажите, куда ехать, выберите цену — ближайший водитель примет заказ.",
 		"short_description": "Такси и доставка посылок",
-		"menu_button":       "Открыть Jan Taxi",
+		"map_point":         "Точка на карте",
 
 		"welcome":       "<b>Добро пожаловать в Jan Taxi!</b>\nТакси и отправка посылок — в одном приложении.\nВыберите действие в меню ниже.",
 		"welcome_open":  "Нажмите кнопку, чтобы открыть приложение:",
@@ -156,7 +156,7 @@ var texts = runtime.Catalog{
 
 		"description":       "Jan Taxi — rides and parcel delivery in Kazakhstan. Set where you're going, choose a fare, and a nearby driver accepts your order.",
 		"short_description": "Rides and parcel delivery",
-		"menu_button":       "Open Jan Taxi",
+		"map_point":         "Point on the map",
 
 		"welcome":       "<b>Welcome to Jan Taxi!</b>\nRides and parcel delivery in one app.\nChoose an action from the menu below.",
 		"welcome_open":  "Tap the button to open the app:",

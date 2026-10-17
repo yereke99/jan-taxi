@@ -166,6 +166,7 @@ const topup = () => ({
   rejected_at: null,
   rejected_reason: null,
   refunded_at: null,
+  receipt: null,
 })
 
 const profile = () => ({
@@ -260,8 +261,8 @@ function api(): DemoApi {
     .on('GET', '/driver/wallet/topups', () => ({ items: [topup()], next_cursor: null }))
     .on('POST', '/driver/wallet/topups', topup)
     .on('GET', '/driver/wallet/topups/:id', topup)
-    .on('POST', '/driver/wallet/topups/:id/submit', () => ({ ...topup(), status: 'pending_review', can_submit: false, driver_reported_paid_at: new Date().toISOString() }))
-    .on('POST', '/driver/wallet/topups/:id/cancel', () => ({ ...topup(), status: 'cancelled', can_submit: false, can_cancel: false }))
+    .on('POST', '/driver/wallet/topups/:id/submit', () => ({ ...topup(), status: 'pending_verification', can_submit: false, can_cancel: false, driver_reported_paid_at: new Date().toISOString() }))
+    .on('POST', '/driver/wallet/topups/:id/cancel', () => ({ ...topup(), status: 'expired', can_submit: false, can_cancel: false, can_upload_receipt: false }))
 }
 
 /** Installs the demo runtime; call before bootTelegram(). */

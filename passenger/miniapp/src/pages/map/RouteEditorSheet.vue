@@ -147,6 +147,8 @@ async function fillPickup(): Promise<void> {
 onMounted(() => {
   const c = route.query.category
   if (typeof c === 'string' && (CATEGORIES as readonly string[]).includes(c)) booking.setCategory(c as Category)
+  // Back from the search for a new stop without choosing a place.
+  booking.pruneEmptyStops()
   booking.schedulePreview(true)
   void fillPickup()
 })

@@ -5,8 +5,9 @@
 //
 // Calibration (ARCHITECTURE §6.1): Kaspi generates its receipts with
 // WeasyPrint from a web page as a single-revision PDF 1.7 (object and cross
-// reference streams), text drawn through Roboto subsets with ToUnicode maps,
-// no Creator, no ModDate and no XMP metadata. The receipt carries no QR code;
+// reference streams with exact offsets, WeasyPrint's header comment), text
+// drawn through Roboto subsets with ToUnicode maps, no Creator, no ModDate
+// and no XMP metadata. The receipt carries no QR code;
 // "QR…" is the prefix of the receipt number ("№ чека"). Images on the page
 // (the seller's avatar) are still scanned for QR codes in case Kaspi adds one,
 // and a QR payload that names a different receipt number blocks crediting.
@@ -19,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -53,6 +55,9 @@ const (
 	FlagIncrementalUpdate  = "incremental_update"   // more than one revision (%%EOF, startxref, /Prev)
 	FlagObjectRedefined    = "object_redefined"     // an object number defined twice
 	FlagTrailingData       = "trailing_data"        // bytes after the last %%EOF
+	FlagStructure          = "structure_unexpected" // not exactly one %%EOF, startxref and cross-reference section
+	FlagXRefInconsistent   = "xref_inconsistent"    // offsets that do not match the file: bytes changed afterwards
+	FlagHeaderUnexpected   = "header_unexpected"    // the header comment differs from WeasyPrint's
 	FlagProducerUnexpected = "producer_unexpected"  // Producer is not WeasyPrint
 	FlagCreatorPresent     = "creator_present"      // Kaspi receipts have no Creator
 	FlagModDatePresent     = "moddate_present"      // Kaspi receipts have no ModDate
@@ -72,7 +77,7 @@ const (
 	FlagFileNameMismatch   = "filename_serial_mismatch" // receipt_QR….pdf names another number
 
 	FlagQRNotFound   = "qr_not_found"  // informational: Kaspi receipts carry no QR code
-	FlagBINMissing   = "bin_missing"   // informational: the seller is matched by name
+	FlagBINMissing   = "bin_missing"   // informational: no seller BIN printed (payments then requires review)
 	FlagStatusKazakh = "status_kazakh" // informational: Kazakh status wording (uncalibrated)
 )
 
@@ -86,6 +91,11 @@ var limits = pdfdoc.Limits{
 	MaxObjects: 5_000, MaxStreamBytes: 4 << 20, MaxTotalBytes: 16 << 20,
 	MaxPages: 10, MaxOps: 100_000, MaxImagePixels: 2_000_000,
 }
+
+// weasyHeader is the first two lines WeasyPrint (pydyf) writes: the version
+// and a binary comment with U+1F5A4. Other writers (qpdf, pikepdf, pypdf,
+// PDF editors, printing to PDF) write their own comment.
+var weasyHeader = regexp.MustCompile(`^%PDF-[12]\.[0-9]\r?\n%\x{1F5A4}\r?\n`)
 
 // maxImages bounds the images scanned for QR codes.
 const maxImages = 6
@@ -158,7 +168,7 @@ func Parse(ctx context.Context, data []byte, opt Options) (r Receipt) {
 		r.ParseStatus = StatusUnreadable
 		return r
 	}
-	structureFlags(doc, flags, &r)
+	structureFlags(doc, data, flags, &r)
 	pages := doc.Pages()
 	if len(pages) != 1 {
 		flags[FlagPageCount] = true
@@ -209,9 +219,18 @@ func Parse(ctx context.Context, data []byte, opt Options) (r Receipt) {
 
 // structureFlags checks the revision structure and the metadata against
 // the calibrated Kaspi originals.
-func structureFlags(doc *pdfdoc.Doc, flags map[string]bool, r *Receipt) {
+func structureFlags(doc *pdfdoc.Doc, data []byte, flags map[string]bool, r *Receipt) {
 	if doc.EOFMarkers > 1 || doc.StartXRefs > 1 || doc.HasPrev || doc.Trailers() > 1 || doc.XRefTables+doc.XRefStreams > 1 {
 		flags[FlagIncrementalUpdate] = true
+	}
+	if doc.EOFMarkers == 0 || doc.StartXRefs == 0 || doc.XRefTables+doc.XRefStreams == 0 {
+		flags[FlagStructure] = true
+	}
+	if doc.XRefMismatches() > 0 {
+		flags[FlagXRefInconsistent] = true
+	}
+	if !weasyHeader.Match(data[:min(len(data), 32)]) {
+		flags[FlagHeaderUnexpected] = true
 	}
 	if doc.Redefined > 0 {
 		flags[FlagObjectRedefined] = true

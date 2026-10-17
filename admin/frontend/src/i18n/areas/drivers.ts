@@ -134,6 +134,7 @@ const kk = {
   speed: 'Жылдамдығы',
   speed_value: '{n} км/сағ',
   heading: 'Бағыты',
+  previous_corrections: '{n}-өтінімде сұралған түзетулер',
 }
 
 export type DriversMessages = typeof kk
@@ -272,6 +273,7 @@ const ru: DriversMessages = {
   speed: 'Скорость',
   speed_value: '{n} км/ч',
   heading: 'Направление',
+  previous_corrections: 'Исправления, запрошенные в заявке {n}',
 }
 
 const en: DriversMessages = {
@@ -408,6 +410,7 @@ const en: DriversMessages = {
   speed: 'Speed',
   speed_value: '{n} km/h',
   heading: 'Heading',
+  previous_corrections: 'Corrections requested in application {n}',
 }
 
 export const drivers = { kk, ru, en }

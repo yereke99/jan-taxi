@@ -13,6 +13,7 @@ export const kk = {
     active_title: 'Белсенді тапсырыс',
     menu: 'Мәзір',
     pickup_caption: 'Алып кететін жер',
+    outside_kz: 'Қазақстаннан тыс жер',
     services: 'Қызметтер',
   },
   tabs: {
@@ -176,6 +177,14 @@ export const kk = {
     reason_by_admin: 'Оператор тоқтатты',
     reason_by_system: 'Жүйе тоқтатты',
     reason_text: 'Себебі: {reason}',
+    driver_reason: {
+      passenger_no_show: 'Себебі: жолаушы шықпады',
+      sender_no_show: 'Себебі: жіберуші шықпады',
+      passenger_asked: 'Себебі: клиент бас тартуды сұрады',
+      cannot_reach: 'Себебі: мекенжайға жету мүмкін емес',
+      vehicle_problem: 'Себебі: көлік ақаулы',
+      unsafe_cargo: 'Себебі: жүк тасымалдауға жарамсыз',
+    },
     order_again: 'Қайта тапсырыс беру',
     to_home: 'Басты бетке',
     not_found_title: 'Тапсырыс табылмады',

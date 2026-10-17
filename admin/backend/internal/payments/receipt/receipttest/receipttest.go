@@ -46,6 +46,9 @@ type Spec struct {
 	NoBINLine bool
 	// Annotation adds a FreeText annotation to the page.
 	Annotation bool
+	// Header replaces the binary comment line after "%PDF-1.7" (WeasyPrint
+	// writes "%" + U+1F5A4; qpdf, for one, writes "%\xbf\xf7\xa2\xfe").
+	Header string
 }
 
 // Astana is UTC+5.
@@ -254,13 +257,26 @@ func Build(s Spec) []byte {
 	return pdf
 }
 
+// BuildSpliced returns edited written over original's cross-reference
+// data: what changing the page content in place leaves behind when the
+// offsets are not recomputed. The file is a single revision with the
+// original header and metadata; only the offsets give the edit away.
+func BuildSpliced(original, edited Spec) []byte {
+	original, edited = original.withDefaults(), edited.withDefaults()
+	g := newGlyphs(original, edited)
+	_, stale := buildWith(original, g, nil)
+	pdf, _ := buildWith(edited, g, &stale)
+	return pdf
+}
+
 // BuildEdited returns original followed by an incremental update whose page
 // content shows edited instead: what a PDF editor saves after "fixing" a
 // receipt.
 func BuildEdited(original, edited Spec) []byte {
 	original, edited = original.withDefaults(), edited.withDefaults()
 	g := newGlyphs(original, edited)
-	pdf, xref := buildWith(original, g)
+	pdf, lay := buildWith(original, g, nil)
+	xref := lay.xrefOff
 	var b bytes.Buffer
 	b.Write(pdf)
 	off := b.Len()
@@ -273,11 +289,23 @@ func BuildEdited(original, edited Spec) []byte {
 	return b.Bytes()
 }
 
-func build(s Spec) ([]byte, int) { return buildWith(s, newGlyphs(s)) }
+// layout is where the objects and the cross-reference stream of a file are.
+type layout struct {
+	offsets map[int]int
+	xrefOff int
+}
 
-func buildWith(s Spec, g glyphs) ([]byte, int) {
+func build(s Spec) ([]byte, layout) { return buildWith(s, newGlyphs(s), nil) }
+
+// buildWith writes the receipt; with stale, the cross-reference data and
+// startxref describe that layout instead of the bytes written.
+func buildWith(s Spec, g glyphs, stale *layout) ([]byte, layout) {
 	w := &writer{offsets: map[int]int{}}
-	w.buf.WriteString("%PDF-1.7\n%\xf0\x9f\x96\xa4\n")
+	comment := "%\xf0\x9f\x96\xa4"
+	if s.Header != "" {
+		comment = s.Header
+	}
+	w.buf.WriteString("%PDF-1.7\n" + comment + "\n")
 	withQR := s.QRPayload != ""
 
 	w.stream(5, "/Filter /FlateDecode", deflate(s.content(g, withQR)))
@@ -337,10 +365,15 @@ func buildWith(s Spec, g glyphs) ([]byte, int) {
 	}
 	xrefOff := w.buf.Len()
 	w.offsets[22] = xrefOff
+	written := layout{offsets: w.offsets, xrefOff: xrefOff}
+	described := written
+	if stale != nil {
+		described = *stale
+	}
 	var xr bytes.Buffer
 	for n := 0; n <= 22; n++ {
 		var row [7]byte
-		switch off, direct := w.offsets[n]; {
+		switch off, direct := described.offsets[n]; {
 		case direct:
 			row[0] = 1
 			binary.BigEndian.PutUint32(row[1:5], uint32(off))
@@ -356,8 +389,8 @@ func buildWith(s Spec, g glyphs) ([]byte, int) {
 	data := deflate(xr.Bytes())
 	fmt.Fprintf(&w.buf, "22 0 obj\n<</Type /XRef/Index [0 23]/W [1 4 2]/Size 23/Root 2 0 R/Info 20 0 R/Filter /FlateDecode/Length %d>>\nstream\n", len(data))
 	w.buf.Write(data)
-	fmt.Fprintf(&w.buf, "\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n", xrefOff)
-	return w.buf.Bytes(), xrefOff
+	fmt.Fprintf(&w.buf, "\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n", described.xrefOff)
+	return w.buf.Bytes(), written
 }
 
 func hasIndex(m map[int]int, n int) bool { _, ok := m[n]; return ok }

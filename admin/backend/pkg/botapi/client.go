@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,7 +27,11 @@ const (
 )
 
 const (
-	defaultTimeout     = 15 * time.Second
+	// DefaultTimeout bounds one attempt of a call; uploads get UploadTimeout.
+	DefaultTimeout = 10 * time.Second
+	// UploadTimeout bounds one attempt of a file upload.
+	UploadTimeout = 20 * time.Second
+
 	defaultMaxAttempts = 3
 	maxRetryAfter      = 5 * time.Second
 	maxResponseBytes   = 4 << 20
@@ -36,17 +42,68 @@ type Client struct {
 	BaseURL string       // e.g. http://api:8081
 	Secret  string       // INTERNAL_BOT_SERVICE_SECRET
 	Bot     string       // "passenger" | "driver"
-	HTTP    *http.Client // nil means a client with a 15s timeout
+	HTTP    *http.Client // nil means the package's own client (see ResetConnections)
 
+	// Timeout bounds one attempt of a call (default 10s, uploads 20s).
+	Timeout time.Duration
 	// MaxAttempts bounds retries of idempotent calls (default 3).
 	MaxAttempts int
 	// RetryBase is the first retry delay (default 250ms); it doubles per attempt.
 	RetryBase time.Duration
+
+	mu  sync.Mutex
+	own *http.Client
 }
 
 // New returns a Client with default settings.
 func New(baseURL, secret, bot string) *Client {
-	return &Client{BaseURL: baseURL, Secret: secret, Bot: bot, HTTP: &http.Client{Timeout: defaultTimeout}}
+	return &Client{BaseURL: baseURL, Secret: secret, Bot: bot}
+}
+
+// newHTTPClient bounds every phase of a request to the internal API.
+func newHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	t := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: UploadTimeout,
+		ExpectContinueTimeout: time.Second,
+		IdleConnTimeout:       60 * time.Second,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   8,
+	}
+	t.Protocols = new(http.Protocols)
+	t.Protocols.SetHTTP1(true)
+	return &http.Client{Transport: t, Timeout: UploadTimeout + 5*time.Second}
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.own == nil {
+		c.own = newHTTPClient()
+	}
+	return c.own
+}
+
+// ResetConnections drops pooled connections; the package's own client is
+// replaced by a new one, so the next call dials afresh.
+func (c *Client) ResetConnections() {
+	if c.HTTP != nil {
+		c.HTTP.CloseIdleConnections()
+		return
+	}
+	c.mu.Lock()
+	old := c.own
+	c.own = nil
+	c.mu.Unlock()
+	if old != nil {
+		old.CloseIdleConnections()
+	}
 }
 
 // Error is an error response of the internal API
@@ -183,10 +240,15 @@ type multipartBody struct {
 func (c *Client) once(ctx context.Context, method, path string, query url.Values, in, out any) error {
 	var body io.Reader
 	contentType := ""
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
 	switch v := in.(type) {
 	case nil:
 	case multipartBody:
 		body, contentType = bytes.NewReader(v.data), v.contentType
+		timeout = max(timeout, UploadTimeout)
 	default:
 		b, err := json.Marshal(in)
 		if err != nil {
@@ -198,6 +260,8 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return fmt.Errorf("bot api %s %s: %w", method, path, err)
@@ -208,21 +272,24 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	hc := c.HTTP
-	if hc == nil {
-		hc = &http.Client{Timeout: defaultTimeout}
-	}
+	hc := c.httpClient()
 	resp, err := hc.Do(req)
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			err = ue.Err // the URL carries no secret, but keep errors short
 		}
+		if !errors.Is(err, context.Canceled) {
+			hc.CloseIdleConnections() // they may have died together with this one
+		}
 		return fmt.Errorf("bot api %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			hc.CloseIdleConnections()
+		}
 		return fmt.Errorf("bot api %s %s: read: %w", method, path, err)
 	}
 	if resp.StatusCode >= 300 {

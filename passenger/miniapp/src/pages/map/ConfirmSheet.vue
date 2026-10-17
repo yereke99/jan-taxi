@@ -24,7 +24,7 @@ import { haptics, navigateBack } from '../../telegram'
 import { formatDistance, formatDuration, formatMoney } from '../../utils/format'
 import type { LatLon } from '../../utils/geo'
 import { formatKzPhoneInput } from '../../utils/phone'
-import type { PaymentMethod } from '../../utils/status'
+import { CATEGORIES, type Category, type PaymentMethod } from '../../utils/status'
 import { TEXT_MAX } from '../../utils/text'
 
 const QUOTE_CHECK_MS = 10_000
@@ -116,6 +116,17 @@ async function choosePayment(): Promise<void> {
   if (choice && (methods.value as string[]).includes(choice)) booking.paymentMethod = choice as PaymentMethod
 }
 
+/** Switches taxi / parcel / other here; the route is re-quoted for the new service. */
+async function chooseService(): Promise<void> {
+  const choice = await showActionSheet({
+    title: t('confirm.service'),
+    actions: CATEGORIES.map((c) => ({ id: c, label: t(`category.${c}`) })),
+  })
+  if (!choice || choice === booking.category || !(CATEGORIES as readonly string[]).includes(choice)) return
+  haptics.selection()
+  booking.setCategory(choice as Category)
+}
+
 async function submit(): Promise<void> {
   const res = await booking.submit()
   switch (res.kind) {
@@ -164,10 +175,11 @@ async function submit(): Promise<void> {
 
       <!-- Order facts (inset-grouped) -->
       <section class="confirm-facts">
-        <div class="confirm-fact">
+        <button type="button" class="confirm-fact is-button" @click="chooseService">
           <span>{{ t('confirm.service') }}</span>
           <span class="confirm-fact__value">{{ t(`category.${booking.category}`) }}</span>
-        </div>
+          <ChevronRight :size="18" :stroke-width="2" class="confirm-fact__chevron" aria-hidden="true" />
+        </button>
         <div class="confirm-fact">
           <span>{{ t('booking.title') }}</span>
           <span v-if="quote" class="confirm-fact__value jt-tabular">

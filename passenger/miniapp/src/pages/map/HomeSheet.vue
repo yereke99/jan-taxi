@@ -18,7 +18,7 @@ import CategoryIcon from '../../components/CategoryIcon.vue'
 import { JSheet } from '../../components/ui'
 import { createLatest } from '../../domain/latest'
 import type { PlaceValue } from '../../domain/route'
-import { ROUTE } from '../../router/names'
+import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { useRealtime } from '../../services/realtime'
 import { useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
@@ -64,13 +64,12 @@ const recent = computed(() => orders.destinations.slice(0, RECENT_LIMIT))
 
 const pinLoading = ref(true)
 let pending: LatLon | null = null
-let resolved: LatLon | null = null
 
 watchEffect(() => {
   const place = booking.stops[0]?.place
   stage.pin.callout = {
     caption: t('home.pickup_caption'),
-    title: place ? addr(place.address) : '',
+    title: !place ? '' : place.inServiceArea === false ? t('home.outside_kz') : addr(place.address),
     loading: pinLoading.value,
   }
 })
@@ -85,7 +84,6 @@ const runner = createLatest<LatLon, GeoReverse>({
   run: (p, signal) => reverseGeocode(p, { lang: session.language, signal }),
   onResult: (r, p) => {
     if (p !== pending) return
-    resolved = p
     pinLoading.value = false
     const device = location.current
     const fromGps = device !== null && haversineMeters(device, p) <= PIN_IS_GPS_M
@@ -116,34 +114,52 @@ const runner = createLatest<LatLon, GeoReverse>({
 })
 
 function resolvePin(center: LatLon): void {
-  if (resolved && booking.stops[0]?.place && haversineMeters(resolved, center) < PIN_SAME_PLACE_M) {
+  // Already the pickup (resolved earlier, chosen in search or filled from GPS).
+  const place = booking.stops[0]?.place
+  if (place && haversineMeters(place, center) < PIN_SAME_PLACE_M) {
+    runner.cancel()
+    pending = null
     pinLoading.value = false
     return
   }
+  // The lookup for (practically) this point is already running.
+  if (pending && runner.busy && haversineMeters(pending, center) < PIN_SAME_PLACE_M) return
   pending = { lat: roundCoord(center.lat), lon: roundCoord(center.lon) }
   pinLoading.value = true
   runner.schedule(pending)
 }
 
-const offMoveStart = stage.onMoveStart(() => runner.cancel())
-const offMoveEnd = stage.onMoveEnd((center) => resolvePin(center))
-
-// Centre once: on the chosen pickup, else on the passenger as soon as the
-// position is known; until then the pin names the initial map centre.
+/** The camera was centred on the pickup / passenger, or the passenger moved it. */
 let centred = false
 let userMoved = false
+
+// A drag supersedes the lookup in flight; camera animations (follow mode,
+// sheet changes) do not, or a moving passenger would never get an address.
+const offMoveStart = stage.onMoveStart((user) => {
+  if (user) runner.cancel()
+})
+const offMoveEnd = stage.onMoveEnd((center) => {
+  // Camera settling (sheet padding) before the first fix is not a pickup.
+  if (!centred && !userMoved && location.locating) return
+  resolvePin(center)
+})
+
+// Centre once: on the chosen pickup, else on the passenger as soon as the
+// position is known. The initial map centre (the default city) is named only
+// after the GPS attempt failed, so it never becomes the pickup of a passenger
+// elsewhere just because the first fix was slow.
 const offUserMove = stage.onMoveStart((user) => {
   if (user) userMoved = true
 })
 watch(
-  () => [stage.map.value, location.current] as const,
-  ([map, loc]) => {
+  () => [stage.map.value, location.current, location.locating] as const,
+  ([map, loc, locating]) => {
     if (!map || centred || userMoved) return
     const target = booking.stops[0]?.place ?? loc
     if (target) {
       centred = true
       stage.centerOn(target, 16)
-    } else if (pending === null) {
+    } else if (!locating && pending === null) {
       const c = stage.center()
       if (c) resolvePin(c)
     }
@@ -158,9 +174,14 @@ function editPickup(): void {
 }
 
 async function openBooking(): Promise<void> {
-  await router.push({ name: ROUTE.book, query: { category: booking.category } })
   const last = booking.stops.length - 1
-  if (!booking.stops[last]?.place) await router.push({ name: ROUTE.bookSearch, params: { index: String(last) } })
+  if (booking.stops[last]?.place) {
+    await router.push({ name: ROUTE.book, query: { category: booking.category } })
+    return
+  }
+  // "Where to?" opens the search straight from home: back returns home, a
+  // chosen place continues to the route editor (BOOKING_FROM_HOME).
+  await router.push({ name: ROUTE.bookSearch, params: { index: String(last) }, query: { from: BOOKING_FROM_HOME } })
 }
 
 function openService(c: Category): void {

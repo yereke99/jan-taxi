@@ -44,6 +44,23 @@ export function openTelegram(url: string): boolean {
   return true
 }
 
+/**
+ * Starts a phone call (tel: link, e.g. "112" or "+77011234567"). openLink
+ * accepts only http(s), so this follows a tel: anchor, which Telegram's
+ * WebViews hand to the phone app. Must be called from a user gesture.
+ */
+export function callPhone(number: string): boolean {
+  const digits = number.replace(/[^\d+]/g, '')
+  if (!/^\+?\d{2,15}$/.test(digits)) return false
+  const a = document.createElement('a')
+  a.href = `tel:${digits}`
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  return true
+}
+
 /** Builds a t.me direct link that opens a bot's Main Mini App (§18). */
 export function directLink(botUsername: string, startParam?: string, fullscreen = true): string {
   const u = new URL(`https://t.me/${encodeURIComponent(botUsername.replace(/^@/, ''))}`)

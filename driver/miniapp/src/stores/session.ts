@@ -89,6 +89,19 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  /**
+   * A driver route answered that the profile is missing or not approved
+   * (403 driver_not_registered / driver_not_approved): the cached status is
+   * out of date. Re-reading /me lets the runtime move the driver to the right
+   * screen. Returns true for such errors so callers can skip their own message.
+   */
+  function handleAccessError(err: unknown): boolean {
+    if (!isApiError(err) || err.status !== 403) return false
+    if (err.code !== 'driver_not_registered' && err.code !== 'driver_not_approved') return false
+    void refreshMe()
+    return true
+  }
+
   /** Keeps the cached driver summary in step with a known online state. */
   function setOnline(online: boolean): void {
     if (me.value?.driver) me.value.driver.is_online = online
@@ -124,6 +137,7 @@ export const useSessionStore = defineStore('session', () => {
     bootstrap,
     whenSettled,
     refreshMe,
+    handleAccessError,
     refreshConfig,
     setOnline,
     setLanguage,

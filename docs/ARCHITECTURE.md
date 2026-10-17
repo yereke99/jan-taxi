@@ -242,7 +242,8 @@ number already attached to a receipt.
 
 **Kaspi receipt PDF** (`POST /driver/wallet/topups/{id}/receipt` from the Mini App, or a PDF
 sent to the driver bot → `POST /internal/v1/driver/{tg_id}/topup-receipt`, attached to the
-driver's most recent open top-up). In one transaction (per-driver advisory lock): store the file →
+driver's open top-up that already holds this receipt, else the newest open top-up with the
+receipt's amount, else the newest open top-up). In one transaction (per-driver advisory lock): store the file →
 reject reuse → insert `payment_receipts` → evaluate → credit or leave for review.
 * Storage (`storage.SavePDF`): `%PDF-` magic, ≤ min(5 MiB, `MAX_UPLOAD_BYTES`), parsed by the
   defensive reader `platform/pdfdoc`; encrypted PDFs and active content (JavaScript, Launch,
@@ -273,6 +274,12 @@ reject reuse → insert `payment_receipts` → evaluate → credit or leave for 
   Images are still scanned for QR codes (gozxing): a payload naming another number blocks
   crediting (`qr_mismatch`), its hash is unique; no QR raises the informational `qr_not_found`.
   Blocking flags: `incremental_update`, `object_redefined`, `trailing_data`,
+  `structure_unexpected` (not exactly one `%%EOF`, `startxref` and cross-reference section),
+  `xref_inconsistent` (`startxref` or an in-use cross-reference entry does not point at its
+  object, an object-stream entry names no real stream, or an object in the file is not listed —
+  `pdfdoc.Doc.XRefMismatches`; catches bytes edited in place in a single revision),
+  `header_unexpected` (the comment line after `%PDF-1.7` is not WeasyPrint's; qpdf, pikepdf,
+  pypdf, editors and print-to-PDF write other bytes),
   `producer_unexpected` (not WeasyPrint*), `creator_present`, `moddate_present`,
   `xmp_metadata_present`, `page_count_unexpected`, `font_unexpected` (not Roboto*),
   `text_undecodable`, `annotations_present`, `form_present`, `serial_*`, `amount_*`,
@@ -281,9 +288,11 @@ reject reuse → insert `payment_receipts` → evaluate → credit or leave for 
 * Automatic credit only if **all** hold, else `pending_verification` with machine-readable
   reasons (driver sees reasons, never the file flags; admins see both):
   1. receipt not used before (above);
-  2. seller BIN = `company.bin` (or, when the receipt has no BIN, seller name contains the
-     distinctive part of `kaspi.recipient_name`, normalised, Cyrillic look-alikes as Latin)
-     — else `recipient_mismatch`;
+  2. seller BIN printed and = `company.bin` — else `recipient_mismatch`; a receipt without a BIN
+     always goes to review (`receipt_incomplete`, informational flag `bin_missing`), plus
+     `recipient_mismatch` when its seller name does not contain the distinctive part of
+     `kaspi.recipient_name` (falls back to `KASPI_PAY_RECIPIENT_NAME`; normalised, Cyrillic
+     look-alikes as Latin);
   3. amount = requested amount — `amount_mismatch`;
   4. `created_at − 10 min ≤ paid_at ≤ now + 5 min` and `now − paid_at ≤ topup.receipt_max_age_hours`
      (48) — `paid_before_topup` / `paid_in_future` / `receipt_too_old`;
@@ -446,6 +455,9 @@ additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode
 * Private volume `FILE_STORAGE_DIR` (default `/data/files`), never served statically.
 * Uploads: max 10 MiB, magic-byte sniffing (JPEG/PNG/WebP), decoded and re-encoded to JPEG
   (strips EXIF incl. GPS), longest side ≤ 2000px, SHA-256 stored.
+* Kaspi receipt PDFs (§6.1): `%PDF-` magic, ≤ 5 MiB, encrypted or active-content files refused,
+  stored byte for byte (the evidence, mode 0600), served only to finance admins
+  (`/admin/topups/{id}/receipt`, `/admin/files/{id}`) as `application/pdf` inline.
 * Access: drivers → own files; passengers → assigned driver's avatar for their active/past order;
   admins with `documents.view` (ID docs) or `drivers.view` (avatar/vehicle photos); every
   admin ID-document view is audit-logged. Responses: `Cache-Control: private, no-store`.
@@ -460,7 +472,20 @@ additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode
   claimed via `POST /internal/v1/bots/{bot}/updates/{update_id}/claim` before side effects ⇒
   restarts never double-process.
 * Backoff: exponential 1s→60s with full jitter; honour `retry_after`; tokens never logged.
-* Health: `GET :8090/healthz` → 200 when the last successful poll was < 90s ago.
+* Health: `GET :8090/healthz` → 200 for the lease holder while it is not stalled and made progress
+  (a successful poll) within 90 s (waiting out Telegram's `retry_after` does not count); a standby
+  is healthy only while its lease checks succeed. JSON adds `consecutive_failures`, `last_error`,
+  `stalled`, `stalls`, `abandoned_handlers`. A bot unhealthy for 5 minutes exits with an error so
+  the supervisor restarts it.
+* Network resilience (`pkg/telegram`, `pkg/botapi`): HTTP/1.1-only transports with dial, TLS,
+  response-header and idle timeouts, a separate pool for `getUpdates`, a hard deadline on every
+  call (`getUpdates` timeout + 15 s, other calls 15 s; internal API 10 s, uploads 20 s). A call
+  still running past its limit is abandoned and the connections are rebuilt
+  (`ResetConnections`), as after 2 network failures in a row; a handler that ignores its
+  context is abandoned 15 s after its 20 s timeout.
+* Menu button: only the default menu button, published on every lease acquisition with the
+  current Mini App URL; per-chat buttons are reset to the default on a chat's first update
+  (`runtime.ChatMenus`).
 * Bot UI is Kazakh by default; language stored in PostgreSQL via the API.
 * Driver bot and dispatch (§7): a shared Telegram live location (and its edits) is the bot's GPS
   feed (`POST /internal/v1/driver/{tg_id}/location`). When going online or listing orders fails with
@@ -658,7 +683,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | POST | /driver/wallet/topups | D | payments | `{amount, idempotency_key}` → TopUp + `payment{url,recipient_name,instructions,reference,amount}` |
 | GET | /driver/wallet/topups | D | payments | list |
 | GET | /driver/wallet/topups/{id} | D | payments | |
-| POST | /driver/wallet/topups/{id}/receipt | D | payments | multipart image, optional evidence |
+| POST | /driver/wallet/topups/{id}/receipt | D | payments | multipart `file`: Kaspi PDF (parsed, may credit at once, §6.1) or image (evidence only); 409 `receipt_already_used` |
 | POST | /driver/wallet/topups/{id}/submit | D | payments | `{payment_reference?, note?}` → pending_verification (never credits) |
 | POST | /driver/wallet/topups/{id}/cancel | D | payments | only `created` |
 | POST | /payments/webhooks/{provider} | - | payments | 404 unless a verified provider is configured |
@@ -723,6 +748,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /internal/v1/driver/{tg_id}/orders?limit= | botapi | available orders |
 | POST | /internal/v1/driver/{tg_id}/contact | botapi | `{phone, contact_user_id}`; verifies `contact_user_id == tg_id` |
 | POST | /internal/v1/driver/{tg_id}/location | botapi | `{lat, lon, accuracy_m?, live}` |
+| POST | /internal/v1/driver/{tg_id}/topup-receipt | botapi+payments | multipart `file` (Kaspi PDF) → `{outcome: credited\|pending_verification\|duplicate_rejected, reasons[], topup, balance}`; 409 `no_open_topup` / `receipt_already_used`, 413, 422, 429 (§6.1) |
 | GET | /internal/v1/config | botapi | Mini App URLs, bot usernames, support contacts |
 
 ## 20. Package APIs used across packages (Go)
@@ -799,7 +825,25 @@ plate.Normalize(s string) (string, error)
 // platform/storage
 (*storage.Store).SaveImage(ctx, q, owner uuid.UUID, purpose string, r io.Reader) (storage.File, error)
 (*storage.Store).Open(ctx, q, id uuid.UUID) (storage.File, io.ReadCloser, error)
-storage.ServeImage(w, r, f storage.File, rc io.ReadCloser)  // private, no-store
+storage.ServeImage(w, r, f storage.File, rc io.ReadCloser)  // private, no-store; PDFs go to ServePDF
+(*storage.Store).CheckPDF(data []byte) error                // magic, size, encryption, active content
+(*storage.Store).SavePDF(ctx, q, owner uuid.UUID, purpose string, data []byte) (storage.File, error) // bytes kept as is, 0600
+storage.ServePDF(w, r, f storage.File, rc io.ReadCloser)    // application/pdf, inline, private, no-store
+storage.ServeFile(w, r, f storage.File, rc io.ReadCloser)   // image or PDF by stored type
+
+// platform/pdfdoc (defensive reader, bounded by Limits)
+pdfdoc.Open(data []byte, lim pdfdoc.Limits) (*pdfdoc.Doc, error)
+(*pdfdoc.Doc).XRefMismatches() int                          // startxref/xref entries not matching the bytes
+(*pdfdoc.Doc).ActiveContent() []string ; HasForm() bool ; HasXMPMetadata() bool
+(*pdfdoc.Doc).Pages() []pdfdoc.Page ; ExtractText(p) (pdfdoc.PageText, error) ; PageImages(p, limit)
+
+// pkg/telegram, pkg/botapi (bots and the notification worker)
+(*telegram.Client).GetFile(ctx, fileID string) (*telegram.File, error)
+(*telegram.Client).DownloadFile(ctx, filePath string, maxBytes int64) ([]byte, error) // token never in errors
+(*telegram.Client).ResetChatMenuButton(ctx, chatID int64) error
+(*telegram.Client).ResetConnections()                       // rebuild transports after a stall
+(*botapi.Client).UploadTopUpReceipt(ctx, tgID int64, fileName string, data []byte) (botapi.TopUpReceiptResult, error) // never retried
+(*botapi.Client).ResetConnections()
 
 // audit
 audit.Log(ctx, q db.Querier, r *http.Request, audit.Entry{Action, EntityType, EntityID string, Before, After any}) error

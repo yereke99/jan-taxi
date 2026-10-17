@@ -1,4 +1,9 @@
-<!-- Create or edit a city: names, code, map centre (click the map), zoom, time zone and dispatch policy. -->
+<!--
+  Create or edit a city: names, code, map centre (click the map), zoom, time
+  zone and search timeout. A city only sets tariffs, the search timeout, the
+  driver code prefix and grouping; dispatch is by radius around pickup A and
+  is configured in the settings (dispatch.*).
+-->
 <script setup lang="ts">
 import { Marker, type Map as MapLibreMap } from 'maplibre-gl'
 import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
@@ -27,9 +32,6 @@ interface Form {
   lon: string
   zoom: string
   timezone: string
-  radius: string
-  requireLocation: boolean
-  maxAge: string
   searchTimeout: string
   active: boolean
 }
@@ -44,9 +46,6 @@ function fromCity(c: City | null): Form {
     lon: c ? String(c.center.lon) : '',
     zoom: String(c?.default_zoom ?? 13),
     timezone: c?.timezone ?? 'Asia/Aqtobe',
-    radius: String(c?.dispatch_radius_m ?? 50000),
-    requireLocation: c?.require_driver_location ?? false,
-    maxAge: String(c?.driver_location_max_age_s ?? 900),
     searchTimeout: String(c?.search_timeout_s ?? 900),
     active: c?.is_active ?? true,
   }
@@ -115,8 +114,6 @@ async function save(): Promise<void> {
   else if (!inKazakhstanBBox(c)) f.center = 'outside_service_area'
   const zoom = parseDecimal(form.zoom)
   if (zoom === null || zoom < 3 || zoom > 20) f.default_zoom = 'out_of_range'
-  const radius = intIn('dispatch_radius_m', form.radius, 500, 1_000_000, f)
-  const maxAge = intIn('driver_location_max_age_s', form.maxAge, 30, 86_400, f)
   const timeout = intIn('search_timeout_s', form.searchTimeout, 60, 86_400, f)
   fieldErrors.value = errors.translate(f)
   if (Object.keys(f).length > 0 || !c || zoom === null || saving.value) return
@@ -127,9 +124,6 @@ async function save(): Promise<void> {
     default_zoom: zoom,
     timezone: form.timezone,
     is_active: form.active,
-    dispatch_radius_m: radius,
-    require_driver_location: form.requireLocation,
-    driver_location_max_age_s: maxAge,
     search_timeout_s: timeout,
   }
   saving.value = true
@@ -179,18 +173,13 @@ onBeforeUnmount(() => pin?.remove())
           <TextInput :id="f.id" v-model="form.zoom" inputmode="decimal" :invalid="f.invalid" />
         </FormField>
       </div>
-      <div class="jt-form-row">
-        <FormField v-slot="f" :label="t('config.dispatch_radius')" :error="fieldErrors.dispatch_radius_m" :hint="t('config.dispatch_radius_hint')">
-          <TextInput :id="f.id" v-model="form.radius" inputmode="numeric" :invalid="f.invalid" />
-        </FormField>
-        <FormField v-slot="f" :label="t('config.search_timeout')" :error="fieldErrors.search_timeout_s" :hint="t('config.search_timeout_hint')">
-          <TextInput :id="f.id" v-model="form.searchTimeout" inputmode="numeric" :invalid="f.invalid" />
-        </FormField>
-      </div>
-      <ToggleSwitch v-model="form.requireLocation" :label="t('config.require_location')" />
-      <FormField v-if="form.requireLocation" v-slot="f" :label="t('config.location_max_age')" :error="fieldErrors.driver_location_max_age_s" :hint="t('config.location_max_age_hint')">
-        <TextInput :id="f.id" v-model="form.maxAge" inputmode="numeric" :invalid="f.invalid" />
+      <FormField v-slot="f" :label="t('config.search_timeout')" :error="fieldErrors.search_timeout_s" :hint="t('config.search_timeout_hint')">
+        <TextInput :id="f.id" v-model="form.searchTimeout" inputmode="numeric" :invalid="f.invalid" />
       </FormField>
+      <p class="city-form__note" role="note">
+        {{ t('config.dispatch_global_note') }}
+        <RouterLink :to="{ name: 'settings' }">{{ t('config.dispatch_global_link') }}</RouterLink>
+      </p>
       <ToggleSwitch v-model="form.active" :label="t('config.city_active')" />
       <div class="jt-row">
         <AppButton type="submit" variant="primary" :loading="saving">{{ city ? t('common.save') : t('config.create_city') }}</AppButton>
@@ -215,6 +204,18 @@ onBeforeUnmount(() => pin?.remove())
   display: flex;
   flex-direction: column;
   gap: var(--jt-space-3);
+}
+
+.city-form__note {
+  padding: 10px 12px;
+  border-radius: var(--jt-radius-inner);
+  background: var(--jt-color-fill-secondary);
+  color: var(--jt-color-label-secondary);
+  font: var(--jt-font-small);
+}
+
+.city-form__note a {
+  color: var(--jt-color-blue-text);
 }
 
 .city-form__map {

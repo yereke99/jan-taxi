@@ -2,6 +2,9 @@ import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
 
+/** Local API behind the dev server proxy. */
+const API_TARGET = process.env.JT_API_TARGET ?? 'http://localhost:8080'
+
 // `--mode demo` builds the presentation version (mocked Telegram and API, see
 // src/demo). VITE_DEMO is defined as a literal so production builds drop the
 // demo import entirely.
@@ -25,7 +28,16 @@ export default defineConfig(({ mode }) => ({
     port: 5173,
     strictPort: true,
     proxy: {
-      '/api': { target: 'http://localhost:8080', changeOrigin: true, ws: true },
+      '/api': {
+        target: API_TARGET,
+        changeOrigin: true,
+        ws: true,
+        // The API accepts WebSocket upgrades only from its own origin (or the
+        // configured ones); in development the page origin is the dev server.
+        configure: (proxy) => {
+          proxy.on('proxyReqWs', (req) => req.setHeader('origin', API_TARGET))
+        },
+      },
     },
   },
   preview: { port: 4173, strictPort: true },

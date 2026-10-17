@@ -387,6 +387,23 @@ export interface PaymentInstructions {
   currency: 'KZT'
 }
 
+/** Outcome of the automatic Kaspi receipt check (payments.DriverReceiptView). */
+export type ReceiptDecision = 'auto_confirmed' | 'manual_review'
+
+/**
+ * The receipt attached to a top-up: a Kaspi PDF (checked automatically) or an
+ * image (evidence for the administrator only). `reasons` are the review
+ * reasons (amount_mismatch, receipt_too_old, …, duplicate_receipt, image_receipt).
+ */
+export interface TopUpReceipt {
+  kind: 'pdf' | 'image'
+  decision: ReceiptDecision | null
+  reasons: string[]
+  receipt_serial: string | null
+  amount: number | null
+  paid_at: string | null
+}
+
 export interface TopUp {
   id: string
   number: number
@@ -395,7 +412,7 @@ export interface TopUp {
   verified_amount: number | null
   currency: 'KZT'
   status: TopUpStatus
-  provider: 'kaspi_manual'
+  provider: string
   payment: PaymentInstructions
   driver_payment_reference: string | null
   driver_note: string | null
@@ -410,6 +427,8 @@ export interface TopUp {
   rejected_at: string | null
   rejected_reason: string | null
   refunded_at: string | null
+  /** The latest receipt check; null without a receipt. */
+  receipt: TopUpReceipt | null
 }
 
 export interface TopUpSubmit {

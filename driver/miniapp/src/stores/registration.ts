@@ -23,6 +23,7 @@ import {
 } from '../features/registration/form'
 import { isAbortError, isApiError } from '../services/http'
 import { requestContact } from '../telegram'
+import { useSessionStore } from './session'
 
 export type PhoneFlow = 'idle' | 'requesting' | 'waiting' | 'verified' | 'cancelled' | 'failed' | 'unavailable' | 'timeout'
 
@@ -31,11 +32,19 @@ export const PHONE_WAIT_MS = 60_000
 const AUTOSAVE_MS = 1_500
 const PLATE_CHECK_MS = 450
 
-const CONSENT_KEY = `jt.driver.pd_consent.${PD_CONSENT_VERSION}`
+/**
+ * The ticked consent box survives closing the Mini App until submission. The
+ * key names the Telegram account: Telegram keeps one storage per bot on a
+ * device, shared by every account signed in there.
+ */
+function consentKey(): string {
+  const user = useSessionStore().me?.telegram_user_id ?? 0
+  return `jt.driver.pd_consent.${PD_CONSENT_VERSION}.${user}`
+}
 
 function readConsent(): boolean {
   try {
-    return localStorage.getItem(CONSENT_KEY) === '1'
+    return localStorage.getItem(consentKey()) === '1'
   } catch {
     return false
   }
@@ -43,8 +52,8 @@ function readConsent(): boolean {
 
 function writeConsent(v: boolean): void {
   try {
-    if (v) localStorage.setItem(CONSENT_KEY, '1')
-    else localStorage.removeItem(CONSENT_KEY)
+    if (v) localStorage.setItem(consentKey(), '1')
+    else localStorage.removeItem(consentKey())
   } catch {
     // Storage unavailable: the checkbox simply has to be ticked again next time.
   }

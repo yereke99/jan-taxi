@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { dayEnd, dayStart, opt } from '../../api/common'
-import { topUpsApi, type AdminTopUp } from '../../api/finance'
+import { REJECT_DUPLICATE_RECEIPT, topUpsApi, type AdminTopUp } from '../../api/finance'
 import { DataTable, DateRange, DriverPicker, ExportButton, FiltersBar, Pagination, StateView, StatusBadge, Tabs, type Column } from '../../components'
 import { useFormat } from '../../composables/useFormat'
 import { usePagedList } from '../../composables/usePagedList'
@@ -87,8 +87,12 @@ useResync(() => void list.reload({ silent: true }))
         </template>
         <template #cell-status="{ row }">
           <span class="two-line">
-            <StatusBadge kind="topup" :status="row.status" />
-            <span v-if="row.has_receipt" class="receipt">{{ t('finance.has_receipt') }}</span>
+            <span class="badges">
+              <StatusBadge kind="topup" :status="row.status" />
+              <span v-if="row.confirmed_automatically" class="auto">{{ t('finance.auto_badge') }}</span>
+            </span>
+            <span v-if="row.rejected_reason === REJECT_DUPLICATE_RECEIPT" class="receipt receipt--bad">{{ t('finance.reject_reason_duplicate_receipt') }}</span>
+            <span v-else-if="row.has_receipt" class="receipt">{{ t('finance.has_receipt') }}</span>
           </span>
         </template>
       </DataTable>
@@ -117,5 +121,26 @@ useResync(() => void list.reload({ silent: true }))
 .receipt {
   font: var(--jt-font-caption);
   color: var(--jt-color-label-secondary);
+}
+
+.receipt--bad {
+  color: var(--jt-color-red-text);
+}
+
+.badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.auto {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--jt-radius-round);
+  background: var(--jt-color-primary);
+  color: var(--jt-color-on-primary);
+  font: 600 12px/16px var(--jt-font-family);
 }
 </style>

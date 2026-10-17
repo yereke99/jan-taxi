@@ -266,7 +266,7 @@ onMounted(() => {
 .money__warn {
   margin-top: var(--jt-space-1);
   font: var(--jt-font-footnote);
-  color: var(--jt-color-red-text);
+  color: var(--jt-color-label);
 }
 
 .mini-map {

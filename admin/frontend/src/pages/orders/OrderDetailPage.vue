@@ -136,7 +136,8 @@ async function dispute(reason: string): Promise<void> {
 }
 
 function onAssigned(updated: AdminOrder): void {
-  apply(updated)
+  // Assignment warnings (offline, location, radius) are shown in the dialog.
+  res.set(updated)
   toast.success(t('orders.assigned_ok', { code: updated.driver?.code ?? '' }))
 }
 

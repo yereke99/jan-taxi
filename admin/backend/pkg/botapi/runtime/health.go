@@ -13,7 +13,7 @@ import (
 )
 
 // HealthWindow is how stale the last successful poll (leader) or lease
-// attempt (standby) may be before the bot reports itself unhealthy (§13).
+// check (standby) may be before the bot reports itself unhealthy (§13).
 const HealthWindow = 90 * time.Second
 
 // Roles reported by the health endpoint.
@@ -29,16 +29,30 @@ type Health struct {
 	LastPollAgeS *float64 `json:"last_poll_age_s"`
 	LastUpdateID int64    `json:"last_update_id"`
 	InstanceID   string   `json:"instance_id"`
+	// ConsecutiveFailures counts failed Telegram calls since the last
+	// successful poll; LastError is the latest of them (redacted).
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	LastError           string `json:"last_error,omitempty"`
+	// Stalled is set while the latest Telegram call outlived its hard
+	// deadline; Stalls and AbandonedHandlers count such events since start.
+	Stalled           bool  `json:"stalled"`
+	Stalls            int64 `json:"stalls"`
+	AbandonedHandlers int64 `json:"abandoned_handlers"`
 }
 
 // Health reports the poller state. A leader is healthy while its last
-// successful poll (or processed update) is younger than HealthWindow; a
-// standby while its lease loop keeps running.
+// successful poll (or processed update) is younger than HealthWindow and its
+// latest Telegram call did not stall, or while it waits out a Telegram
+// retry_after; a standby while its lease checks keep succeeding.
 func (p *Poller) Health() Health {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	h := Health{Role: RoleStandby, LastUpdateID: p.lastProcessed, InstanceID: p.cfg.InstanceID}
+	h := Health{
+		Role: RoleStandby, LastUpdateID: p.lastProcessed, InstanceID: p.cfg.InstanceID,
+		ConsecutiveFailures: p.failures, LastError: p.lastErr,
+		Stalled: p.stalled, Stalls: p.stalls, AbandonedHandlers: p.abandoned,
+	}
 	if !p.lastPoll.IsZero() {
 		age := math.Round(now.Sub(p.lastPoll).Seconds()*10) / 10
 		h.LastPollAgeS = &age
@@ -52,10 +66,10 @@ func (p *Poller) Health() Health {
 		if ref.Before(p.leaderSince) {
 			ref = p.leaderSince
 		}
-		h.Healthy = now.Sub(ref) < HealthWindow
+		h.Healthy = (now.Sub(ref) < HealthWindow && !p.stalled) || now.Before(p.retryUntil)
 		return h
 	}
-	ref := p.lastLeaseTry
+	ref := p.lastLeaseOK
 	if ref.IsZero() {
 		ref = p.started
 	}

@@ -43,7 +43,8 @@ function open(url: string): void {
       <Navigation :size="20" :stroke-width="2.25" aria-hidden="true" />
       {{ t('trip.open_2gis') }}
     </button>
-    <button type="button" class="nav__next" @click="open(plan.nextUrl)">{{ t('trip.next_only') }}</button>
+    <!-- Only when the main button passes the whole route; otherwise both open the next stop. -->
+    <button v-if="plan.primaryMode === 'full'" type="button" class="nav__next" @click="open(plan.nextUrl)">{{ t('trip.next_only') }}</button>
     <p v-if="plan.note" class="nav__note">{{ t(`trip.note_${plan.note}`) }}</p>
   </section>
 </template>

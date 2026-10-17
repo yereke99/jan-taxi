@@ -186,7 +186,7 @@ func TestReceiptReuseIsRejected(t *testing.T) {
 	idA, _ := createTopUp(t, a, 1000)
 	expect(t, uploadPDF(t, a, idA, pdf), http.StatusOK)
 
-	check := func(name string, d driver, data []byte) {
+	check := func(name string, d driver, data []byte) uuid.UUID {
 		t.Helper()
 		id, _ := createTopUp(t, d, 1000)
 		r := uploadPDF(t, d, id, data)
@@ -218,9 +218,24 @@ func TestReceiptReuseIsRejected(t *testing.T) {
 		if n := count(t, e.pool, `SELECT count(*) FROM top_up_requests t JOIN files f ON f.id = t.receipt_file_id WHERE t.id = $1 AND f.mime = 'application/pdf'`, id); n != 1 {
 			t.Fatalf("%s: evidence file missing", name)
 		}
+		return id
 	}
 	// The identical file, by another driver.
-	check("same file", b, pdf)
+	dup := check("same file", b, pdf)
+	// Admins are pointed at the top-up that used the receipt first.
+	detail, err := loadAdminTopUpDetail(context.Background(), e.pool, dup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := false
+	for _, w := range detail.DuplicateWarnings {
+		if w.Kind == WarnReceiptSerialUsed && w.TopUpID != nil && *w.TopUpID == idA {
+			linked = true
+		}
+	}
+	if !linked {
+		t.Fatalf("duplicate warnings = %+v", detail.DuplicateWarnings)
+	}
 	// Another rendering of the same receipt number (different bytes).
 	other := spec
 	other.Payer = "Басқа Б."
@@ -371,7 +386,12 @@ func TestReceiptLeftForReview(t *testing.T) {
 			s := kaspiSpec(1000)
 			s.NoBINLine, s.Seller = true, `ИП "Сауле"`
 			return receipttest.Build(s)
-		}, want: []string{ReasonRecipientMismatch}},
+		}, want: []string{ReasonReceiptIncomplete, ReasonRecipientMismatch}},
+		{name: "our seller name without BIN", amount: 1000, pdf: func() []byte {
+			s := kaspiSpec(1000)
+			s.NoBINLine = true
+			return receipttest.Build(s)
+		}, want: []string{ReasonReceiptIncomplete}},
 		{name: "paid before the top-up", amount: 1000, pdf: func() []byte {
 			s := kaspiSpec(1000)
 			s.PaidAt = now.Add(-time.Hour)
@@ -396,6 +416,17 @@ func TestReceiptLeftForReview(t *testing.T) {
 			edited := s
 			edited.Amount = "1 000"
 			return receipttest.BuildEdited(s, edited)
+		}, want: []string{ReasonTamperSuspected}},
+		{name: "edited in place", amount: 1000, pdf: func() []byte {
+			s := kaspiSpec(500)
+			edited := s
+			edited.Amount = "1 000"
+			return receipttest.BuildSpliced(s, edited)
+		}, want: []string{ReasonTamperSuspected}},
+		{name: "rewritten by another tool", amount: 1000, pdf: func() []byte {
+			s := kaspiSpec(1000)
+			s.Header = "%\xbf\xf7\xa2\xfe"
+			return receipttest.Build(s)
 		}, want: []string{ReasonTamperSuspected}},
 		{name: "saved by another program", amount: 1000, pdf: func() []byte {
 			s := kaspiSpec(1000)
@@ -600,6 +631,45 @@ func TestBotReceiptIntake(t *testing.T) {
 	}
 	if _, err := e.svc.AttachBotReceipt(ctx, rd, "photo.jpg", pngImage(t)); httpCode(err) != "unsupported_file_type" {
 		t.Fatalf("image: %v", err)
+	}
+}
+
+func TestBotReceiptPicksTheMatchingTopUp(t *testing.T) {
+	e := newEnv(t)
+	d := e.driver("approved")
+	rd := ReceiptDriver{DriverID: d.DriverID, UserID: d.UserID}
+	ctx := context.Background()
+
+	// The receipt goes to the open top-up with its amount, not simply the latest.
+	big, _ := createTopUp(t, d, 3000)
+	small, _ := createTopUp(t, d, 1000)
+	res, err := e.svc.AttachBotReceipt(ctx, rd, "receipt.pdf", receipttest.Build(kaspiSpec(3000)))
+	if err != nil || res.TopUp.ID != big || res.Outcome != OutcomeCredited {
+		t.Fatalf("matching amount: %+v %v", res, err)
+	}
+	if st := topUpStatus(t, e.pool, small); st != StatusCreated {
+		t.Fatalf("latest top-up = %s", st)
+	}
+
+	// No amount matches: the latest open top-up takes it and waits for review.
+	odd := receipttest.Build(kaspiSpec(700))
+	res, err = e.svc.AttachBotReceipt(ctx, rd, "receipt.pdf", odd)
+	if err != nil || res.TopUp.ID != small || res.Outcome != OutcomePending || !slices.Equal(res.Reasons, []string{ReasonAmountMismatch}) {
+		t.Fatalf("no matching amount: %+v %v", res, err)
+	}
+
+	// Sent again while another open top-up has its amount: still the
+	// top-up that holds it, never a duplicate rejection of the other one.
+	other, _ := createTopUp(t, d, 700)
+	res, err = e.svc.AttachBotReceipt(ctx, rd, "receipt.pdf", odd)
+	if err != nil || res.TopUp.ID != small || res.Outcome != OutcomePending {
+		t.Fatalf("re-sent: %+v %v", res, err)
+	}
+	if st := topUpStatus(t, e.pool, other); st != StatusCreated {
+		t.Fatalf("other top-up = %s", st)
+	}
+	if b, _ := balance(t, e.pool, d.DriverID); b != 3000 {
+		t.Fatalf("balance = %d", b)
 	}
 }
 

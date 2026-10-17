@@ -7,9 +7,13 @@ import { parseInteger } from '../../forms/numbers'
 
 export type Draft = string | boolean | LocalizedText | string[]
 
+/** Groups in display order; a key belongs to the group with its longest matching prefix. */
 export const SETTING_GROUPS: ReadonlyArray<{ id: string; prefixes: string[] }> = [
   { id: 'kaspi', prefixes: ['kaspi.'] },
+  { id: 'company', prefixes: ['company.'] },
   { id: 'topup', prefixes: ['topup.'] },
+  { id: 'topup_auto', prefixes: ['topup.auto_', 'topup.receipt_'] },
+  { id: 'dispatch', prefixes: ['dispatch.'] },
   { id: 'driver', prefixes: ['driver.'] },
   { id: 'orders', prefixes: ['routing.', 'commission.'] },
   { id: 'delivery', prefixes: ['delivery.'] },
@@ -18,7 +22,40 @@ export const SETTING_GROUPS: ReadonlyArray<{ id: string; prefixes: string[] }> =
 ]
 
 export function groupOf(key: string): string {
-  return SETTING_GROUPS.find((g) => g.prefixes.some((p) => key.startsWith(p)))?.id ?? 'other'
+  let best = { id: 'other', len: 0 }
+  for (const g of SETTING_GROUPS) {
+    for (const p of g.prefixes) if (key.startsWith(p) && p.length > best.len) best = { id: g.id, len: p.length }
+  }
+  return best.id
+}
+
+/** Dispatch radius settings (ARCHITECTURE §7). */
+export const DISPATCH_KEYS = {
+  base: 'dispatch.radius_base_m',
+  step: 'dispatch.radius_step_m',
+  stepS: 'dispatch.radius_step_s',
+  max: 'dispatch.radius_max_m',
+} as const
+
+export interface RadiusStep {
+  /** Seconds since the order was created. */
+  afterS: number
+  radiusM: number
+}
+
+/**
+ * Effective search radius over time:
+ * min(max, base + step * floor(age / stepS)). Lists the radius at the start
+ * and after each step until it reaches the maximum (at most `limit` rows);
+ * empty when the values are unusable.
+ */
+export function radiusSchedule(base: number, step: number, stepS: number, max: number, limit = 6): RadiusStep[] {
+  if (![base, step, stepS, max].every(Number.isFinite) || base <= 0 || stepS <= 0 || step < 0 || max < base) return []
+  const out: RadiusStep[] = [{ afterS: 0, radiusM: Math.min(base, max) }]
+  for (let i = 1; out.length < limit && step > 0 && out[out.length - 1]!.radiusM < max; i++) {
+    out.push({ afterS: i * stepS, radiusM: Math.min(max, base + step * i) })
+  }
+  return out
 }
 
 function asText(v: unknown): LocalizedText {

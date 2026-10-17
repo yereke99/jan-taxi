@@ -49,10 +49,17 @@ export interface CancelInfo {
   text: string | null
 }
 
+/** Reason codes the driver app and bot may send; shown in the passenger's language. */
+export const DRIVER_CANCEL_CODES = ['passenger_no_show', 'sender_no_show', 'passenger_asked', 'cannot_reach', 'vehicle_problem', 'unsafe_cargo'] as const
+
 export function cancelInfo(o: Order): CancelInfo {
   const by = o.cancelled_by
   const reason = o.cancel_reason
   if (by === 'system' && reason === 'no_driver_found') return { byKey: null, reasonKey: 'order.reason_no_driver_found', text: null }
+  const code = reason?.trim() ?? ''
+  if (by === 'driver' && (DRIVER_CANCEL_CODES as readonly string[]).includes(code)) {
+    return { byKey: 'order.reason_by_driver', reasonKey: `order.driver_reason.${code}`, text: null }
+  }
   return {
     byKey: by ? `order.reason_by_${by}` : null,
     reasonKey: null,

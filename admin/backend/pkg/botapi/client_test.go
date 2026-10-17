@@ -169,3 +169,46 @@ func TestUploadTopUpReceipt(t *testing.T) {
 		t.Fatalf("retry: %v after %d calls", err, calls.Load())
 	}
 }
+
+func TestClientAttemptDeadlineOnHungServer(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) <= 2 {
+			select { // the API stopped answering
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		_, _ = io.WriteString(w, `{"acquired":true,"last_update_id":7,"lease_expires_at":null}`)
+	})
+	defer close(release)
+	c.Timeout = 100 * time.Millisecond
+	c.MaxAttempts = 2
+	start := time.Now()
+	_, err := c.AcquireLease(context.Background(), "i-1", 30*time.Second)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("hung API held the call for %v", elapsed)
+	}
+	if !IsTransient(err) || !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 2 {
+		t.Fatalf("hung API: %v after %d attempts", err, calls.Load())
+	}
+	c.ResetConnections()
+	if l, err := c.AcquireLease(context.Background(), "i-1", 30*time.Second); err != nil || l.LastUpdateID != 7 {
+		t.Fatalf("after recovery: %+v %v", l, err)
+	}
+}
+
+func TestClientOwnTransportIsBounded(t *testing.T) {
+	c := New("http://127.0.0.1:1", "s", BotDriver)
+	hc := c.httpClient()
+	tr, ok := hc.Transport.(*http.Transport)
+	if !ok || tr.ResponseHeaderTimeout <= 0 || tr.IdleConnTimeout <= 0 || tr.TLSHandshakeTimeout <= 0 || hc.Timeout <= 0 {
+		t.Fatalf("unbounded client: %+v", hc)
+	}
+	c.ResetConnections()
+	if c.httpClient() == hc {
+		t.Fatal("ResetConnections must replace the own client")
+	}
+}

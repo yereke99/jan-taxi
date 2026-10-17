@@ -92,6 +92,7 @@ func effectiveInt(ctx context.Context, q db.Querier, key string) int64 {
 type Kaspi struct {
 	PaymentURL    string    `json:"payment_url"`
 	RecipientName string    `json:"recipient_name"`
+	RecipientBIN  string    `json:"recipient_bin,omitempty"` // company.bin, shown to drivers as the payee
 	Instructions  Localized `json:"instructions"`
 }
 
@@ -100,6 +101,7 @@ func KaspiPayment(ctx context.Context, q db.Querier) Kaspi {
 	var k Kaspi
 	_ = Effective(ctx, q, "kaspi.payment_url", &k.PaymentURL)
 	_ = Effective(ctx, q, "kaspi.recipient_name", &k.RecipientName)
+	_ = Effective(ctx, q, "company.bin", &k.RecipientBIN)
 	_ = Effective(ctx, q, "kaspi.instructions", &k.Instructions)
 	return k
 }

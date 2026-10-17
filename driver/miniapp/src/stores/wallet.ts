@@ -1,6 +1,7 @@
-// Wallet, ledger and Kaspi top-ups. A top-up never changes the balance by
-// itself: "I paid" only moves it to pending_verification, and the balance
-// changes when finance confirms it (topup.confirmed / wallet.updated events).
+// Wallet, ledger and Kaspi top-ups. "I paid" only moves a top-up to
+// pending_verification; the balance changes when a Kaspi PDF receipt passes
+// every automatic check (the upload response) or when finance confirms it
+// (topup.confirmed / wallet.updated events).
 
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
@@ -9,6 +10,7 @@ import type { UploadProgress } from '../api/upload'
 import type { LedgerEntry, TopUp, TopUpSubmit, Wallet } from '../api/types'
 import { isApiError, newIdempotencyKey } from '../services/http'
 import type { TopUpLimits } from '../services/config'
+import { useSessionStore } from './session'
 
 export type AmountError = 'invalid' | 'too_small' | 'too_large'
 
@@ -64,7 +66,7 @@ export const useWalletStore = defineStore('wallet', () => {
         wallet.value = await api.getWallet()
         walletError.value = null
       } catch (err) {
-        walletError.value = err
+        walletError.value = useSessionStore().handleAccessError(err) ? null : err
       }
     })().finally(() => {
       walletInFlight = null
@@ -82,7 +84,7 @@ export const useWalletStore = defineStore('wallet', () => {
       state.loaded = true
       state.error = null
     } catch (err) {
-      state.error = err
+      state.error = useSessionStore().handleAccessError(err) ? null : err
     } finally {
       state.loading = false
     }
@@ -132,8 +134,27 @@ export const useWalletStore = defineStore('wallet', () => {
     return remember(await api.cancelTopUp(id))
   }
 
-  async function uploadReceipt(id: string, file: Blob, onProgress?: (p: UploadProgress) => void, signal?: AbortSignal): Promise<TopUp> {
-    return remember(await api.uploadReceipt(id, file, { onProgress, signal }))
+  /**
+   * Attaches a receipt. A Kaspi PDF that passes every check credits the
+   * wallet at once, so the balance is re-read; a receipt used before rejects
+   * the top-up (409), so the top-up is re-read before the error is rethrown.
+   */
+  async function uploadReceipt(
+    id: string,
+    file: Blob,
+    fileName: string,
+    onProgress?: (p: UploadProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<TopUp> {
+    try {
+      const t = remember(await api.uploadReceipt(id, file, fileName, { onProgress, signal }))
+      void refreshWallet()
+      if (ledger.value.loaded && t.status === 'confirmed') void loadLedger(true)
+      return t
+    } catch (err) {
+      if (isApiError(err) && err.code === 'receipt_already_used') await fetchTopUp(id).catch(() => undefined)
+      throw err
+    }
   }
 
   /** Realtime hint for one top-up (topup.updated / topup.confirmed). */

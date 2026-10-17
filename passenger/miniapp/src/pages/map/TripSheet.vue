@@ -4,12 +4,13 @@
 -->
 <script setup lang="ts">
 import { Route } from '@lucide/vue'
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { JButton, JSheet, JSpinner } from '../../components/ui'
 import { ROUTE } from '../../router/names'
 import { useStageScreen } from '../../stage/mapStage'
+import { useLocationStore } from '../../stores/location'
 import { useOrdersStore } from '../../stores/orders'
 
 const { t } = useI18n()
@@ -17,9 +18,28 @@ const router = useRouter()
 const stage = useStageScreen()
 const orders = useOrdersStore()
 
+const location = useLocationStore()
+
 stage.controls.locate = true
 
 const loading = ref(true)
+
+// Without a trip the map shows where the passenger is (once; panning wins).
+let centred = false
+let userMoved = false
+const offMove = stage.onMoveStart((user) => {
+  if (user) userMoved = true
+})
+onBeforeUnmount(offMove)
+watch(
+  () => [stage.map.value, location.current] as const,
+  ([map, loc]) => {
+    if (!map || !loc || centred || userMoved) return
+    centred = true
+    stage.centerOn(loc, 16)
+  },
+  { immediate: true },
+)
 
 onMounted(async () => {
   await orders.loadActive()

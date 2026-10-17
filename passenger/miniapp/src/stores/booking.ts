@@ -28,6 +28,7 @@ import {
   isComplete,
   moveStop as moveStopIn,
   outsideIndices,
+  removeEmptyStops,
   removeStop as removeStopFrom,
   routeFingerprint,
   setPlace,
@@ -256,6 +257,14 @@ export const useBookingStore = defineStore('booking', () => {
     stopErrors.value = {}
   }
 
+  /** Removes intermediate stops left empty (added, then the search was closed). */
+  function pruneEmptyStops(): void {
+    const next = removeEmptyStops(stops.value)
+    if (next === stops.value) return
+    stops.value = next
+    stopErrors.value = {}
+  }
+
   function moveStop(from: number, to: number): void {
     stops.value = moveStopIn(stops.value, from, to)
     stopErrors.value = {}
@@ -449,6 +458,7 @@ export const useBookingStore = defineStore('booking', () => {
     setStopPlace,
     addStop,
     removeStop,
+    pruneEmptyStops,
     moveStop,
     setPickupFromLocation,
     prefill,

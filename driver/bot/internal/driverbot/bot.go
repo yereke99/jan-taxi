@@ -15,8 +15,8 @@ import (
 // TelegramAPI is the part of the Bot API the handlers use (*telegram.Client).
 type TelegramAPI interface {
 	runtime.MessageSender
+	runtime.ChatMenuAPI
 	AnswerCallbackQuery(ctx context.Context, p telegram.AnswerCallbackQueryParams) error
-	SetChatMenuButton(ctx context.Context, chatID *int64, button telegram.MenuButtonWebApp) error
 	GetFile(ctx context.Context, fileID string) (*telegram.File, error)
 	DownloadFile(ctx context.Context, filePath string, maxBytes int64) ([]byte, error)
 }
@@ -77,6 +77,7 @@ type Bot struct {
 	conf       *runtime.ConfigCache
 	buttons    *runtime.Matcher
 	liveErrors *runtime.Throttle
+	menus      *runtime.ChatMenus
 }
 
 // New builds the bot; it fails when the texts or button labels are inconsistent.
@@ -100,6 +101,7 @@ func New(cfg Config, tg TelegramAPI, api API, log *slog.Logger) (*Bot, error) {
 		conf:       runtime.NewConfigCache(api, 5*time.Minute, log),
 		buttons:    m,
 		liveErrors: runtime.NewThrottle(liveErrorEvery),
+		menus:      runtime.NewChatMenus(tg, log),
 	}, nil
 }
 
@@ -203,6 +205,7 @@ func (b *Bot) onMessage(ctx context.Context, msg *telegram.Message) error {
 	if s.user.IsBlocked {
 		return b.blocked(ctx, s)
 	}
+	defer b.menus.Ensure(ctx, s.chatID)
 	switch {
 	case msg.Contact != nil:
 		return b.onContact(ctx, s, msg)
@@ -332,8 +335,10 @@ func languageRow() []telegram.InlineKeyboardButton {
 	return row
 }
 
-// Profile is the command menu, descriptions and default menu button.
-func (b *Bot) Profile() runtime.Profile {
+// Profile is the command menu, descriptions and default menu button. The
+// menu button is the only one every chat uses (see runtime.ChatMenus); its
+// URL comes from DRIVER_MINIAPP_URL, else from the API configuration.
+func (b *Bot) Profile(ctx context.Context) runtime.Profile {
 	p := runtime.Profile{
 		Commands:          map[string][]telegram.BotCommand{},
 		Descriptions:      map[string]string{},
@@ -352,8 +357,8 @@ func (b *Bot) Profile() runtime.Profile {
 		p.Descriptions[code] = texts.T(lang, "description")
 		p.ShortDescriptions[code] = texts.T(lang, "short_description")
 	}
-	if b.cfg.MiniAppURL != "" {
-		p.MenuButton = &telegram.MenuButtonWebApp{Text: "Jan Taxi Driver", WebApp: telegram.WebAppInfo{URL: b.cfg.MiniAppURL}}
+	if url := b.miniAppURL(ctx, ""); url != "" {
+		p.MenuButton = &telegram.MenuButtonWebApp{Text: "Jan Taxi Driver", WebApp: telegram.WebAppInfo{URL: url}}
 	}
 	return p
 }

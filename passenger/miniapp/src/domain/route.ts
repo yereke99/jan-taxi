@@ -84,6 +84,12 @@ export function removeStop(stops: RouteStop[], index: number): RouteStop[] {
   return withRoles(stops.filter((_, i) => i !== index))
 }
 
+/** Drops intermediate stops that never got a place (the passenger backed out of the search). */
+export function removeEmptyStops(stops: RouteStop[]): RouteStop[] {
+  const keep = stops.filter((s, i) => s.place !== null || !isIntermediate(stops, i))
+  return keep.length === stops.length ? stops : withRoles(keep)
+}
+
 /**
  * Moves an intermediate stop to another intermediate position. Pickup and
  * destination keep their fixed roles; anything else returns the same array.

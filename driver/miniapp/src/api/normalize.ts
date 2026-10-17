@@ -11,6 +11,8 @@ import {
   type FileRef,
   type RegistrationField,
   type RegistrationHistoryItem,
+  type TopUp,
+  type TopUpReceipt,
   type VehiclePhoto,
   type VehiclePhotoKind,
 } from './types'
@@ -126,4 +128,25 @@ export function normalizeRegistration(raw: unknown): DriverRegistration {
     pd_consent_at: strOrNull(r.pd_consent_at),
     pd_consent_version: strOrNull(r.pd_consent_version),
   }
+}
+
+/** The receipt check of a top-up; anything malformed reads as "no receipt". */
+export function normalizeReceipt(v: unknown): TopUpReceipt | null {
+  const r = rec(v)
+  if (r.kind !== 'pdf' && r.kind !== 'image') return null
+  const decision = r.decision === 'auto_confirmed' || r.decision === 'manual_review' ? r.decision : null
+  return {
+    kind: r.kind,
+    decision,
+    reasons: arr(r.reasons).filter((x): x is string => typeof x === 'string' && x !== ''),
+    receipt_serial: strOrNull(r.receipt_serial),
+    amount: typeof r.amount === 'number' && Number.isFinite(r.amount) ? r.amount : null,
+    paid_at: strOrNull(r.paid_at),
+  }
+}
+
+/** A top-up as returned by the API, with `receipt` always present (null when absent). */
+export function normalizeTopUp(raw: unknown): TopUp {
+  const t = rec(raw) as unknown as TopUp
+  return { ...t, receipt: normalizeReceipt((raw as { receipt?: unknown } | null)?.receipt) }
 }

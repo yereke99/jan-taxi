@@ -23,6 +23,9 @@ const range = computed(() => (c.value.min !== undefined && c.value.max !== undef
 
 const sourceLabel = computed(() => t(`settings.source_${props.item.source}`))
 
+/** Saved https link of a url setting, opened for a quick check (e.g. the Kaspi Pay page). */
+const savedLink = computed(() => (props.item.type === 'url' && typeof props.item.value === 'string' && /^https:\/\//.test(props.item.value) ? props.item.value : ''))
+
 /** Known prohibited-item codes (translated); stored codes outside the list are kept and shown too. */
 const KNOWN_CODES = ['weapons', 'explosives', 'drugs', 'alcohol_tobacco', 'money_valuables', 'animals', 'hazardous', 'illegal_goods']
 const codes = computed(() => [...new Set([...KNOWN_CODES, ...((props.modelValue as string[]) ?? [])])])
@@ -54,6 +57,7 @@ function codeLabel(code: string): string {
     <div class="setting__head">
       <label class="setting__label" :for="item.key">{{ label }}</label>
       <span class="setting__source" :title="item.updated_at ? fmt.dateTime(item.updated_at) : ''">{{ sourceLabel }}</span>
+      <a v-if="savedLink" :href="savedLink" target="_blank" rel="noopener noreferrer" class="jt-link-button setting__link">{{ t('settings.open_link') }}</a>
       <button v-if="item.source === 'database'" type="button" class="jt-link-button setting__reset" @click="emit('reset')">{{ t('settings.reset_default') }}</button>
     </div>
     <p class="setting__desc">{{ description }}<template v-if="range"> · {{ range }}</template></p>
@@ -148,9 +152,21 @@ function codeLabel(code: string): string {
   color: var(--jt-color-label-secondary);
 }
 
+.setting__link,
+.setting__reset {
+  font: var(--jt-font-small);
+}
+
+.setting__link {
+  margin-left: auto;
+}
+
+.setting__link + .setting__reset {
+  margin-left: var(--jt-space-3);
+}
+
 .setting__reset {
   margin-left: auto;
-  font: var(--jt-font-small);
 }
 
 .setting__desc {

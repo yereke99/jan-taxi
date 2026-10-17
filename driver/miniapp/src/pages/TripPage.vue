@@ -137,7 +137,7 @@ onBeforeUnmount(() => {
       >
         <template #header>
           <div class="tpage__head">
-            <p class="tpage__state">{{ heading }}</p>
+            <p class="tpage__heading">{{ heading }}</p>
             <p v-if="target" class="tpage__target">{{ addr(target.address) }}</p>
             <p v-if="target?.address_details" class="tpage__details">{{ target.address_details }}</p>
             <p class="tpage__meta jt-tabular">
@@ -236,7 +236,8 @@ onBeforeUnmount(() => {
   padding: var(--jt-space-1) 0 var(--jt-space-3);
 }
 
-.tpage__state {
+/* The sheet heading ("Heading to pickup"); .tpage__state is the empty/loading page. */
+.tpage__heading {
   font: var(--jt-font-subheadline);
   font-weight: 600;
   color: var(--jt-color-label-secondary);

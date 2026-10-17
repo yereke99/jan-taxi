@@ -16,6 +16,7 @@ import {
 } from '../api/orders'
 import type { DriverOrderDetail } from '../api/types'
 import { isActiveTripStatus, type TripAction } from '../features/trip/sequence'
+import { useSessionStore } from './session'
 
 export const useTripStore = defineStore('trip', () => {
   const active = shallowRef<DriverOrderDetail | null>(null)
@@ -51,7 +52,7 @@ export const useTripStore = defineStore('trip', () => {
         error.value = null
         loaded.value = true
       } catch (err) {
-        error.value = err
+        error.value = useSessionStore().handleAccessError(err) ? null : err
       }
     })().finally(() => {
       inFlight = null

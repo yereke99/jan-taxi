@@ -17,7 +17,7 @@ const kk = {
   reassign: 'Жүргізушіні ауыстыру',
   assign_title: 'Жүргізуші тағайындау',
   reassign_title: 'Жүргізушіні ауыстыру',
-  assign_hint: '{city} қаласының мақұлданған жүргізушілері. Тапсырыс комиссиясы — {commission}: жүргізушінің қолжетімді балансы одан кем болмауы керек.',
+  assign_hint: 'Мақұлданған жүргізушілер, А нүктесіне жақындары жоғарыда. Тапсырыс комиссиясы — {commission}: жүргізушінің қолжетімді балансы одан кем болмауы керек.',
   assign_to: '{code} жүргізушісіне тағайындау',
   drivers_found: 'Табылған жүргізушілер',
   no_drivers_found: 'Жүргізуші табылмады',
@@ -83,6 +83,15 @@ const kk = {
   no_reservation: 'Комиссия ұсталмаған',
   no_ledger: 'Журналда жазба жоқ',
   stop_completed_at: 'өтті: {time}',
+  warning_location_required: 'Жүргізушінің геолокациясы жоқ — оның қайда екені белгісіз.',
+  warning_location_stale: 'Жүргізушінің геолокациясы ескірген — ол қазір басқа жерде болуы мүмкін.',
+  warning_out_of_radius: 'Жүргізуші А нүктесінен іздеу радиусынан алыс.',
+  assigned_with_warnings: 'Тапсырыс {code} жүргізушісіне тағайындалды. Назар аударыңыз:',
+  assign_checks_note: 'Тағайындағанда желі, геолокация және радиус тексерілмейді — сервер оларды ескерту ретінде қайтарады.',
+  assign_no_location: 'Жүргізушінің геолокациясы белгісіз.',
+  driver_location_age: '{distance} · {age}',
+  to_pickup_unknown: 'орны белгісіз',
+  done: 'Дайын',
 }
 
 export type OrdersMessages = typeof kk
@@ -104,7 +113,7 @@ const ru: OrdersMessages = {
   reassign: 'Сменить водителя',
   assign_title: 'Назначение водителя',
   reassign_title: 'Смена водителя',
-  assign_hint: 'Одобренные водители города {city}. Комиссия заказа — {commission}: доступный баланс водителя должен быть не меньше.',
+  assign_hint: 'Одобренные водители, ближайшие к точке A — выше. Комиссия заказа — {commission}: доступный баланс водителя должен быть не меньше.',
   assign_to: 'Назначить {code}',
   drivers_found: 'Найденные водители',
   no_drivers_found: 'Водители не найдены',
@@ -170,6 +179,15 @@ const ru: OrdersMessages = {
   no_reservation: 'Комиссия не резервировалась',
   no_ledger: 'Записей в журнале нет',
   stop_completed_at: 'пройдена: {time}',
+  warning_location_required: 'У водителя нет геопозиции — неизвестно, где он.',
+  warning_location_stale: 'Геопозиция водителя устарела — сейчас он может быть в другом месте.',
+  warning_out_of_radius: 'Водитель дальше радиуса поиска от точки A.',
+  assigned_with_warnings: 'Заказ назначен водителю {code}. Обратите внимание:',
+  assign_checks_note: 'При назначении сеть, геопозиция и радиус не проверяются — сервер вернёт их как предупреждения.',
+  assign_no_location: 'Геопозиция водителя неизвестна.',
+  driver_location_age: '{distance} · {age}',
+  to_pickup_unknown: 'место неизвестно',
+  done: 'Готово',
 }
 
 const en: OrdersMessages = {
@@ -189,7 +207,7 @@ const en: OrdersMessages = {
   reassign: 'Change driver',
   assign_title: 'Assign a driver',
   reassign_title: 'Change the driver',
-  assign_hint: 'Approved drivers in {city}. The order commission is {commission}; the driver’s available balance must cover it.',
+  assign_hint: 'Approved drivers, nearest to pickup A first. The order commission is {commission}; the driver’s available balance must cover it.',
   assign_to: 'Assign to {code}',
   drivers_found: 'Drivers found',
   no_drivers_found: 'No drivers found',
@@ -255,6 +273,15 @@ const en: OrdersMessages = {
   no_reservation: 'No commission reserved',
   no_ledger: 'No ledger entries',
   stop_completed_at: 'passed: {time}',
+  warning_location_required: 'The driver has no location fix — their position is unknown.',
+  warning_location_stale: 'The driver’s location is out of date — they may be elsewhere now.',
+  warning_out_of_radius: 'The driver is farther from pickup A than the search radius.',
+  assigned_with_warnings: 'The order was assigned to {code}. Please note:',
+  assign_checks_note: 'Assignment skips the online, location and radius checks; the server returns them as warnings.',
+  assign_no_location: 'The driver’s location is unknown.',
+  driver_location_age: '{distance} · {age}',
+  to_pickup_unknown: 'location unknown',
+  done: 'Done',
 }
 
 export const orders = { kk, ru, en }

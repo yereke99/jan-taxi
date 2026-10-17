@@ -1,8 +1,9 @@
 <!--
   Kaspi verification (§6.1): the operator checks the payment in the Kaspi Pay
   merchant history and records the verified amount, the transaction/receipt
-  number and the payment time. Confirming credits the driver's wallet once;
-  the same Kaspi transaction can never be recorded twice.
+  number and the payment time. With a parsed Kaspi receipt the form starts
+  from the receipt's values (confirm_prefill). Confirming credits the
+  driver's wallet once; the same Kaspi transaction can never be recorded twice.
 -->
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
@@ -11,7 +12,7 @@ import { topUpsApi, type AdminTopUpDetail } from '../../api/finance'
 import { AppButton, ConfirmDialog, FormField, TextArea, TextInput } from '../../components'
 import { useErrors } from '../../composables/useErrors'
 import { useFormat } from '../../composables/useFormat'
-import { LIMITS, validateTopUpConfirm, type TopUpConfirmForm, type TopUpConfirmPayload } from '../../forms/validation'
+import { LIMITS, toLocalDateTimeInput, validateTopUpConfirm, type TopUpConfirmForm, type TopUpConfirmPayload } from '../../forms/validation'
 
 const props = defineProps<{ topup: AdminTopUpDetail }>()
 const emit = defineEmits<{ confirmed: [topup: AdminTopUpDetail] }>()
@@ -26,10 +27,21 @@ const formError = ref('')
 const pending = ref<TopUpConfirmPayload | null>(null)
 const busy = ref(false)
 
+const prefill = computed(() => props.topup.confirm_prefill)
+const prefilled = computed(() => Boolean(prefill.value?.provider_transaction_id))
+
+// Reset when another top-up is shown or a new receipt brings other values.
 watch(
-  () => props.topup.id,
+  () => `${props.topup.id}|${prefill.value?.provider_transaction_id ?? ''}`,
   () => {
-    Object.assign(form, { verifiedAmount: String(props.topup.amount), transactionId: '', paidAt: '', payerInfo: '', note: '' })
+    const p = prefill.value
+    Object.assign(form, {
+      verifiedAmount: String(p?.verified_amount ?? props.topup.amount),
+      transactionId: p?.provider_transaction_id ?? '',
+      paidAt: toLocalDateTimeInput(p?.paid_at),
+      payerInfo: p?.payer_info ?? '',
+      note: '',
+    })
     fieldErrors.value = {}
     formError.value = ''
   },
@@ -72,6 +84,7 @@ async function credit(): Promise<void> {
       <strong>{{ t('finance.verify_notice_title') }}</strong>
       <p>{{ t('finance.verify_notice') }}</p>
     </div>
+    <p v-if="prefilled" class="verify__prefill">{{ t('finance.prefill_note') }}</p>
     <FormField v-slot="f" :label="t('finance.verified_amount')" :error="fieldErrors.verified_amount" :hint="differs ? t('finance.amount_differs', { amount: fmt.money(topup.amount) }) : ''" required>
       <TextInput :id="f.id" v-model="form.verifiedAmount" inputmode="numeric" :invalid="f.invalid" :aria-describedby="f.describedby" />
     </FormField>
@@ -126,6 +139,14 @@ async function credit(): Promise<void> {
   border-radius: var(--jt-radius-inner);
   background: var(--jt-color-orange-tint);
   color: var(--jt-color-orange-text);
+}
+
+.verify__prefill {
+  padding: 8px 12px;
+  border-radius: var(--jt-radius-control);
+  background: var(--jt-color-blue-tint);
+  color: var(--jt-color-blue-text);
+  font: var(--jt-font-small);
 }
 
 .verify__datetime {

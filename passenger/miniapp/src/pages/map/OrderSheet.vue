@@ -31,7 +31,7 @@ import { useAutoFit, useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useOrdersStore } from '../../stores/orders'
 import { useSessionStore } from '../../stores/session'
-import { haptics, openExternal, openTelegram } from '../../telegram'
+import { callPhone, haptics, openTelegram } from '../../telegram'
 import { formatDateTime, formatMoney } from '../../utils/format'
 import { haversineMeters } from '../../utils/geo'
 import { formatKzPhone, telHref } from '../../utils/phone'
@@ -208,8 +208,8 @@ function shareTrip(): void {
   const o = order.value
   if (!o || !o.driver) return
   const text = t('order.share_text', {
-    from: firstStop.value?.address ?? '',
-    to: lastStop.value?.address ?? '',
+    from: addr(firstStop.value?.address),
+    to: addr(lastStop.value?.address),
     driver: o.driver.first_name,
     vehicle: [o.vehicle?.make, o.vehicle?.model].filter(Boolean).join(' '),
     plate: o.vehicle?.plate ?? '',
@@ -226,7 +226,7 @@ async function safety(): Promise<void> {
       ...(support.telegram_link ? [{ id: 'support', label: t('order.safety_support') }] : []),
     ],
   })
-  if (choice === 'call') openExternal('tel:112')
+  if (choice === 'call') callPhone('112')
   else if (choice === 'support' && support.telegram_link) openTelegram(support.telegram_link)
 }
 
@@ -318,7 +318,7 @@ function toHome(): void {
           <li v-if="lastStop" class="trip-route__row">
             <span class="trip-route__dot is-end" aria-hidden="true" />
             <span class="trip-route__address">{{ addr(lastStop.address) }}</span>
-            <span v-if="extraStops > 0" class="trip-route__extra">{{ t('order.extra_stops', { n: extraStops }) }}</span>
+            <span v-if="extraStops > 0" class="trip-route__extra">{{ t('order.extra_stops', { n: extraStops }, extraStops) }}</span>
           </li>
         </ol>
         <p v-if="order.comment" class="trip-order__comment">{{ order.comment }}</p>
@@ -340,7 +340,7 @@ function toHome(): void {
         <div v-if="lastStop" class="trip-list__row">
           <span class="trip-list__badge" aria-hidden="true">{{ String.fromCharCode(64 + order.stops.length) }}</span>
           <span class="trip-list__text">{{ addr(lastStop.address) }}</span>
-          <span v-if="extraStops > 0" class="trip-list__meta">{{ t('order.extra_stops', { n: extraStops }) }}</span>
+          <span v-if="extraStops > 0" class="trip-list__meta">{{ t('order.extra_stops', { n: extraStops }, extraStops) }}</span>
         </div>
         <div class="trip-list__row">
           <Banknote :size="24" :stroke-width="1.8" class="trip-list__icon" aria-hidden="true" />
@@ -350,8 +350,8 @@ function toHome(): void {
 
       <!-- Cancelled -->
       <div v-if="order.status === 'cancelled' && cancel" class="trip-cancel">
-        <p v-if="cancel.reasonKey" class="trip-text">{{ t(cancel.reasonKey) }}</p>
-        <p v-else-if="cancel.byKey" class="trip-text">{{ t(cancel.byKey) }}</p>
+        <p v-if="cancel.byKey" class="trip-text">{{ t(cancel.byKey) }}</p>
+        <p v-if="cancel.reasonKey" class="trip-text" :class="{ 'is-secondary': cancel.byKey }">{{ t(cancel.reasonKey) }}</p>
         <p v-if="cancel.text" class="trip-text is-secondary">{{ t('order.reason_text', { reason: cancel.text }) }}</p>
       </div>
 

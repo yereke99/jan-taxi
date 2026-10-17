@@ -15,7 +15,7 @@ make ps          # containers with their Docker health status
 |---|---|---|
 | API liveness | `GET /healthz` on :8080 (Docker healthcheck `api healthcheck`) | the process serves HTTP |
 | API readiness | `GET /readyz` on :8080 | database reachable, schema at the embedded migration version, realtime listener connected, not shutting down; returns 503 otherwise |
-| Bots | `GET :8090/healthz` in each bot container (`<bot> healthcheck`) | the instance holding the Telegram lease polled successfully within 90 s; a standby instance keeps trying to get the lease |
+| Bots | `GET :8090/healthz` in each bot container (`<bot> healthcheck`) | the instance holding the Telegram lease is not stalled and polled successfully within 90 s (waiting out Telegram's `retry_after` does not count); a standby is healthy while its lease checks succeed. A bot unhealthy for 5 minutes exits and Docker restarts it |
 | Caddy | admin endpoint `127.0.0.1:2019` inside the container | Caddy is running |
 | PostgreSQL | `pg_isready` | accepting connections |
 | OSRM | TCP port 5000 inside the container | router loaded |
@@ -28,7 +28,8 @@ docker compose exec web wget -q -O - http://api:8080/readyz
 ```
 
 Docker restarts crashed containers (`restart: unless-stopped`). An `unhealthy`
-status alone does not restart a container; look at its logs.
+status alone does not restart a container; look at its logs. The bots exit on
+their own after 5 minutes unhealthy, so Docker restarts them.
 
 ## Logs
 

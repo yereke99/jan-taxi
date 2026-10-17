@@ -133,7 +133,7 @@
 	import api_proxy
 
 	header {
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss://{host} {$MAP_CONNECT_SRC:https://tiles.openfreemap.org}; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' wss://{host} {$MAP_CONNECT_SRC:https://tiles.openfreemap.org}; worker-src 'self' blob:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 		X-Frame-Options "DENY"
 		Permissions-Policy "geolocation=(), camera=(), microphone=(), usb=(), payment=()"
 		Cross-Origin-Opener-Policy "same-origin"

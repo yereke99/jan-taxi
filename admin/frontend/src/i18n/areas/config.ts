@@ -16,13 +16,8 @@ const kk = {
   longitude: 'Бойлық',
   coordinates: 'Координаттар',
   zoom: 'Карта масштабы',
-  dispatch_radius: 'Тарату радиусы, м',
-  dispatch_radius_hint: 'Отырғызу нүктесінен осы қашықтықтағы жүргізушілер ғана тапсырыс алады (геолокация міндетті болғанда).',
   search_timeout: 'Іздеу уақыты, с',
   search_timeout_hint: 'Осы уақытта жүргізуші табылмаса, тапсырыс автоматты түрде жабылады.',
-  require_location: 'Жүргізушінің геолокациясы міндетті',
-  location_max_age: 'Геолокацияның ең ұзақ жасы, с',
-  location_max_age_hint: 'Бұдан ескі геолокациясы бар жүргізушілер тапсырыс алмайды.',
   city_active: 'Қала белсенді',
   create_city: 'Қаланы жасау',
   center_pick_hint: 'Қала орталығын таңдау үшін картаны басыңыз.',
@@ -104,6 +99,8 @@ const kk = {
   tariff_first_hint: 'Бұл санаттың алғашқы тарифі.',
   publish_version: 'Нұсқаны жариялау',
   tariff_saved: 'v{version} тариф нұсқасы жарияланды.',
+  dispatch_global_note: 'Жүргізушілер қалаға қарамай, A нүктесінің айналасындағы радиус бойынша ізделеді. Радиус барлық қалаға ортақ баптауда өзгертіледі.',
+  dispatch_global_link: 'Іздеу баптаулары',
 }
 
 export type ConfigMessages = typeof kk
@@ -124,13 +121,8 @@ const ru: ConfigMessages = {
   longitude: 'Долгота',
   coordinates: 'Координаты',
   zoom: 'Масштаб карты',
-  dispatch_radius: 'Радиус раздачи, м',
-  dispatch_radius_hint: 'Заказ получают только водители в этом радиусе от точки подачи (когда геопозиция обязательна).',
   search_timeout: 'Время поиска, с',
   search_timeout_hint: 'Если за это время водитель не найден, заказ закрывается автоматически.',
-  require_location: 'Геопозиция водителя обязательна',
-  location_max_age: 'Максимальная давность геопозиции, с',
-  location_max_age_hint: 'Водители с более старой геопозицией не получают заказы.',
   city_active: 'Город активен',
   create_city: 'Создать город',
   center_pick_hint: 'Нажмите на карту, чтобы выбрать центр города.',
@@ -212,6 +204,8 @@ const ru: ConfigMessages = {
   tariff_first_hint: 'Первый тариф этой категории.',
   publish_version: 'Опубликовать версию',
   tariff_saved: 'Опубликована версия тарифа v{version}.',
+  dispatch_global_note: 'Водители ищутся по радиусу вокруг точки A, независимо от города. Радиус общий для всех городов и меняется в настройках.',
+  dispatch_global_link: 'Настройки поиска',
 }
 
 const en: ConfigMessages = {
@@ -230,13 +224,8 @@ const en: ConfigMessages = {
   longitude: 'Longitude',
   coordinates: 'Coordinates',
   zoom: 'Map zoom',
-  dispatch_radius: 'Dispatch radius, m',
-  dispatch_radius_hint: 'Only drivers within this distance of the pickup get the order (when location is required).',
   search_timeout: 'Search time, s',
   search_timeout_hint: 'If no driver is found in this time the order closes automatically.',
-  require_location: 'Driver location is required',
-  location_max_age: 'Maximum location age, s',
-  location_max_age_hint: 'Drivers with an older location do not get orders.',
   city_active: 'City is active',
   create_city: 'Create city',
   center_pick_hint: 'Click the map to choose the city centre.',
@@ -318,6 +307,8 @@ const en: ConfigMessages = {
   tariff_first_hint: 'The first tariff of this category.',
   publish_version: 'Publish version',
   tariff_saved: 'Tariff version v{version} published.',
+  dispatch_global_note: 'Drivers are found by radius around pickup A, regardless of the city. The radius is shared by all cities and set in the settings.',
+  dispatch_global_link: 'Search settings',
 }
 
 export const configArea = { kk, ru, en }

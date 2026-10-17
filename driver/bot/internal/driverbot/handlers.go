@@ -287,12 +287,10 @@ func orderCard(s *session, o botapi.OrderCard) string {
 	return strings.Join(lines, "\n")
 }
 
-// stopLabel is the stop address, or its coordinates when it has none.
+// stopLabel is the stop address, or "point on the map" when it has none
+// (coordinates are never shown).
 func stopLabel(s *session, st botapi.StopSummary) string {
-	if a := strings.TrimSpace(st.Address); a != "" {
-		return a
-	}
-	return fmt.Sprintf("%.5f, %.5f", st.Lat, st.Lon)
+	return runtime.PlaceLabel(st.Address, s.t("map_point"))
 }
 
 // summary loads the driver summary, answering with an error message on failure.
@@ -323,8 +321,8 @@ func (b *Bot) trip(ctx context.Context, s *session) error {
 	lines := []string{
 		s.t("trip_title", o.Number),
 		s.t("trip_status", runtime.Esc(s.t("order_status_"+o.Status))),
-		s.t("order_from", runtime.Esc(o.PickupAddress)),
-		s.t("order_to", runtime.Esc(o.DestinationAddress)),
+		s.t("order_from", runtime.Esc(runtime.PlaceLabel(o.PickupAddress, s.t("map_point")))),
+		s.t("order_to", runtime.Esc(runtime.PlaceLabel(o.DestinationAddress, s.t("map_point")))),
 		s.t("trip_fare", runtime.Esc(runtime.FormatMoney(o.Fare))),
 	}
 	return b.send(ctx, s, strings.Join(lines, "\n"), runtime.Inline(b.appButton(ctx, s, "btn_trip", "trip")))
@@ -490,19 +488,12 @@ func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) error {
 		_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
 		return b.blocked(ctx, s)
 	}
+	defer b.menus.Ensure(ctx, s.chatID)
 	if _, err := b.api.SetLanguage(ctx, q.From.ID, lang); err != nil {
 		_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: s.t("error")})
 		return fmt.Errorf("set language: %w", err)
 	}
 	s.lang = lang
 	_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: s.t("language_set")})
-	if url := b.miniAppURL(ctx, ""); runtime.IsHTTPS(url) {
-		chat := s.chatID
-		if err := b.tg.SetChatMenuButton(ctx, &chat, telegram.MenuButtonWebApp{
-			Text: s.t("menu_button"), WebApp: telegram.WebAppInfo{URL: url},
-		}); err != nil {
-			b.log.Warn("set chat menu button failed", "err", err.Error())
-		}
-	}
 	return b.send(ctx, s, s.t("language_set"), b.keyboard(s))
 }

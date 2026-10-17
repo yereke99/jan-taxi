@@ -51,6 +51,7 @@ function topup(over: Partial<TopUp> = {}): TopUp {
     rejected_at: null,
     rejected_reason: null,
     refunded_at: null,
+    receipt: null,
     ...over,
   }
 }
@@ -161,5 +162,27 @@ describe('wallet store', () => {
     expect(store.ledger.items.map((e) => e.id)).toEqual([3, 2, 1])
     await store.loadLedger(false)
     expect(mocked.listTransactions).toHaveBeenCalledTimes(2)
+  })
+
+  it('a credited receipt refreshes the balance', async () => {
+    const store = useWalletStore()
+    mocked.uploadReceipt.mockResolvedValueOnce(
+      topup({ status: 'confirmed', verified_amount: 2000, receipt: { kind: 'pdf', decision: 'auto_confirmed', reasons: [], receipt_serial: 'QR18149336524', amount: 2000, paid_at: null } }),
+    )
+    mocked.getWallet.mockResolvedValue({ ...WALLET, balance: 3000, available: 3000 })
+    const t = await store.uploadReceipt('t1', new Blob(['%PDF-']), 'receipt_QR18149336524.pdf')
+    expect(mocked.uploadReceipt.mock.calls[0]![2]).toBe('receipt_QR18149336524.pdf')
+    expect(t.status).toBe('confirmed')
+    expect(store.byId.t1!.receipt?.decision).toBe('auto_confirmed')
+    await vi.waitFor(() => expect(store.wallet?.balance).toBe(3000))
+  })
+
+  it('a reused receipt re-reads the rejected top-up and rethrows', async () => {
+    const store = useWalletStore()
+    mocked.uploadReceipt.mockRejectedValueOnce(new ApiError(409, 'receipt_already_used', 'used', {}, { reason: 'duplicate_receipt' }))
+    mocked.getTopUp.mockResolvedValueOnce(topup({ status: 'rejected', rejected_reason: 'duplicate_receipt' }))
+    await expect(store.uploadReceipt('t1', new Blob(['%PDF-']), 'receipt.pdf')).rejects.toMatchObject({ code: 'receipt_already_used' })
+    expect(store.byId.t1!.status).toBe('rejected')
+    expect(store.byId.t1!.rejected_reason).toBe('duplicate_receipt')
   })
 })

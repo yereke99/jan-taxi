@@ -1,27 +1,29 @@
 <!--
-  One Kaspi top-up (§6.1). While `created`: the exact amount, recipient,
-  payment code (copy), driver code and numbered steps, the Kaspi link, then
-  "I paid" with an optional Kaspi receipt number and receipt photo. "I paid"
-  only moves the top-up to verification: the balance changes after a finance
-  admin confirms it against Kaspi records (realtime topup.confirmed).
+  One Kaspi top-up (§6.1). While it waits for the payment: the exact amount,
+  the payee (ИП "JAN-TAXI", BIN), numbered steps — pay in Kaspi, save the
+  receipt PDF, upload it here or send it to the driver bot — and the PDF
+  upload with progress. The server checks the receipt at once: credited,
+  left for an administrator (with the reasons) or rejected as already used.
+  A screenshot is attached as evidence and sent for review.
 -->
 <script setup lang="ts">
-import { CircleCheck, CircleX, Clock3, ExternalLink, ImagePlus, Info, RefreshCw } from '@lucide/vue'
+import { CircleCheck, CircleX, Clock3, ExternalLink, FileText, RefreshCw, Send } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import type { TopUp } from '../../api/types'
-import CopyField from '../../components/driver/CopyField.vue'
+import CopyButton from '../../components/driver/CopyButton.vue'
 import DriverPage from '../../components/driver/DriverPage.vue'
-import { confirmDestructive, JBadge, JButton, JEmptyState, JListGroup, JListRow, JSkeleton, JSpinner, JTextArea, JTextField, toast } from '../../components/ui'
+import { confirmDestructive, JBadge, JButton, JEmptyState, JListGroup, JListRow, JSkeleton, JTextArea, JTextField, toast } from '../../components/ui'
 import { useDriverErrorText } from '../../composables/useDriverErrorText'
 import { useFormat } from '../../composables/useFormat'
-import { ImageError } from '../../features/media/image'
-import { useUploadTask } from '../../features/media/useUploadTask'
+import { formatBin, loadPayeeBin, resolvePayee } from '../../features/topup/payee'
+import { knownReasons, RECEIPT_ACCEPT, receiptOutcome, receiptUploadError } from '../../features/topup/receipt'
+import { ReceiptFileError, useReceiptUpload } from '../../features/topup/useReceiptUpload'
 import { ROUTE } from '../../router/names'
+import { useSessionStore } from '../../stores/session'
 import { useWalletStore } from '../../stores/wallet'
-import { haptics, openExternal } from '../../telegram'
-import { formatKzPhone } from '../../utils/phone'
+import { haptics, openExternal, openTelegram } from '../../telegram'
 import { topUpStatusTone } from '../../utils/status'
 
 const RECEIPT_REF_MAX = 100
@@ -33,6 +35,7 @@ const errorText = useDriverErrorText()
 const route = useRoute()
 const router = useRouter()
 const wallet = useWalletStore()
+const session = useSessionStore()
 
 const id = computed(() => String(route.params.id ?? ''))
 const topup = computed<TopUp | null>(() => wallet.byId[id.value] ?? null)
@@ -43,17 +46,65 @@ const receiptNumber = ref('')
 const note = ref('')
 const submitting = ref(false)
 const cancelling = ref(false)
-const receiptInput = ref<HTMLInputElement | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
+const payeeBin = ref<string | null>(null)
+const kaspiOpened = ref(false)
 
-const pay = computed(() => topup.value?.payment ?? null)
+const outcome = computed(() => (topup.value ? receiptOutcome(topup.value) : null))
+const waiting = computed(() => outcome.value === 'waiting')
+const payee = computed(() => resolvePayee(session.config, topup.value, payeeBin.value))
+const amount = computed(() => topup.value?.payment.amount ?? topup.value?.amount ?? 0)
+const reasons = computed(() => knownReasons(topup.value?.receipt?.reasons))
+const botName = computed(() => session.config.bots.driver_username)
 
-const receipt = useUploadTask<TopUp>((blob, onProgress, signal) => wallet.uploadReceipt(id.value, blob, onProgress, signal))
-const receiptBusy = computed(() => receipt.state.value === 'preparing' || receipt.state.value === 'uploading')
-const receiptError = computed(() => {
-  const err = receipt.error.value
-  if (!err) return ''
-  return err instanceof ImageError ? t(`registration.upload.${err.code}`) : errorText(err)
+const upload = useReceiptUpload({
+  upload: (blob, name, onProgress, signal) => wallet.uploadReceipt(id.value, blob, name, (p) => onProgress(p.fraction), signal),
+  submit: (tp) => wallet.submitTopUp(tp.id, {}),
 })
+const uploadBusy = computed(() => ['preparing', 'uploading', 'checking'].includes(upload.state.value))
+const percent = computed(() => Math.round(upload.progress.value * 100))
+const uploadStatus = computed(() => {
+  switch (upload.state.value) {
+    case 'preparing':
+      return t('topup.upload_preparing')
+    case 'uploading':
+      return t('topup.upload_progress', { percent: percent.value })
+    case 'checking':
+      return t('topup.upload_checking')
+    default:
+      return ''
+  }
+})
+const uploadError = computed(() => {
+  const err = upload.error.value
+  if (!err || upload.state.value !== 'error') return ''
+  if (err instanceof ReceiptFileError) return t(`topup.upload_errors.${err.code}`)
+  const kind = receiptUploadError(err)
+  // A reused receipt rejects the top-up: the outcome screen explains it.
+  if (kind === 'duplicate' && outcome.value === 'duplicate') return ''
+  return kind === 'other' ? errorText(err) : t(`topup.upload_errors.${kind}`)
+})
+
+const title = computed(() => (topup.value && !waiting.value ? t('topup.number', { number: topup.value.number }) : t('topup.title')))
+
+const KASPI_KEY = 'jt.driver.kaspi_opened.'
+
+function rememberKaspi(): void {
+  kaspiOpened.value = true
+  try {
+    sessionStorage.setItem(KASPI_KEY + id.value, '1')
+  } catch {
+    // Storage unavailable: the emphasis simply resets on reload.
+  }
+}
+
+function readKaspi(): void {
+  try {
+    kaspiOpened.value = sessionStorage.getItem(KASPI_KEY + id.value) === '1'
+  } catch {
+    kaspiOpened.value = false
+  }
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -68,27 +119,46 @@ async function load(): Promise<void> {
 }
 
 function openKaspi(): void {
-  const url = pay.value?.url
+  const url = payee.value.paymentUrl
   if (!url) return
   haptics.impact('light')
-  if (!openExternal(url)) toast.error(t('trip.open_failed'))
+  if (openExternal(url)) rememberKaspi()
+  else toast.error(t('trip.open_failed'))
 }
 
-function onReceipt(e: Event): void {
+function openBot(): void {
+  const u = botName.value
+  if (u) openTelegram(`https://t.me/${u}`)
+}
+
+function pickFile(): void {
+  if (uploadBusy.value) return
+  haptics.impact('light')
+  fileInput.value?.click()
+}
+
+async function onFile(e: Event): Promise<void> {
   const el = e.target as HTMLInputElement
   const file = el.files?.[0]
   el.value = ''
-  if (file) void receipt.run(file)
+  if (!file) return
+  paidMode.value = false
+  const result = await upload.send(file)
+  if (!result) {
+    haptics.notification('error')
+    return
+  }
+  const o = receiptOutcome(result)
+  haptics.notification(o === 'credited' || o === 'confirmed' ? 'success' : 'warning')
 }
 
-async function submit(): Promise<void> {
-  if (!topup.value || submitting.value || receiptBusy.value) return
+async function submitPaid(): Promise<void> {
+  if (!topup.value || submitting.value) return
   submitting.value = true
   try {
     await wallet.submitTopUp(id.value, { payment_reference: receiptNumber.value, note: note.value })
     haptics.notification('success')
     paidMode.value = false
-    void wallet.refreshWallet()
   } catch (err) {
     haptics.notification('error')
     toast.error(errorText(err))
@@ -112,331 +182,305 @@ async function cancel(): Promise<void> {
   }
 }
 
-watch(id, () => void load())
-onMounted(() => {
-  if (!wallet.wallet) void wallet.refreshWallet()
+function finish(): void {
+  void router.replace({ name: session.isApproved ? ROUTE.home : ROUTE.wallet })
+}
+
+watch(id, () => {
+  upload.reset()
+  readKaspi()
+  void load()
 })
 
-onMounted(() => void load())
+onMounted(() => {
+  readKaspi()
+  void load()
+  if (!wallet.wallet) void wallet.refreshWallet()
+  void loadPayeeBin().then((bin) => (payeeBin.value = bin))
+})
 </script>
 
 <template>
-  <DriverPage :title="topup && topup.status !== 'created' ? t('topup.number', { number: topup.number }) : t('topup.title')">
-    <div v-if="!topup && loading" class="td__skeleton" aria-busy="true">
-      <JSkeleton height="160px" radius="22px" />
+  <DriverPage :title="title">
+    <div v-if="!topup && loading" class="tu__skeleton" aria-busy="true">
+      <JSkeleton height="150px" radius="22px" />
+      <JSkeleton height="110px" radius="22px" />
       <JSkeleton height="220px" radius="22px" />
     </div>
 
-    <div v-else-if="!topup" class="td__state">
+    <div v-else-if="!topup" class="tu__state">
       <JEmptyState :title="t('app.load_failed_title')" :description="loadError ? errorText(loadError) : ''">
         <template #action><JButton block @click="load">{{ t('common.retry') }}</JButton></template>
       </JEmptyState>
     </div>
 
-    <template v-else>
-      <!-- Waiting for the payment: instructions. -->
-      <template v-if="topup.status === 'created' && pay">
-        <section v-if="wallet.wallet" class="td__balance">
-          <span class="td__balance-label">{{ t('wallet.available') }}</span>
-          <strong class="td__balance-value jt-tabular">{{ fmt.money(wallet.wallet.available) }}</strong>
-          <span v-if="wallet.wallet.reserved > 0" class="td__balance-meta jt-tabular">
-            {{ t('topup.reserved_short', { amount: fmt.money(wallet.wallet.reserved) }) }}
+    <!-- Waiting for the payment and the receipt. -->
+    <template v-else-if="waiting">
+      <section class="tu__amount">
+        <p class="tu__amount-label">{{ t('topup.pay_title') }}</p>
+        <div class="tu__amount-row">
+          <strong class="tu__amount-value jt-tabular">{{ fmt.money(amount) }}</strong>
+          <CopyButton :value="String(amount)" :label="t('topup.pay_title')" />
+        </div>
+        <p class="tu__amount-hint">{{ t('topup.pay_exact') }}</p>
+      </section>
+
+      <JListGroup :header="t('topup.payee_title')" :footer="t('topup.payee_via')">
+        <JListRow :title="t('topup.payee_name')" :value="payee.name" />
+        <JListRow :title="t('topup.payee_bin')" :subtitle="formatBin(payee.bin)">
+          <template #accessory><CopyButton class="tu__row-copy" :value="payee.bin" :label="t('topup.payee_bin')" /></template>
+        </JListRow>
+      </JListGroup>
+
+      <h2 class="tu__section">{{ t('topup.how_title') }}</h2>
+      <section class="tu__steps">
+        <ol class="tu__list">
+          <li :class="{ 'is-done': kaspiOpened }">
+            <span class="tu__num">1</span>
+            <span class="tu__step">
+              <span>{{ t('topup.how_step1', { amount: fmt.money(amount) }) }}</span>
+              <span class="tu__hint">{{ payee.paymentUrl ? t('topup.how_step1_hint') : t('topup.no_payment_link') }}</span>
+            </span>
+          </li>
+          <li>
+            <span class="tu__num">2</span>
+            <span class="tu__step">{{ t('topup.how_step2') }}</span>
+          </li>
+          <li>
+            <span class="tu__num">3</span>
+            <span class="tu__step">
+              <span>{{ t('topup.how_step3') }}</span>
+              <span class="tu__hint">{{ t('topup.how_step3_hint') }}</span>
+            </span>
+          </li>
+        </ol>
+
+        <div v-if="uploadBusy" class="tu__drop" role="status">
+          <FileText :size="22" :stroke-width="2" aria-hidden="true" />
+          <span class="tu__drop-text">
+            <span class="tu__drop-title">{{ upload.fileName.value }}</span>
+            <span class="tu__drop-sub jt-tabular" aria-live="polite">{{ uploadStatus }}</span>
           </span>
-        </section>
+          <span class="tu__bar" :class="{ 'is-indeterminate': upload.state.value !== 'uploading' }">
+            <span class="tu__bar-fill" :style="{ transform: `scaleX(${upload.state.value === 'uploading' ? upload.progress.value : 1})` }" />
+          </span>
+        </div>
 
-        <h2 class="td__section">{{ t('topup.details_title') }}</h2>
-        <section class="td__details">
-          <div class="td__row">
-            <span>{{ t('topup.amount') }}</span>
-            <strong class="jt-tabular">{{ fmt.money(pay.amount) }}</strong>
-          </div>
-          <div class="td__row is-stacked">
-            <span class="td__row-label">{{ t('topup.recipient') }}</span>
-            <span class="td__row-value">{{ pay.recipient_name }}</span>
-          </div>
-          <div v-if="pay.recipient_phone" class="td__row">
-            <span>{{ t('topup.recipient_phone') }}</span>
-            <span class="td__row-value jt-tabular">{{ formatKzPhone(pay.recipient_phone) }}</span>
-          </div>
-          <div class="td__row is-copy">
-            <CopyField :label="t('topup.reference')" :value="pay.reference" />
-          </div>
-        </section>
-
-        <section class="td__steps">
-          <ol class="td__list">
-            <li><span class="td__num">1</span>{{ t('topup.step1') }}</li>
-            <li><span class="td__num">2</span>{{ t('topup.step2', { amount: fmt.money(pay.amount) }) }}</li>
-            <li><span class="td__num">3</span>{{ t('topup.step3', { reference: pay.reference }) }}</li>
-            <li><span class="td__num">4</span>{{ t('topup.step4') }}</li>
-          </ol>
-          <p v-if="pay.instructions" class="td__server">{{ pay.instructions }}</p>
-        </section>
-
-        <p class="td__note">
-          <Info :size="18" :stroke-width="2" aria-hidden="true" />
-          <span>{{ t('topup.verification_note') }} {{ t('topup.expires_at', { time: fmt.dateTime(topup.expires_at) }) }}.</span>
+        <p v-if="uploadError" class="tu__err" role="alert">
+          <span>{{ uploadError }}</span>
+          <button v-if="upload.error.value && !(upload.error.value instanceof ReceiptFileError)" type="button" class="tu__retry" @click="upload.retry()">
+            <RefreshCw :size="14" :stroke-width="2.5" aria-hidden="true" /> {{ t('common.retry') }}
+          </button>
         </p>
 
-        <section v-if="paidMode" class="td__paid">
-          <h2 class="td__title">{{ t('topup.paid_title') }}</h2>
-          <p class="td__muted">{{ t('topup.paid_text') }}</p>
-          <JTextField
-            v-model="receiptNumber"
-            :label="t('topup.receipt_number')"
-            :placeholder="t('topup.receipt_number_placeholder')"
-            :max="RECEIPT_REF_MAX"
-            enterkeyhint="done"
-          />
-          <JTextArea v-model="note" :label="t('topup.note')" :placeholder="t('topup.note_placeholder')" :max="NOTE_MAX" :rows="2" />
-          <div class="td__receipt">
-            <img v-if="receipt.previewUrl.value" :src="receipt.previewUrl.value" alt="" class="td__receipt-img" />
-            <button type="button" class="td__receipt-btn" :disabled="receiptBusy" @click="receiptInput?.click()">
-              <JSpinner v-if="receiptBusy" size="small" />
-              <ImagePlus v-else :size="18" :stroke-width="2" aria-hidden="true" />
-              <span v-if="receipt.state.value === 'uploading'" class="jt-tabular">{{ Math.round(receipt.progress.value * 100) }}%</span>
-              <span v-else>{{ receipt.state.value === 'done' || topup.has_receipt ? t('topup.replace_receipt') : t('topup.add_receipt') }}</span>
-            </button>
-            <p v-if="receipt.state.value === 'done' || (topup.has_receipt && receipt.state.value === 'idle')" class="td__ok">
-              {{ t('topup.receipt_attached') }}
-            </p>
-            <p v-if="receipt.state.value === 'error'" class="td__err" role="alert">
-              {{ receiptError || t('registration.upload.failed') }}
-              <button type="button" class="td__retry" @click="receipt.retry()"><RefreshCw :size="14" :stroke-width="2.5" aria-hidden="true" /> {{ t('common.retry') }}</button>
-            </p>
-          </div>
-          <input ref="receiptInput" class="jt-visually-hidden" type="file" accept="image/*" tabindex="-1" @change="onReceipt" />
-        </section>
-
-        <div v-if="!paidMode && topup.can_cancel" class="td__cancel">
-          <JButton variant="destructive" block :loading="cancelling" @click="cancel">{{ t('topup.cancel') }}</JButton>
+        <div v-if="botName" class="tu__bot">
+          <p class="tu__hint">{{ t('topup.bot_hint', { bot: `@${botName}` }) }}</p>
+          <button type="button" class="tu__link" @click="openBot">
+            <Send :size="15" :stroke-width="2.25" aria-hidden="true" /> {{ t('topup.send_to_bot') }}
+          </button>
         </div>
-      </template>
+      </section>
 
-      <!-- Every other state: what happened and what the driver can do. -->
-      <template v-else>
-        <section class="td__status">
-          <Clock3 v-if="topup.status === 'pending_verification'" :size="48" :stroke-width="1.5" class="td__icon" aria-hidden="true" />
-          <CircleCheck v-else-if="topup.status === 'confirmed'" :size="48" :stroke-width="1.5" class="td__icon is-ok" aria-hidden="true" />
-          <CircleX v-else :size="48" :stroke-width="1.5" class="td__icon" aria-hidden="true" />
-          <template v-if="topup.status === 'pending_verification'">
-            <h2 class="td__status-title">{{ t('topup.pending_title') }}</h2>
-            <p class="td__muted">{{ t('topup.pending_text') }}</p>
-          </template>
-          <template v-else-if="topup.status === 'confirmed'">
-            <h2 class="td__status-title">{{ t('topup.confirmed_title') }}</h2>
-            <p class="td__muted">{{ t('topup.confirmed_text', { amount: fmt.money(topup.verified_amount ?? topup.amount) }) }}</p>
-          </template>
-          <template v-else-if="topup.status === 'rejected'">
-            <h2 class="td__status-title">{{ t('topup.rejected_title') }}</h2>
-            <p class="td__muted">{{ topup.rejected_reason ? t('topup.rejected_text', { reason: topup.rejected_reason }) : t('topup.rejected_no_reason') }}</p>
-          </template>
-          <template v-else-if="topup.status === 'expired'">
-            <h2 class="td__status-title">{{ t('topup.expired_title') }}</h2>
-            <p class="td__muted">{{ t('topup.expired_text') }}</p>
-          </template>
-          <template v-else>
-            <h2 class="td__status-title">{{ t('topup.refunded_title') }}</h2>
-          </template>
-        </section>
+      <p class="tu__note">{{ t('topup.expires_hint', { time: fmt.dateTime(topup.expires_at) }) }}</p>
 
-        <JListGroup>
-          <JListRow :title="t('topup.amount')" :value="fmt.money(topup.amount)" />
-          <JListRow v-if="topup.verified_amount !== null" :title="t('topup.verified_amount')" :value="fmt.money(topup.verified_amount)" />
-          <JListRow :title="t('topup.reference')" :subtitle="topup.reference" />
-          <JListRow v-if="topup.driver_payment_reference" :title="t('topup.receipt_number')" :subtitle="topup.driver_payment_reference" />
-          <JListRow :title="t('topup.receipt_photo')" :value="topup.has_receipt ? t('topup.receipt_attached') : t('topup.receipt_none')" />
-          <JListRow :title="t('topup.created_at')" :value="fmt.dateTime(topup.created_at)" />
-          <JListRow v-if="topup.driver_reported_paid_at" :title="t('topup.paid_at')" :value="fmt.dateTime(topup.driver_reported_paid_at)" />
-          <JListRow :title="t('topup.status')">
-            <template #accessory><JBadge :tone="topUpStatusTone(topup.status)" :label="t(`topup_status.${topup.status}`)" /></template>
-          </JListRow>
-        </JListGroup>
+      <section v-if="paidMode" class="tu__paid">
+        <h2 class="tu__title">{{ t('topup.paid_title') }}</h2>
+        <p class="tu__muted">{{ t('topup.paid_text') }}</p>
+        <JTextField
+          v-model="receiptNumber"
+          :label="t('topup.receipt_number')"
+          :placeholder="t('topup.receipt_number_placeholder')"
+          :max="RECEIPT_REF_MAX"
+          enterkeyhint="done"
+        />
+        <JTextArea v-model="note" :label="t('topup.note')" :placeholder="t('topup.note_placeholder')" :max="NOTE_MAX" :rows="2" />
+      </section>
 
-        <div v-if="topup.can_upload_receipt" class="td__more">
-          <JButton variant="secondary" block :loading="receiptBusy" @click="receiptInput?.click()">
-            {{ topup.has_receipt ? t('topup.replace_receipt') : t('topup.add_receipt') }}
-          </JButton>
-          <p v-if="receipt.state.value === 'done'" class="td__ok">{{ t('topup.receipt_attached') }}</p>
-          <p v-if="receipt.state.value === 'error'" class="td__err" role="alert">{{ receiptError || t('registration.upload.failed') }}</p>
-          <input ref="receiptInput" class="jt-visually-hidden" type="file" accept="image/*" tabindex="-1" @change="onReceipt" />
-        </div>
-        <div v-if="topup.status !== 'pending_verification'" class="td__more">
-          <JButton variant="secondary" block @click="router.replace({ name: ROUTE.topup })">{{ t('topup.new_topup') }}</JButton>
-        </div>
-      </template>
+      <div v-else class="tu__more">
+        <JButton variant="plain" block @click="paidMode = true">{{ t('topup.no_pdf') }}</JButton>
+        <JButton v-if="topup.can_cancel" variant="destructive" block :loading="cancelling" @click="cancel">{{ t('topup.cancel') }}</JButton>
+      </div>
     </template>
 
-    <template v-if="topup && topup.status === 'created' && pay" #footer>
-      <template v-if="!paidMode">
-        <JButton v-if="pay.url" block @click="openKaspi">
-          <template #icon><ExternalLink :size="18" :stroke-width="2.25" aria-hidden="true" /></template>
-          {{ t('topup.pay_kaspi') }}
+    <!-- What happened. -->
+    <template v-else>
+      <section class="tu__status" :class="`is-${outcome}`">
+        <CircleCheck v-if="outcome === 'credited' || outcome === 'confirmed'" :size="52" :stroke-width="1.5" class="tu__icon is-ok" aria-hidden="true" />
+        <Clock3 v-else-if="outcome === 'review'" :size="52" :stroke-width="1.5" class="tu__icon" aria-hidden="true" />
+        <CircleX v-else :size="52" :stroke-width="1.5" class="tu__icon" :class="{ 'is-bad': outcome === 'duplicate' || outcome === 'rejected' }" aria-hidden="true" />
+
+        <template v-if="outcome === 'credited'">
+          <h2 class="tu__status-title">{{ t('topup.credited_title') }}</h2>
+          <p class="tu__muted">{{ t('topup.credited_text', { amount: fmt.money(topup.verified_amount ?? topup.amount) }) }}</p>
+          <p v-if="wallet.wallet" class="tu__balance jt-tabular">{{ t('topup.balance_now', { amount: fmt.money(wallet.wallet.available) }) }}</p>
+        </template>
+        <template v-else-if="outcome === 'confirmed'">
+          <h2 class="tu__status-title">{{ t('topup.confirmed_title') }}</h2>
+          <p class="tu__muted">{{ t('topup.confirmed_text', { amount: fmt.money(topup.verified_amount ?? topup.amount) }) }}</p>
+          <p v-if="wallet.wallet" class="tu__balance jt-tabular">{{ t('topup.balance_now', { amount: fmt.money(wallet.wallet.available) }) }}</p>
+        </template>
+        <template v-else-if="outcome === 'review'">
+          <h2 class="tu__status-title">{{ t('topup.review_title') }}</h2>
+          <p class="tu__muted">{{ t('topup.review_text') }}</p>
+          <div v-if="reasons.length > 0" class="tu__reasons">
+            <p class="tu__reasons-title">{{ t('topup.review_reasons') }}</p>
+            <ul>
+              <li v-for="r in reasons" :key="r">{{ t(`topup.reasons.${r}`) }}</li>
+            </ul>
+          </div>
+        </template>
+        <template v-else-if="outcome === 'duplicate'">
+          <h2 class="tu__status-title">{{ t('topup.duplicate_title') }}</h2>
+          <p class="tu__muted">{{ t('topup.duplicate_text') }}</p>
+        </template>
+        <template v-else-if="outcome === 'rejected'">
+          <h2 class="tu__status-title">{{ t('topup.rejected_title') }}</h2>
+          <p class="tu__muted">{{ topup.rejected_reason ? t('topup.rejected_text', { reason: topup.rejected_reason }) : t('topup.rejected_no_reason') }}</p>
+        </template>
+        <template v-else-if="outcome === 'expired'">
+          <h2 class="tu__status-title">{{ t('topup.expired_title') }}</h2>
+          <p class="tu__muted">{{ t('topup.expired_text') }}</p>
+        </template>
+        <template v-else>
+          <h2 class="tu__status-title">{{ t('topup.refunded_title') }}</h2>
+        </template>
+      </section>
+
+      <div v-if="outcome === 'review' && topup.can_upload_receipt" class="tu__more">
+        <p v-if="topup.receipt?.kind !== 'pdf'" class="tu__note">{{ t('topup.review_upload_hint') }}</p>
+        <JButton variant="secondary" block :loading="uploadBusy" @click="pickFile">
+          <template #icon><FileText :size="18" :stroke-width="2.25" aria-hidden="true" /></template>
+          {{ topup.receipt?.kind === 'pdf' ? t('topup.upload_again') : t('topup.upload_pdf') }}
         </JButton>
-        <p v-else class="td__muted td__center">{{ t('topup.no_payment_link') }}</p>
-        <JButton variant="secondary" block @click="paidMode = true">{{ t('topup.paid') }}</JButton>
+        <p v-if="uploadBusy" class="tu__note jt-tabular" aria-live="polite">{{ uploadStatus }}</p>
+        <p v-if="uploadError" class="tu__err" role="alert">{{ uploadError }}</p>
+      </div>
+
+      <JListGroup>
+        <JListRow :title="t('topup.amount')" :value="fmt.money(topup.amount)" />
+        <JListRow v-if="topup.verified_amount !== null && topup.verified_amount !== topup.amount" :title="t('topup.verified_amount')" :value="fmt.money(topup.verified_amount)" />
+        <JListRow :title="t('topup.reference')" :subtitle="topup.reference" />
+        <JListRow v-if="topup.receipt?.receipt_serial" :title="t('topup.receipt_number_label')" :subtitle="topup.receipt.receipt_serial" />
+        <JListRow v-if="topup.receipt?.paid_at" :title="t('topup.receipt_paid_at')" :value="fmt.dateTime(topup.receipt.paid_at)" />
+        <JListRow v-else-if="topup.driver_payment_reference" :title="t('topup.receipt_number')" :subtitle="topup.driver_payment_reference" />
+        <JListRow :title="t('topup.created_at')" :value="fmt.dateTime(topup.created_at)" />
+        <JListRow :title="t('topup.status')">
+          <template #accessory><JBadge :tone="topUpStatusTone(topup.status)" :label="t(`topup_status.${topup.status}`)" /></template>
+        </JListRow>
+      </JListGroup>
+    </template>
+
+    <input ref="fileInput" class="jt-visually-hidden" type="file" :accept="RECEIPT_ACCEPT" tabindex="-1" @change="onFile" />
+
+    <template v-if="topup" #footer>
+      <template v-if="waiting && paidMode">
+        <JButton block :loading="submitting" @click="submitPaid">{{ t('topup.submit') }}</JButton>
+        <JButton variant="plain" block @click="paidMode = false">{{ t('common.back') }}</JButton>
+      </template>
+      <template v-else-if="waiting">
+        <JButton v-if="payee.paymentUrl" block :variant="kaspiOpened ? 'secondary' : 'primary'" @click="openKaspi">
+          <template #icon><ExternalLink :size="18" :stroke-width="2.25" aria-hidden="true" /></template>
+          {{ t('topup.open_kaspi') }}
+        </JButton>
+        <JButton block :variant="kaspiOpened || !payee.paymentUrl ? 'primary' : 'secondary'" :loading="uploadBusy" @click="pickFile">
+          <template #icon><FileText :size="18" :stroke-width="2.25" aria-hidden="true" /></template>
+          {{ t('topup.upload_pdf') }}
+        </JButton>
+      </template>
+      <template v-else-if="outcome === 'credited' || outcome === 'confirmed'">
+        <JButton block @click="finish">{{ t('topup.done') }}</JButton>
+      </template>
+      <template v-else-if="outcome === 'review'">
+        <JButton variant="secondary" block @click="router.replace({ name: ROUTE.wallet })">{{ t('topup.to_wallet') }}</JButton>
       </template>
       <template v-else>
-        <JButton block :loading="submitting" :disabled="receiptBusy" @click="submit">{{ t('topup.submit') }}</JButton>
-        <JButton variant="plain" block @click="paidMode = false">{{ t('common.back') }}</JButton>
+        <JButton block @click="router.replace({ name: ROUTE.topup })">{{ t('topup.new_topup') }}</JButton>
       </template>
     </template>
   </DriverPage>
 </template>
 
 <style scoped>
-.td__balance {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0 var(--jt-side-margin) var(--jt-space-5);
-  padding: var(--jt-space-4) var(--jt-space-4) var(--jt-space-4);
-  border-radius: var(--jt-radius-card);
-  background: var(--jt-color-bg);
-}
-
-.td__balance-label,
-.td__balance-meta {
-  font: var(--jt-font-subheadline);
-  color: var(--jt-color-label-secondary);
-}
-
-.td__balance-value {
-  font: 700 34px/41px var(--jt-font-family);
-  letter-spacing: -0.4px;
-}
-
-.td__section {
-  margin: 0 calc(var(--jt-side-margin) + var(--jt-space-4)) var(--jt-space-2);
-  font: var(--jt-font-subheadline);
-  font-weight: 600;
-  color: var(--jt-color-label-secondary);
-}
-
-.td__details {
-  margin: 0 var(--jt-side-margin) var(--jt-space-4);
-  padding: 0 0 0 var(--jt-space-4);
-  border-radius: var(--jt-radius-card);
-  background: var(--jt-color-bg);
-  overflow: hidden;
-}
-
-.td__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--jt-space-3);
-  min-height: 52px;
-  padding: var(--jt-space-3) var(--jt-space-4) var(--jt-space-3) 0;
-  box-sizing: border-box;
-  font: var(--jt-font-body);
-}
-
-.td__row + .td__row {
-  border-top: var(--jt-hairline) solid var(--jt-color-separator);
-}
-
-.td__row strong {
-  font-weight: 700;
-}
-
-.td__row.is-stacked {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-}
-
-.td__row-label {
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
-}
-
-.td__row-value {
-  color: var(--jt-color-label-secondary);
-  overflow-wrap: anywhere;
-}
-
-.td__row.is-stacked .td__row-value {
-  color: var(--jt-color-label);
-}
-
-.td__row.is-copy {
-  display: block;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.td__row.is-copy :deep(.cfield) {
-  padding-left: 0;
-  padding-right: 0;
-}
-
-.td__note {
-  display: flex;
-  gap: var(--jt-space-2);
-  margin: 0 calc(var(--jt-side-margin) + var(--jt-space-1)) var(--jt-space-4);
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
-}
-
-.td__note svg {
-  flex: none;
-  margin-top: 1px;
-}
-
-.td__skeleton {
+.tu__skeleton {
   display: flex;
   flex-direction: column;
   gap: var(--jt-space-4);
   padding: 0 var(--jt-side-margin);
 }
 
-.td__state {
+.tu__state {
   padding: var(--jt-space-8) var(--jt-side-margin);
 }
 
-.td__card {
-  margin: 0 var(--jt-side-margin) var(--jt-space-6);
-  border-radius: var(--jt-radius-card);
-  background: var(--jt-color-bg);
-  overflow: hidden;
-}
-
-.td__hint {
-  padding: 0 var(--jt-space-4) var(--jt-space-4);
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
-}
-
-.td__steps,
-.td__paid,
-.td__status {
-  display: flex;
-  flex-direction: column;
-  gap: var(--jt-space-3);
-  margin: 0 var(--jt-side-margin) var(--jt-space-6);
+.tu__amount {
+  margin: 0 var(--jt-side-margin) var(--jt-space-5);
   padding: var(--jt-space-4);
   border-radius: var(--jt-radius-card);
   background: var(--jt-color-bg);
 }
 
-.td__title {
-  font: var(--jt-font-headline);
+.tu__amount-label,
+.tu__amount-hint {
+  font: var(--jt-font-subheadline);
+  color: var(--jt-color-label-secondary);
 }
 
-.td__list {
+.tu__amount-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jt-space-3);
+  margin: 2px 0;
+}
+
+.tu__amount-value {
+  font: 700 34px/41px var(--jt-font-family);
+  letter-spacing: -0.4px;
+}
+
+.tu__row-copy {
+  margin-right: var(--jt-space-4);
+}
+
+.tu__section {
+  margin: 0 calc(var(--jt-side-margin) + var(--jt-space-4)) var(--jt-space-2);
+  font: var(--jt-font-footnote);
+  text-transform: uppercase;
+  color: var(--jt-color-label-secondary);
+}
+
+.tu__steps,
+.tu__paid,
+.tu__status {
   display: flex;
   flex-direction: column;
-  gap: var(--jt-space-3);
+  gap: var(--jt-space-4);
+  margin: 0 var(--jt-side-margin) var(--jt-space-5);
+  padding: var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-bg);
 }
 
-.td__list li {
+.tu__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-4);
+}
+
+.tu__list li {
   display: flex;
   gap: var(--jt-space-3);
   font: var(--jt-font-body);
 }
 
-.td__num {
+.tu__step {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tu__num {
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -450,60 +494,86 @@ onMounted(() => void load())
   font-weight: 700;
 }
 
-.td__server {
-  padding: var(--jt-space-3);
-  border-radius: 12px;
-  background: var(--jt-color-fill-secondary);
-  font: var(--jt-font-subheadline);
-  white-space: pre-line;
-  overflow-wrap: anywhere;
+.tu__list li.is-done .tu__num {
+  background: var(--jt-color-green);
 }
 
-.td__expires,
-.td__muted {
+.tu__hint,
+.tu__muted,
+.tu__note {
   font: var(--jt-font-subheadline);
   color: var(--jt-color-label-secondary);
 }
 
-.td__center {
-  text-align: center;
+.tu__note {
+  margin: 0 calc(var(--jt-side-margin) + var(--jt-space-1)) var(--jt-space-4);
+  font: var(--jt-font-footnote);
 }
 
-.td__receipt {
+.tu__drop {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-3);
+  min-height: 64px;
+  padding: var(--jt-space-3) var(--jt-space-4);
+  border-radius: 18px;
+  background: var(--jt-color-fill-secondary);
+  overflow: hidden;
+}
+
+.tu__drop-text {
   display: flex;
   flex-direction: column;
-  gap: var(--jt-space-2);
+  min-width: 0;
 }
 
-.td__receipt-img {
-  width: 96px;
-  height: 96px;
-  object-fit: cover;
-  border-radius: 14px;
+.tu__drop-title {
+  font: var(--jt-font-headline);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.td__receipt-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--jt-space-2);
-  height: var(--jt-button-height-medium);
-  border-radius: var(--jt-radius-capsule);
-  background: var(--jt-color-fill-secondary);
-  font: var(--jt-font-subheadline);
-  font-weight: 600;
-}
-
-.td__receipt-btn:disabled {
-  opacity: var(--jt-opacity-disabled);
-}
-
-.td__ok {
+.tu__drop-sub {
   font: var(--jt-font-footnote);
-  color: var(--jt-color-green-text);
+  color: var(--jt-color-label-secondary);
 }
 
-.td__err {
+.tu__bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--jt-color-fill-tertiary);
+}
+
+.tu__bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--jt-color-primary);
+  transform-origin: left center;
+  transition: transform var(--jt-duration-fast) linear;
+}
+
+.tu__bar.is-indeterminate .tu__bar-fill {
+  animation: tu-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tu-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tu__bar.is-indeterminate .tu__bar-fill {
+    animation: none;
+  }
+}
+
+.tu__err {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -512,7 +582,8 @@ onMounted(() => void load())
   color: var(--jt-color-red-text);
 }
 
-.td__retry {
+.tu__retry {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -521,25 +592,91 @@ onMounted(() => void load())
   color: var(--jt-color-label);
 }
 
-.td__cancel,
-.td__more {
+.tu__bot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--jt-space-1);
+  padding-top: var(--jt-space-3);
+  box-shadow: inset 0 var(--jt-hairline) 0 var(--jt-color-separator);
+}
+
+.tu__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--jt-tap-target);
+  font: var(--jt-font-subheadline);
+  font-weight: 600;
+  color: var(--jt-color-label);
+}
+
+.tu__link:active {
+  opacity: var(--jt-opacity-pressed);
+}
+
+.tu__title {
+  font: var(--jt-font-headline);
+}
+
+.tu__more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-1);
   margin: 0 var(--jt-side-margin) var(--jt-space-4);
 }
 
-.td__status {
+.tu__more .tu__note {
+  margin: 0 var(--jt-space-1);
+}
+
+.tu__status {
   align-items: center;
+  gap: var(--jt-space-2);
   text-align: center;
 }
 
-.td__icon {
+.tu__icon {
+  margin-bottom: var(--jt-space-1);
   color: var(--jt-color-label-secondary);
 }
 
-.td__icon.is-ok {
+.tu__icon.is-ok {
   color: var(--jt-color-green);
 }
 
-.td__status-title {
+.tu__icon.is-bad {
+  color: var(--jt-color-red);
+}
+
+.tu__status-title {
   font: var(--jt-font-title2);
+}
+
+.tu__balance {
+  margin-top: var(--jt-space-1);
+  font: var(--jt-font-headline);
+}
+
+.tu__reasons {
+  align-self: stretch;
+  margin-top: var(--jt-space-2);
+  padding: var(--jt-space-3) var(--jt-space-4);
+  border-radius: 14px;
+  background: var(--jt-color-fill-secondary);
+  text-align: left;
+}
+
+.tu__reasons-title {
+  font: var(--jt-font-footnote);
+  font-weight: 600;
+  color: var(--jt-color-label-secondary);
+}
+
+.tu__reasons ul {
+  margin-top: var(--jt-space-1);
+  padding-left: 1.1em;
+  list-style: disc;
+  font: var(--jt-font-subheadline);
 }
 </style>

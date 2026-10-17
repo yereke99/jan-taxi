@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yereke99/jantaxi/admin/backend/pkg/botapi"
 	"github.com/yereke99/jantaxi/admin/backend/pkg/botapi/bottest"
@@ -167,7 +168,7 @@ func TestOrdersListEscapesAndLinksEachOrder(t *testing.T) {
 		t.Fatalf("query %q", gotQuery)
 	}
 	text := bottest.Text(msgs[0])
-	for _, want := range []string{"<b>№1042</b> · Жолда · 1 500 ₸", "Ембі &lt;вокзал&gt; &amp; базар → 48.83010, 58.15100", "<b>№1041</b> · Жойылды"} {
+	for _, want := range []string{"<b>№1042</b> · Жолда · 1 500 ₸", "Ембі &lt;вокзал&gt; &amp; базар → Картадағы нүкте", "<b>№1041</b> · Жойылды"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("orders text %q lacks %q", text, want)
 		}
@@ -209,8 +210,9 @@ func TestLanguageChoice(t *testing.T) {
 		case "answerCallbackQuery":
 			answered = c.Body["callback_query_id"] == "cb1" && c.Body["text"] == "Язык изменён: русский."
 		case "setChatMenuButton":
+			// No per-chat button: the chat is switched back to the default one.
 			mb := c.Body["menu_button"].(map[string]any)
-			menu = c.Body["chat_id"] == float64(userID) && mb["text"] == "Открыть Jan Taxi" && mb["type"] == "web_app"
+			menu = c.Body["chat_id"] == float64(userID) && mb["type"] == "default" && mb["web_app"] == nil
 		}
 	}
 	if !answered || !menu {
@@ -275,7 +277,7 @@ func TestGroupsAndBotsAreIgnored(t *testing.T) {
 
 func TestProfile(t *testing.T) {
 	e := newEnv(t)
-	p := e.bot.Profile()
+	p := e.bot.Profile(context.Background())
 	if len(p.Commands) != 3 || len(p.Commands[""]) != 7 || p.Commands[""][1].Description != "Такси шақыру" || p.Commands["ru"][1].Description != "Вызвать такси" {
 		t.Fatalf("commands: %v", p.Commands)
 	}
@@ -291,5 +293,76 @@ func TestProfile(t *testing.T) {
 	}
 	if p.MenuButton == nil || p.MenuButton.Text != "Jan Taxi" || p.MenuButton.WebApp.URL != appURL {
 		t.Fatalf("menu button: %+v", p.MenuButton)
+	}
+}
+
+func TestProfileMenuButtonFallsBackToAPIConfig(t *testing.T) {
+	e := newEnv(t)
+	bot, err := New(Config{}, e.tg.Client(), e.api.Client(botapi.BotPassenger), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := bot.Profile(context.Background()); p.MenuButton == nil || p.MenuButton.WebApp.URL != appURL {
+		t.Fatalf("menu button without PASSENGER_MINIAPP_URL: %+v", p.MenuButton)
+	}
+	e.api.Handle("GET /config", func(map[string]any, string) (int, any) { return 503, bottest.APIError("internal", nil) })
+	bot, _ = New(Config{}, e.tg.Client(), e.api.Client(botapi.BotPassenger), nil)
+	if p := bot.Profile(context.Background()); p.MenuButton != nil {
+		t.Fatalf("menu button without any Mini App URL: %+v", p.MenuButton)
+	}
+}
+
+func TestChatMenuButtonIsResetOncePerChat(t *testing.T) {
+	e := newEnv(t)
+	resets := func() (n int) {
+		for _, c := range e.tg.Calls() {
+			if c.Method == "setChatMenuButton" {
+				if c.Body["chat_id"] != float64(userID) || c.Body["menu_button"].(map[string]any)["type"] != "default" {
+					t.Fatalf("reset: %v", c.Body)
+				}
+				n++
+			}
+		}
+		return n
+	}
+	e.text(t, "/start")
+	if n := resets(); n != 1 {
+		t.Fatalf("first update: %d resets, want 1", n)
+	}
+	if calls := e.tg.Calls(); calls[len(calls)-1].Method != "setChatMenuButton" {
+		t.Fatal("the reset must follow the replies")
+	}
+	e.text(t, "🚕 Такси шақыру")
+	if n := resets(); n != 0 {
+		t.Fatalf("second update: %d resets, want none", n)
+	}
+	// Blocked users are left alone.
+	e2 := newEnv(t)
+	e2.user["is_blocked"] = true
+	e2.text(t, "/start")
+	for _, c := range e2.tg.Calls() {
+		if c.Method == "setChatMenuButton" {
+			t.Fatal("menu reset for a blocked user")
+		}
+	}
+}
+
+func TestSlowAPIStillGetsAnErrorReply(t *testing.T) {
+	e := newEnv(t)
+	e.api.Handle(syncPath, func(map[string]any, string) (int, any) {
+		time.Sleep(300 * time.Millisecond) // the API hangs past the handler's deadline
+		return 200, e.user
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := e.bot.HandleUpdate(ctx, telegram.Update{UpdateID: 1, Message: &telegram.Message{
+		MessageID: 1, From: &telegram.User{ID: userID, FirstName: "Әлия"},
+		Chat: telegram.Chat{ID: userID, Type: "private"}, Text: "/start",
+	}})
+	if err == nil {
+		t.Fatal("expected the sync error")
+	}
+	if msgs := e.tg.Messages(); len(msgs) != 1 || bottest.Text(msgs[0]) != texts.T("kk", "error") {
+		t.Fatalf("error reply after the deadline: %v", msgs)
 	}
 }

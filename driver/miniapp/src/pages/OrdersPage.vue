@@ -1,13 +1,16 @@
 <!--
   Available orders (GET /driver/orders): orders within the driver's dispatch
-  radius, nearest first, refreshed by realtime order.available / order.taken
-  hints, pull-to-refresh and a polling fallback. The header carries the
-  driver, the online switch and the available balance. When the driver cannot take orders, the reason and the way out
-  (go online, top up, open the trip, enable location) come first.
+  radius around pickup A (5 km, growing to 10 km while an order waits),
+  nearest first, refreshed by realtime order.available / order.taken hints,
+  pull-to-refresh and a polling fallback. The header carries the driver, the
+  online switch and the available balance. When the driver cannot take
+  orders, the reason and the way out (go online, top up, open the trip) come
+  first; a missing or stale location is fixed right away by sending a fresh
+  GPS fix.
 -->
 <script setup lang="ts">
 import { Inbox } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import DriverIdentity from '../components/driver/DriverIdentity.vue'
@@ -20,25 +23,26 @@ import { usePullToRefresh } from '../composables/usePullToRefresh'
 import { useDriverErrorText } from '../composables/useDriverErrorText'
 import { ROUTE } from '../router/names'
 import { useDutyStore } from '../stores/duty'
-import { useLocationStore } from '../stores/location'
 import { useOrdersStore } from '../stores/orders'
 import { useWalletStore } from '../stores/wallet'
 import { useFormat } from '../composables/useFormat'
-import { canOpenLocationSettings, haptics, openLocationSettings } from '../telegram'
+import { useEnsureLocation } from '../features/location/useEnsureLocation'
+import { haptics } from '../telegram'
 
 /** Fallback refresh while realtime hints may be missing. */
 const POLL_MS = 20_000
-/** Dispatch offers orders within this radius first (the API widens it when empty). */
-const DISPATCH_RADIUS_KM = 5
+/** Dispatch radius defaults (dispatch.radius_base_m / radius_max_m, ARCHITECTURE §7). */
+const RADIUS_BASE_KM = 5
+const RADIUS_MAX_KM = 10
 
 const { t } = useI18n()
 const errorText = useDriverErrorText()
 const router = useRouter()
 const orders = useOrdersStore()
 const duty = useDutyStore()
-const location = useLocationStore()
 const wallet = useWalletStore()
 const fmt = useFormat()
+const gps = useEnsureLocation()
 
 const page = ref<InstanceType<typeof DriverPage> | null>(null)
 const scrollEl = computed(() => page.value?.scrollEl ?? null)
@@ -59,10 +63,40 @@ function open(id: string): void {
   void router.push({ name: ROUTE.order, params: { id } })
 }
 
-function enableLocation(): void {
-  if (canOpenLocationSettings()) void openLocationSettings()
-  else void location.locateOnce().then(() => orders.refresh()).catch(() => undefined)
+const needsLocation = computed(() => reason.value === 'location_required' || reason.value === 'location_stale')
+
+/** Sends a fresh fix and reloads the list (the API needs a recent location). */
+async function sendLocation(): Promise<void> {
+  if (await gps.ensure()) await orders.refresh()
 }
+
+async function enableLocation(): Promise<void> {
+  if (await gps.fix()) await orders.refresh()
+}
+
+const locationText = computed(() => {
+  switch (gps.state.value) {
+    case 'locating':
+      return t('orders.locating')
+    case 'denied':
+      return t('orders.location_denied')
+    case 'failed':
+      return t('orders.location_failed')
+    case 'outside':
+      return t('duty.outside_text')
+    default:
+      return reason.value ? t(`orders.eligibility.${reason.value}`) : ''
+  }
+})
+
+// No recent fix on the server: read and send one at once instead of asking.
+watch(
+  needsLocation,
+  (need) => {
+    if (need && gps.state.value === 'idle') void sendLocation()
+  },
+  { immediate: true },
+)
 
 async function toggleOnline(next: boolean): Promise<void> {
   const res = await duty.setOnline(next)
@@ -75,11 +109,11 @@ async function toggleOnline(next: boolean): Promise<void> {
   if (res.reason === 'error') {
     if (res.error) toast.error(errorText(res.error))
   } else if (res.reason === 'location_required') {
-    toast.show({ message: t('orders.eligibility.location_required'), action: { label: t('orders.enable_location'), run: enableLocation }, duration: 6000 })
+    toast.show({ message: t('duty.location_text'), action: { label: t('orders.enable_location'), run: () => void enableLocation() }, duration: 6000 })
   } else if (res.reason === 'insufficient_balance') {
     toast.show({ message: t('orders.eligibility.insufficient_balance'), action: { label: t('orders.top_up'), run: () => void router.push({ name: ROUTE.topup }) } })
   } else {
-    toast.error(t(`orders.eligibility.${res.reason === 'not_approved' ? 'not_approved' : 'location_required'}`))
+    toast.show(res.reason === 'outside_service_area' ? t('duty.outside_text') : t('orders.eligibility.not_approved'))
   }
 }
 
@@ -94,17 +128,11 @@ onMounted(() => {
     <template #leading>
       <DriverIdentity />
     </template>
-    <template #trailing>
+    <template v-if="duty.isOnline" #trailing>
       <label class="orders__online">
-        <span>{{ duty.isOnline ? t('orders.online') : t('orders.offline') }}</span>
+        <span>{{ t('orders.online') }}</span>
         <JSwitch :model-value="duty.isOnline" :busy="duty.switching" :label="t('orders.online')" @update:model-value="toggleOnline" />
       </label>
-    </template>
-    <template #large-trailing>
-      <button v-if="wallet.wallet" type="button" class="orders__balance" @click="router.push({ name: ROUTE.wallet })">
-        <span>{{ t('orders.balance') }}</span>
-        <strong class="jt-tabular">{{ fmt.money(wallet.wallet.available) }}</strong>
-      </button>
     </template>
 
     <template #top>
@@ -112,17 +140,32 @@ onMounted(() => {
         <JSpinner v-if="refreshing" size="small" />
         <span v-else-if="pull > 8" class="ptr__text">{{ armed ? t('orders.release_hint') : t('orders.refresh_hint') }}</span>
       </div>
-      <p v-if="duty.isOnline" class="orders__radius">{{ t('orders.nearby', { km: DISPATCH_RADIUS_KM }) }}</p>
+      <div class="orders__meta">
+        <button v-if="wallet.wallet" type="button" class="orders__balance" @click="router.push({ name: ROUTE.wallet })">
+          <span>{{ t('orders.balance') }}</span>
+          <strong class="jt-tabular">{{ fmt.money(wallet.wallet.available) }}</strong>
+        </button>
+        <p v-if="duty.isOnline" class="orders__radius">{{ t('orders.nearby', { min: RADIUS_BASE_KM, max: RADIUS_MAX_KM }) }}</p>
+      </div>
     </template>
 
     <OnlineCard v-if="!duty.isOnline || reason === 'offline'" />
 
     <section v-if="reason && reason !== 'offline'" class="elig" role="status">
-      <p class="elig__text">{{ t(`orders.eligibility.${reason}`) }}</p>
+      <p class="elig__text" :class="{ 'is-busy': gps.state.value === 'locating' }">
+        <JSpinner v-if="needsLocation && gps.state.value === 'locating'" size="small" />
+        <span>{{ needsLocation ? locationText : t(`orders.eligibility.${reason}`) }}</span>
+      </p>
       <JButton v-if="reason === 'insufficient_balance'" size="medium" block @click="router.push({ name: ROUTE.topup })">{{ t('orders.top_up') }}</JButton>
       <JButton v-else-if="reason === 'has_active_order'" size="medium" block @click="router.push({ name: ROUTE.trip })">{{ t('orders.open_trip') }}</JButton>
-      <JButton v-else-if="reason === 'location_required' || reason === 'location_stale'" size="medium" variant="secondary" block @click="enableLocation">
-        {{ t('orders.enable_location') }}
+      <JButton
+        v-else-if="needsLocation && gps.state.value !== 'locating' && gps.state.value !== 'outside'"
+        size="medium"
+        variant="secondary"
+        block
+        @click="enableLocation"
+      >
+        {{ gps.state.value === 'denied' ? t('common.open_settings') : t('orders.enable_location') }}
       </JButton>
     </section>
 
@@ -168,6 +211,18 @@ onMounted(() => {
   column-gap: var(--jt-space-2);
 }
 
+.orders__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--jt-space-2);
+  padding: 0 calc(var(--jt-side-margin) + var(--jt-safe-right)) var(--jt-space-3) calc(var(--jt-side-margin) + var(--jt-safe-left));
+}
+
+.orders__meta:empty {
+  display: none;
+}
+
 .orders__balance {
   display: flex;
   align-items: baseline;
@@ -190,7 +245,6 @@ onMounted(() => {
 }
 
 .orders__radius {
-  padding: 0 calc(var(--jt-side-margin) + var(--jt-safe-right)) var(--jt-space-2) calc(var(--jt-side-margin) + var(--jt-safe-left));
   font: var(--jt-font-footnote);
   color: var(--jt-color-label-secondary);
 }
@@ -231,6 +285,9 @@ onMounted(() => {
 }
 
 .elig__text {
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-2);
   font: var(--jt-font-body);
 }
 

@@ -51,7 +51,7 @@ func run(log *slog.Logger) error {
 		HealthAddr: net.JoinHostPort("", cfg.HealthPort),
 		Log:        log,
 		OnLeader: func(ctx context.Context) {
-			runtime.ApplyProfileWithRetry(ctx, tg, bot.Profile(), log)
+			runtime.ApplyProfileWithRetry(ctx, tg, bot.Profile(ctx), log)
 		},
 	}.Run(ctx)
 }

@@ -88,7 +88,7 @@ onMounted(() => {
         <p class="bal__hint" :class="{ 'is-warn': belowMin }">{{ t('wallet.min_online', { amount: fmt.money(w.min_online_balance) }) }}</p>
       </template>
       <template v-else-if="wallet.walletError">
-        <p class="bal__hint is-warn">{{ errorText(wallet.walletError) }}</p>
+        <p class="bal__hint is-error" role="alert">{{ errorText(wallet.walletError) }}</p>
         <JButton variant="secondary" size="medium" @click="wallet.refreshWallet()">{{ t('common.retry') }}</JButton>
       </template>
       <template v-else>
@@ -194,6 +194,10 @@ onMounted(() => {
 }
 
 .bal__hint.is-warn {
+  color: var(--jt-color-label);
+}
+
+.bal__hint.is-error {
   color: var(--jt-color-red-text);
 }
 
