@@ -49,6 +49,9 @@ type Spec struct {
 	// Header replaces the binary comment line after "%PDF-1.7" (WeasyPrint
 	// writes "%" + U+1F5A4; qpdf, for one, writes "%\xbf\xf7\xa2\xfe").
 	Header string
+
+	// contentPad appends spaces to the page content (BuildSpliced).
+	contentPad int
 }
 
 // Astana is UTC+5.
@@ -212,6 +215,7 @@ func (s Spec) content(g glyphs, withQR bool) []byte {
 		b.WriteString("q\n1 0 0 1 150 620 cm\nq\n120 0 0 -120 0 120 cm\n/Code Do\nQ\nQ\n")
 	}
 	b.WriteString("Q\n")
+	b.WriteString(strings.Repeat(" ", s.contentPad))
 	return b.Bytes()
 }
 
@@ -261,10 +265,21 @@ func Build(s Spec) []byte {
 // data: what changing the page content in place leaves behind when the
 // offsets are not recomputed. The file is a single revision with the
 // original header and metadata; only the offsets give the edit away.
+//
+// When the edited content compresses to exactly the original length, every
+// offset still matches and nothing in the file gives the edit away; the
+// edited content is then padded with spaces until the offsets move, so the
+// result always carries stale offsets.
 func BuildSpliced(original, edited Spec) []byte {
 	original, edited = original.withDefaults(), edited.withDefaults()
 	g := newGlyphs(original, edited)
 	_, stale := buildWith(original, g, nil)
+	for pad := 0; pad < 64; pad++ {
+		edited.contentPad = pad
+		if _, written := buildWith(edited, g, nil); written.xrefOff != stale.xrefOff {
+			break
+		}
+	}
 	pdf, _ := buildWith(edited, g, &stale)
 	return pdf
 }

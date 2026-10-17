@@ -277,7 +277,8 @@ reject reuse → insert `payment_receipts` → evaluate → credit or leave for 
   `structure_unexpected` (not exactly one `%%EOF`, `startxref` and cross-reference section),
   `xref_inconsistent` (`startxref` or an in-use cross-reference entry does not point at its
   object, an object-stream entry names no real stream, or an object in the file is not listed —
-  `pdfdoc.Doc.XRefMismatches`; catches bytes edited in place in a single revision),
+  `pdfdoc.Doc.XRefMismatches`; catches bytes edited in place in a single revision unless the edit
+  keeps every offset, e.g. a content stream recompressed to exactly its old length),
   `header_unexpected` (the comment line after `%PDF-1.7` is not WeasyPrint's; qpdf, pikepdf,
   pypdf, editors and print-to-PDF write other bytes),
   `producer_unexpected` (not WeasyPrint*), `creator_present`, `moddate_present`,
@@ -302,6 +303,10 @@ reject reuse → insert `payment_receipts` → evaluate → credit or leave for 
      `topup.auto_max_amount_per_day` (50 000 ₸) — `daily_count_limit` / `daily_amount_limit`;
   7. kill switch `topup.auto_confirm_enabled` (true) — `auto_confirm_disabled`.
 * Images (JPEG/PNG/WebP) stay evidence only and never credit (`receipt.kind = image`).
+* Residual risk: Kaspi offers no public receipt verification, so a file regenerated exactly like
+  WeasyPrint with a new number and time, or another person's genuine receipt claimed first,
+  passes the file checks. Limits: the per-driver daily caps, the kill switch, refunds, and finance
+  admins reconciling receipt numbers with the Kaspi Pay sales history.
 * Admin `GET /admin/topups/{id}` adds `receipt` (latest parsed receipt with flags, decision and
   reasons), `receipts`, `confirm_prefill` (amount, number, paid_at, masked payer) and
   `confirmed_automatically`; `GET /admin/topups/{id}/receipt` serves the latest file (PDF or

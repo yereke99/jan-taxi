@@ -5,15 +5,16 @@ and what is left. Read `docs/ARCHITECTURE.md` first — it is the binding design
 (module boundaries, order state machine, money model, auth, realtime, endpoint catalogue §19,
 cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 
-## 0. Latest status (2026-10-17, work paused)
+## 0. Latest status (2026-10-17 night, work paused)
 
-- All tests green at pause time: `go test ./...` → 39 packages ok; `pnpm -r test` → passenger 224, driver 261, admin 64; `go vet` and `pnpm -r typecheck` clean.
-- Done since the first handoff: radius-based dispatch (5 km → +2.5 km/min → 10 km around pickup A, fresh driver GPS required, no city binding; settings `dispatch.*`); passenger map fixes from a real-phone test (route framing, pin reverse-geocoding loop, local address search within 60 km, no raw coordinates shown, single Telegram back button); iOS 26 floating tab bars; demo mode (`VITE_DEMO=1`, `dev:demo` / `build:demo`) that never ships in production builds.
-- Paused mid-way (finish these first):
-  1. **Kaspi PDF receipts** (backend mostly written, needs completion + review): `admin/backend/internal/payments/receipt/`, `internal/platform/pdfdoc`, `storage/pdf.go`, migration `00006_kaspi_receipts.sql`, driver bot PDF intake (`driver/bot/internal/driverbot/receipt.go`, `internal/botapi/receipt.go`). Rules: receipt key = `№ чека` value `^QR\d{8,}$` (e.g. QR18149336524), unique in the DB together with file sha256; seller BIN must be 000809500289 (ИП "JAN-TAXI"); amount must equal the top-up request; fresh date (Astana time, `dd.mm.yyyy HH:MM`); PDF producer `WeasyPrint*`, single revision; per-driver daily auto limits; admin kill switch `topup.auto_confirm_enabled`. When all checks pass the wallet is credited automatically through the same ledger path as admin confirmation; otherwise pending for admin with reasons; duplicates rejected. Real sample receipts are kept outside the repo — never commit them. Still to do: adversarial fraud review, driver Mini App top-up screen with PDF upload, admin receipt viewer.
-  2. **End-to-end UI pass on a real phone**: driver Mini App showed red error banners for a fresh driver (likely onboarding/403 `driver_not_registered` or `location_required` treated as errors) — reproduce and fix; then walk every passenger and driver flow against the live API.
-  3. **Bot runtime bug**: after a network drop the long-polling loop can stall (health shows `last_poll_age_s` > 90) and never recovers without a restart — add per-request deadlines/transport timeouts and a self-restart in `admin/backend/pkg/botapi/runtime`. Also the passenger bot did not refresh its default menu button on restart while the driver bot did.
-- Local live testing used a temporary Cloudflare quick tunnel (URL changes on every restart); production needs a real domain + Kazakhstan-hosted server (see §4.8). Public OSRM/Photon servers are for development only (OSRM demo forbids commercial use; self-host it — free, ~4 GB RAM).
+- Done since the previous pause: Kaspi PDF receipts end to end (parser verified against a real receipt: number, amount, seller BIN, date; reused receipts rejected; edited PDFs flagged; automatic crediting when every check passes; driver bot accepts PDFs); bot polling recovers after network drops and menu buttons refresh on start; driver app onboarding/GPS/top-up fixes; passenger trip flow fixes; admin moderation, receipt review with inline PDF, dispatch and payee settings.
+- Interrupted: the integration run (full test suites, live redeploy, end-to-end smoke, adversarial review). Re-run before release: `gofmt -l`, `go vet ./...`, `go test -race ./...`, `pnpm -r typecheck lint test build`, `node passenger/miniapp/scripts/verify-shared.mjs`.
+- Known gaps:
+  - Address titles often come back in Russian even with `lang=kk` (public Photon data); `/geo/search` falls back to country-wide results when nothing is local.
+  - Public config does not expose the payee BIN (`kaspi.recipient_bin`); the driver app falls back to the seeded value.
+  - Production admin CSP needs `frame-src 'self' blob:` for the inline receipt PDF viewer.
+  - ARCHITECTURE §6.1/§19/§20 and `openapi.yaml` need the receipt endpoints and flags documented.
+- Local live stack (developer machine only): scripts in `../jan-taxi-private/live/` (`build.sh`, `run.sh`, `retunnel.sh`, `watchdog.sh`), Cloudflare quick tunnel; production needs a real domain and a Kazakhstan-hosted server. Public OSRM/Photon servers are for development only.
 
 ## 1. Repository map
 
