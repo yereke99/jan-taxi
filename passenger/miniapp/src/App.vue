@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import PassengerTabBar from './components/PassengerTabBar.vue'
 import { JActionSheetHost, JButton, JEmptyState, JStatusBanner, JToast } from './components/ui'
 import { useErrorText } from './i18n/core'
 import { useRealtimeStatus } from './services/realtime'
@@ -84,6 +85,8 @@ async function retry(): Promise<void> {
         <component :is="Component" :key="route.matched[0]?.path ?? route.path" class="jt-page" />
       </Transition>
     </RouterView>
+
+    <PassengerTabBar v-if="!blocked && !failed && session.isReady" />
 
     <Transition name="jt-fade">
       <JStatusBanner v-if="banner" :text="banner.text" :tone="banner.tone" :busy="banner.busy" />

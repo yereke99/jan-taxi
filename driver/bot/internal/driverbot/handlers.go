@@ -189,7 +189,7 @@ func (b *Bot) availabilityError(ctx context.Context, s *session, err error) erro
 		return b.send(ctx, s, s.t("need_balance", runtime.Esc(runtime.FormatMoney(required)), runtime.Esc(runtime.FormatMoney(available))),
 			runtime.Inline(b.appButton(ctx, s, "btn_topup", "topup")))
 	case e.Code == "location_required":
-		return b.send(ctx, s, s.t("need_location"), b.keyboard(s))
+		return b.needLocation(ctx, s, "need_location")
 	case e.Code == "driver_not_approved":
 		if st := e.DetailString("status"); st != "" {
 			s.driver.Status = &st
@@ -246,11 +246,21 @@ func (b *Bot) notEligible(ctx context.Context, s *session, reason string) error 
 	case "insufficient_balance":
 		return b.send(ctx, s, s.t("orders_need_balance"), runtime.Inline(b.appButton(ctx, s, "btn_topup", "topup")))
 	case "location_required":
-		return b.send(ctx, s, s.t("need_location"), b.keyboard(s))
+		return b.needLocation(ctx, s, "need_location")
 	case "location_stale":
-		return b.send(ctx, s, s.t("location_stale"), b.keyboard(s))
+		return b.needLocation(ctx, s, "location_stale")
 	}
 	return b.statusInfo(ctx, s)
+}
+
+// needLocation explains that orders are dispatched by distance to the pickup
+// and how to send GPS: a live location in this chat, or the Mini App (which
+// reports the location while it is open), opened with the inline button.
+func (b *Bot) needLocation(ctx context.Context, s *session, key string) error {
+	if kb := runtime.Inline(b.appButton(ctx, s, "btn_location_app", "home")); kb != nil {
+		return b.send(ctx, s, s.t(key), kb)
+	}
+	return b.send(ctx, s, s.t(key), b.keyboard(s))
 }
 
 // orderCard renders an available order (no passenger contact data: the API

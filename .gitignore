@@ -33,6 +33,7 @@ go.work.sum
 # Node / Vite
 node_modules/
 dist/
+dist-demo/
 dist-ssr/
 coverage/
 .vite/

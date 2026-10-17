@@ -56,6 +56,33 @@ func TestGettersReadSeed(t *testing.T) {
 	}
 }
 
+func TestDispatchSettings(t *testing.T) {
+	pool := testutil.NewDB(t)
+	ctx := context.Background()
+	want := DispatchSettings{RadiusBaseM: 5000, RadiusStepM: 2500, RadiusStepS: 60, RadiusMaxM: 10000, LocationMaxAgeS: 300}
+	if got := Dispatch(ctx, pool); got != want {
+		t.Fatalf("defaults = %+v", got)
+	}
+	for k, v := range map[string]any{"dispatch.radius_base_m": 3000, "dispatch.radius_step_m": 2000,
+		"dispatch.radius_step_s": 30, "dispatch.radius_max_m": 15000, "dispatch.location_max_age_s": 120} {
+		if err := Set(ctx, pool, k, v, uuid.Nil); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	want = DispatchSettings{RadiusBaseM: 3000, RadiusStepM: 2000, RadiusStepS: 30, RadiusMaxM: 15000, LocationMaxAgeS: 120}
+	if got := Dispatch(ctx, pool); got != want {
+		t.Fatalf("stored = %+v", got)
+	}
+	// A maximum below the base (written around the admin API) never shrinks
+	// the base radius.
+	if _, err := pool.Exec(ctx, `UPDATE app_settings SET value = '1000' WHERE key = 'dispatch.radius_max_m'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := Dispatch(ctx, pool); got.RadiusMaxM != 3000 || got.RadiusAt(time.Hour) != 3000 {
+		t.Fatalf("max below base = %+v", got)
+	}
+}
+
 func TestSetAndReset(t *testing.T) {
 	pool := testutil.NewDB(t)
 	ctx := context.Background()
@@ -170,7 +197,16 @@ func TestEffectiveHelpers(t *testing.T) {
 	})
 	t.Cleanup(func() { Configure(Env{}) })
 
+	// The payee seeded by migration 00006 wins over the environment.
 	k := KaspiPayment(ctx, pool)
+	if k.PaymentURL != "https://pay.kaspi.kz/pay/xbp1imhd" || k.RecipientName != `ИП "JAN-TAXI"` {
+		t.Fatalf("seeded kaspi = %+v", k)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM app_settings WHERE key IN ('kaspi.payment_url', 'kaspi.recipient_name')`); err != nil {
+		t.Fatal(err)
+	}
+
+	k = KaspiPayment(ctx, pool)
 	if k.PaymentURL != "https://pay.kaspi.kz/pay/env" || k.RecipientName != "ИП Env" || k.Instructions.KK == "" {
 		t.Fatalf("env kaspi = %+v", k)
 	}
@@ -223,4 +259,34 @@ func createAdmin(t *testing.T, pool interface {
 		t.Fatalf("create admin: %v", err)
 	}
 	return id
+}
+
+func TestPayeeAndAutoConfirmDefaults(t *testing.T) {
+	pool := testutil.NewDB(t)
+	ctx := context.Background()
+	c := CompanyDetails(ctx, pool)
+	want := Company{Name: `ИП "JAN-TAXI"`, BIN: "000809500289", IBAN: "KZ05722S000057176693", Bank: `АО "Kaspi Bank"`,
+		BIC: "CASPKZKA", KBe: "19", Address: "Жалагашский район, с. Жалагаш, ул. Нығмет Мырзалиев, 94"}
+	if c != want {
+		t.Fatalf("company = %+v", c)
+	}
+	a := ReceiptAutoConfirm(ctx, pool)
+	if !a.Enabled || a.MaxPerDay != 3 || a.MaxAmountPerDay != 50000 || a.ReceiptMaxAge != 48*time.Hour {
+		t.Fatalf("auto confirm = %+v", a)
+	}
+	// The built-in defaults match the seed, so a reset changes nothing.
+	for _, k := range []string{"company.bin", "company.iban", "topup.auto_confirm_enabled", "topup.auto_max_per_day"} {
+		if err := Reset(ctx, pool, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if CompanyDetails(ctx, pool) != want || ReceiptAutoConfirm(ctx, pool) != a {
+		t.Fatal("defaults differ from the seed")
+	}
+	if err := Set(ctx, pool, "topup.auto_confirm_enabled", false, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+	if ReceiptAutoConfirm(ctx, pool).Enabled {
+		t.Fatal("kill switch ignored")
+	}
 }

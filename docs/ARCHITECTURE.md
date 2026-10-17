@@ -83,8 +83,13 @@ fails if the copies drift.
 * Boundary: Natural Earth 1:10m admin-0 (public domain) Kazakhstan incl. Baikonur, stored in
   `country_boundaries` (code `KZ`), checked with `ST_Covers(geom, point)`.
 * Embi (`lat 48.8264, lon 58.1442`) is only the default map centre and the first city.
-* City resolution for an order: the active city whose active service zone covers the pickup;
-  otherwise the nearest active city centre. Dispatch then uses that city's policy.
+* City resolution for an order (`cities.Resolve`): the active city whose active service zone covers
+  the pickup; otherwise the nearest active city centre. The resolved city only selects the **tariff**
+  (and the search timeout `cities.search_timeout_s`); a driver's registered city only prefixes the
+  driver code and groups drivers in the admin panel.
+* **Dispatch never depends on a city.** A passenger anywhere in Kazakhstan (e.g. Almaty) creates an
+  order and it is offered to free drivers whose fresh GPS location is within the order's search radius
+  of pickup point A (§7), wherever those drivers are registered.
 
 ## 4. Identity and authentication
 
@@ -167,7 +172,11 @@ searching ──accept(driver/admin assign)──▶ accepted ──arriving(dri
 
 ### 5.1 Atomic acceptance (exactly-one winner)
 In one transaction:
-1. Load driver; require `status='approved'`, `is_online`, same `city_id` as the order, not blocked.
+1. Load driver; require `status='approved'`, `is_online`, not blocked, no active order, and a fresh
+   location (`driver_locations.recorded_at` within `dispatch.location_max_age_s`, else
+   `422 location_required` with `details.reason` `location_required|location_stale` and `max_age_s`)
+   within the order's effective radius of the pickup (else `404`: the order is outside the driver's
+   reach). No city check.
 2. `SELECT ... FROM wallets WHERE driver_id=$d FOR UPDATE`; require
    `balance - reserved >= commission_amount` else `402 insufficient_balance` (with top-up hint).
 3. `UPDATE orders SET status='accepted', driver_id=$d, vehicle_id=$v, accepted_at=now(), version=version+1
@@ -207,24 +216,150 @@ In one transaction:
 ### 6.1 Kaspi Pay top-ups
 `created → pending_verification → confirmed | rejected`, `created → expired` (job),
 `confirmed → refunded`. The driver's "I paid" (`submit`) only moves to `pending_verification`.
-Credit happens **only** when a finance admin confirms with the verified amount and the Kaspi
-transaction/receipt number from trusted merchant records; `payment_transactions` has
-`UNIQUE(provider, provider_transaction_id)` so one real payment can never credit twice.
 Reference format: `<DRIVERCODE>-TOPUP-<6-digit number>` e.g. `EMB001-TOPUP-000123`.
-Provider abstraction `payments.Provider` has `kaspi_manual` now; a webhook route
+Provider abstraction `payments.Provider` has `kaspi_manual`; a webhook route
 `POST /api/v1/payments/webhooks/{provider}` returns 404 until a verified provider is configured.
+
+**Payee** (seeded by migration 00006 into `app_settings`, editable in `/admin/settings`):
+ИП "JAN-TAXI" (`kaspi.recipient_name`), ИИН/БИН 000809500289 (`company.bin`, check digit
+validated), IBAN KZ05722S000057176693 (`company.iban`, ISO 13616 check), АО "Kaspi Bank"
+(`company.bank`), БИК CASPKZKA (`company.bic`), КБе 19 (`company.kbe`), address
+`company.address`; Kaspi Pay link `kaspi.payment_url` = `https://pay.kaspi.kz/pay/xbp1imhd` (the payer
+types the amount; the link carries neither amount nor reference). The seeded rows win over
+`KASPI_PAY_*` environment defaults.
+
+**Two ways to credit, one code path.** `payments.confirmTopUp` is the only place that credits a
+top-up: `payment_transactions` row, `wallets.CreditTopUp` (`topup:<id>`, idempotent), status
+`confirmed`, `top_up_events`, `admin_audit_logs`, `topup_confirmed` notification, realtime
+events. Callers: (1) a finance admin confirming with the verified amount and Kaspi number
+(`actor admin`, source `manual_admin`); (2) the system after a Kaspi PDF receipt passed every check
+below (`actor system`, `confirmed_by_system`, audit action `topup.auto_confirm` with
+`admin_id NULL`, provider `kaspi_pdf`, `provider_transaction_id` = receipt number, source
+`receipt_auto`, `receipt_id`). Both are reversible with the existing refund.
+Kaspi numbers are unique across `kaspi_manual` and `kaspi_pdf`
+(`payment_transactions_kaspi_txn_key`), and an admin cannot confirm another top-up with a
+number already attached to a receipt.
+
+**Kaspi receipt PDF** (`POST /driver/wallet/topups/{id}/receipt` from the Mini App, or a PDF
+sent to the driver bot → `POST /internal/v1/driver/{tg_id}/topup-receipt`, attached to the
+driver's most recent open top-up). In one transaction (per-driver advisory lock): store the file →
+reject reuse → insert `payment_receipts` → evaluate → credit or leave for review.
+* Storage (`storage.SavePDF`): `%PDF-` magic, ≤ min(5 MiB, `MAX_UPLOAD_BYTES`), parsed by the
+  defensive reader `platform/pdfdoc`; encrypted PDFs and active content (JavaScript, Launch,
+  attachments, RichMedia, XFA, SubmitForm, …) are refused (`422 pdf_not_allowed`). Bytes are kept
+  unchanged (the evidence) in private storage (`yyyy/mm/<uuid>.pdf`, mode 0600); served only to
+  finance admins as `application/pdf`, `Content-Disposition: inline`, `Cache-Control: private,
+  no-store`.
+* Uniqueness is enforced by the database: `payment_receipts` has unique indexes on `file_sha256`,
+  `(provider, receipt_serial)` and `qr_payload_hash` (NULLS DISTINCT), is append-only, and the
+  insert uses `ON CONFLICT DO NOTHING`, so concurrent uploads of one receipt yield exactly one
+  row. A receipt (same file, number or QR payload, or a number already recorded as a Kaspi
+  payment) used before rejects the new top-up at once: `409 receipt_already_used`, status
+  `rejected`, `reject_reason = duplicate_receipt`, system event with the evidence (matched keys,
+  earlier receipt/top-up ids, admins only), audit `topup.reject_duplicate_receipt`, `topup_rejected`
+  notification. Re-sending the receipt a top-up already has is a no-op.
+* Parser (`payments/receipt`). **Calibration: VERIFIED** against a real Kaspi receipt
+  (2026-10-17, kept outside the repository; `JT_KASPI_RECEIPT_SAMPLES=<dir> go test -run
+  TestCalibrationSamples ./admin/backend/internal/payments/receipt`). Real receipts: PDF 1.7,
+  single revision (one `%%EOF`, no `/Prev`, object stream + cross-reference stream), Producer
+  `WeasyPrint 70.0`, no Creator/ModDate/XMP, text drawn with `TJ` through Roboto subsets
+  (Type0 Identity-H, decoded via ToUnicode), one avatar image, **no QR code** (the Kaspi logo is
+  vector art). Text order: «Оплата совершена» · amount · «₸» · seller (ИП "JAN-TAXI") ·
+  «№ чека» QR… · «ИИН/БИН продавца» · «ФИО покупателя» · «Дата и время по Астане»
+  dd.mm.yyyy HH:MM (UTC+5) · «Оплачено» с Kaspi Gold · «Адрес» · «Чек не является
+  фискальным». The unique key is the number after «№ чека» (`^QR\d{8,}$`, upper case, no spaces);
+  the payer is stored masked only («Е*** Б.»). Kazakh labels and the Kazakh status line
+  («Төлем жасалды», …) are accepted but UNCERTAIN (no Kazakh sample yet; raises `status_kazakh`).
+  Images are still scanned for QR codes (gozxing): a payload naming another number blocks
+  crediting (`qr_mismatch`), its hash is unique; no QR raises the informational `qr_not_found`.
+  Blocking flags: `incremental_update`, `object_redefined`, `trailing_data`,
+  `producer_unexpected` (not WeasyPrint*), `creator_present`, `moddate_present`,
+  `xmp_metadata_present`, `page_count_unexpected`, `font_unexpected` (not Roboto*),
+  `text_undecodable`, `annotations_present`, `form_present`, `serial_*`, `amount_*`,
+  `status_missing`, `filename_serial_mismatch` (Kaspi shares `receipt_QR….pdf`). The parser never
+  panics, bounds objects/streams/operators/pixels and is fuzzed (`FuzzParse`, `FuzzOpen`).
+* Automatic credit only if **all** hold, else `pending_verification` with machine-readable
+  reasons (driver sees reasons, never the file flags; admins see both):
+  1. receipt not used before (above);
+  2. seller BIN = `company.bin` (or, when the receipt has no BIN, seller name contains the
+     distinctive part of `kaspi.recipient_name`, normalised, Cyrillic look-alikes as Latin)
+     — else `recipient_mismatch`;
+  3. amount = requested amount — `amount_mismatch`;
+  4. `created_at − 10 min ≤ paid_at ≤ now + 5 min` and `now − paid_at ≤ topup.receipt_max_age_hours`
+     (48) — `paid_before_topup` / `paid_in_future` / `receipt_too_old`;
+  5. parsed completely with no blocking flag — `receipt_incomplete` / `receipt_inconsistent` /
+     `tamper_suspected` / `receipt_unreadable`;
+  6. per driver and business day (Asia/Aqtobe): count < `topup.auto_max_per_day` (3) and sum ≤
+     `topup.auto_max_amount_per_day` (50 000 ₸) — `daily_count_limit` / `daily_amount_limit`;
+  7. kill switch `topup.auto_confirm_enabled` (true) — `auto_confirm_disabled`.
+* Images (JPEG/PNG/WebP) stay evidence only and never credit (`receipt.kind = image`).
+* Admin `GET /admin/topups/{id}` adds `receipt` (latest parsed receipt with flags, decision and
+  reasons), `receipts`, `confirm_prefill` (amount, number, paid_at, masked payer) and
+  `confirmed_automatically`; `GET /admin/topups/{id}/receipt` serves the latest file (PDF or
+  JPEG), older ones via `GET /admin/files/{file_id}`. Driver views carry `receipt`
+  `{kind, decision, reasons, receipt_serial, amount, paid_at}`.
+* Driver bot: a PDF document in the chat → `getFile` (≤ 5 MiB, token never logged) → internal
+  upload (never retried) → reply in the user's language: credited (amount, reference, balance),
+  under review with the reasons, already used, or "create a top-up first" with an inline
+  `web_app` button to `?startapp=topup`. Photos and non-PDF files get instructions to share the
+  PDF from Kaspi. Research: Kaspi documents no public API, webhook or verification URL for Kaspi
+  Pay receipts (its "проверка чека" service covers fiscal receipts of Kaspi ОФД — РНМ/ФП — and
+  these receipts say «Чек не является фискальным»), so the receipt itself is the evidence.
 
 ## 7. Dispatch
 
-Eligible driver = `driver_profiles.status='approved'` ∧ `is_online` ∧ user not blocked ∧
-same `city_id` as order ∧ no active order ∧ `available >= order.commission_amount` ∧
-(if city `require_driver_location`: last location fresher than `driver_location_max_age_s`
-and within `dispatch_radius_m` of pickup). On order creation all eligible drivers get an
-`order_offers` row, a Telegram notification (outbox) and a `order.available` WS event.
-The available-orders list is computed live (searching orders in the driver's city, filtered
-by the same rules), so drivers who come online later still see open orders.
-Job `search_expiry`: `searching` orders older than `cities.search_timeout_s` →
-`cancelled` by `system` with reason `no_driver_found`.
+Dispatch is **by geolocation radius around pickup point A**, across all of Kazakhstan. Neither the
+driver's registered city nor the order's tariff city restricts it.
+
+Eligible driver for a searching order = `driver_profiles.status='approved'` ∧ `is_online` ∧ user not
+blocked ∧ no active order ∧ `available >= order.commission_amount` ∧ not the order's own passenger ∧
+a **fresh location** (`driver_locations.recorded_at > now() - dispatch.location_max_age_s`) ∧
+`ST_DWithin(driver location, order pickup, effective_radius)`.
+
+Effective radius of an order (metres), growing while it searches:
+
+```
+effective_radius = min(radius_max_m, radius_base_m + radius_step_m * floor(order_age_s / radius_step_s))
+order_age_s      = now() - orders.created_at
+```
+
+Global settings (`app_settings`, admin-editable via `GET/PATCH /admin/settings`, typed helper
+`settings.Dispatch(ctx, q)`; the per-city columns `cities.dispatch_radius_m`,
+`require_driver_location`, `driver_location_max_age_s` are legacy and no longer read):
+
+| Key | Default | Range |
+|---|---|---|
+| `dispatch.radius_base_m` | 5000 | 500..50000 |
+| `dispatch.radius_step_m` | 2500 | 0..20000 |
+| `dispatch.radius_step_s` | 60 | 10..600 |
+| `dispatch.radius_max_m` | 10000 | 500..100000 and ≥ base (`less_than_base`) |
+| `dispatch.location_max_age_s` | 300 | 30..3600 |
+
+With the defaults an order is offered within 5 km, after 1 min within 7.5 km, after 2 min within 10 km.
+
+* **On creation** (same transaction) every eligible driver inside the base radius gets an
+  `order_offers` row (with `distance_to_pickup_m`), an `order_available_driver` notification
+  (outbox) and an `order.available` WS event.
+* **Job `dispatch_expand`** (every 15 s, advisory lock): for each searching order whose search window
+  is open, locks the order row (`FOR UPDATE SKIP LOCKED`, so an acceptance in progress is skipped
+  until the next run) and offers it to drivers who are eligible inside the *current* effective radius
+  and have no offer yet — drivers reached by the growing radius, drivers who came online, moved closer,
+  topped up or finished a trip. `UNIQUE(order_id, driver_id)` prevents duplicates; notifications and
+  `order.available` go only to the new offers.
+* **Available-orders list** (`GET /driver/orders`, bot `/orders`, `GET /driver/orders/{id}`) is a live
+  query with the same rules and the effective radius, sorted by distance to the pickup (nearest
+  first), each card with `distance_to_pickup_m`. `eligibility.reason` is the first of `not_approved`,
+  `offline`, `has_active_order`, `location_required` (no fix), `location_stale` (fix too old), or
+  `insufficient_balance` (orders in reach exist but none is affordable). Orders outside the radius
+  are simply not listed (`404` for detail and accept).
+* **Going online** (`PATCH /driver/availability`, bot availability) requires a fresh location →
+  otherwise `422 location_required` (`details.max_age_s`). Drivers send GPS from the Mini App while it
+  is in the foreground (`POST /driver/location`) or as a Telegram live location in the driver bot.
+* **Admin assignment** skips the online, location and radius checks but keeps approval, active-order
+  and balance checks; the response `warnings` lists `offline` and one of `location_required`,
+  `location_stale`, `out_of_radius` when the driver could not have taken the order themselves.
+* Job `search_expiry`: `searching` orders past `search_expires_at` (created at + `cities.search_timeout_s`
+  of the tariff city) → `cancelled` by `system` with reason `no_driver_found`.
 
 ## 8. Notifications (transactional outbox)
 
@@ -327,6 +462,11 @@ additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode
 * Backoff: exponential 1s→60s with full jitter; honour `retry_after`; tokens never logged.
 * Health: `GET :8090/healthz` → 200 when the last successful poll was < 90s ago.
 * Bot UI is Kazakh by default; language stored in PostgreSQL via the API.
+* Driver bot and dispatch (§7): a shared Telegram live location (and its edits) is the bot's GPS
+  feed (`POST /internal/v1/driver/{tg_id}/location`). When going online or listing orders fails with
+  `location_required` / `location_stale`, the bot explains both ways to send GPS — live location in
+  the chat (📎 → Location → Share My Live Location) or opening the Mini App (inline `web_app` button)
+  and allowing location access — in kk/ru/en.
 
 ## 14. Frontend contract
 
@@ -414,8 +554,8 @@ that sits above the map or scrolling content:
 ## 16. Background jobs (API process)
 
 Each job runs on an interval and takes a `pg_try_advisory_lock` so only one API replica runs it:
-`notification_worker` (1s), `search_expiry` (15s), `topup_expiry` (5m), `quote_cleanup` (1h),
-`stale_driver_offline` (5m, offline after `DRIVER_ONLINE_IDLE_TIMEOUT` without heartbeat/location),
+`notification_worker` (1s), `search_expiry` (15s), `dispatch_expand` (15s, §7), `topup_expiry` (5m),
+`quote_cleanup` (1h), `stale_driver_offline` (5m, offline after `DRIVER_ONLINE_IDLE_TIMEOUT` without heartbeat/location),
 `bot_update_cleanup` (1h, keep 7 days), `location_history_retention` (1d, keep 30 days),
 `session_cleanup` (1h).
 
@@ -423,7 +563,8 @@ Each job runs on an interval and takes a `pg_try_advisory_lock` so only one API 
 
 All configuration is environment variables (see `.env.example`); DB `app_settings` override the
 runtime-editable ones (support contacts, Kaspi public payment settings, top-up limits,
-prohibited items, min online balance). Secrets never live in the repo or the database.
+prohibited items, min online balance, dispatch radius and location freshness `dispatch.*`).
+Secrets never live in the repo or the database.
 
 ## 18. Mini App start parameters (deep links)
 
@@ -496,13 +637,13 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /driver/files/{id} | D | drivers | own files only |
 | GET | /driver/profile | D | drivers | profile, vehicle, rating, trips, status |
 | PATCH | /driver/profile | D | drivers | non-moderated fields only (none in MVP besides language via /me) → 422 for moderated fields |
-| PATCH | /driver/availability | D | drivers | `{online}`; checks approved, not suspended, available ≥ `driver.min_online_balance` |
+| PATCH | /driver/availability | D | drivers | `{online}`; checks approved, not suspended, available ≥ `driver.min_online_balance`, fresh location (`422 location_required`, `details.max_age_s`) |
 | POST | /driver/location | D | drivers | `{lat,lon,accuracy_m?,heading?,speed_mps?,recorded_at?}`; must be inside KZ; rate-limited 1/2s |
-| GET | /driver/orders | D | dispatch | available orders (cards) |
+| GET | /driver/orders | D | dispatch | available orders within the effective radius, nearest first (cards with `distance_to_pickup_m`) + `eligibility` |
 | GET | /driver/orders/active | D | orders | current order or 204 |
 | GET | /driver/orders/history?limit=&before= | D | orders | |
 | GET | /driver/orders/{id} | D | orders | available order detail (if eligible) or own order |
-| POST | /driver/orders/{id}/accept | D | dispatch | atomic; 409 `order_already_taken`, 402 `insufficient_balance` |
+| POST | /driver/orders/{id}/accept | D | dispatch | atomic; 409 `order_already_taken`, 402 `insufficient_balance`, 422 `location_required`, 404 outside the radius |
 | POST | /driver/orders/{id}/arriving | D | orders | |
 | POST | /driver/orders/{id}/start | D | orders | |
 | POST | /driver/orders/{id}/stops/{stopId}/complete | D | orders | in sequence |
@@ -534,7 +675,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /admin/orders?status=&city_id=&category=&from=&to=&q=&page= | orders.view | orders |
 | GET | /admin/orders/{id} | orders.view | orders |
 | POST | /admin/orders/{id}/cancel | orders.manage | orders |
-| POST | /admin/orders/{id}/assign `{driver_id}` | orders.manage | dispatch |
+| POST | /admin/orders/{id}/assign `{driver_id}` (response `warnings`: `offline`, `location_required`, `location_stale`, `out_of_radius`) | orders.manage | dispatch |
 | POST | /admin/orders/{id}/dispute `{reason}` | orders.manage | orders |
 | GET | /admin/disputes?status= | orders.view | orders |
 | POST | /admin/disputes/{id}/resolve `{outcome, resolution, refund_commission}` | orders.manage | orders |
@@ -632,6 +773,7 @@ wallets.Reconcile(ctx, q) ([]wallets.Mismatch, error)
 var wallets.ErrInsufficientBalance error
 
 // settings (DB app_settings with typed defaults)
+settings.Dispatch(ctx, q) settings.DispatchSettings  // RadiusBaseM, RadiusStepM, RadiusStepS, RadiusMaxM, LocationMaxAgeS; RadiusAt(age)
 settings.Int(ctx, q, key string, def int64) int64
 settings.Bool(ctx, q, key string, def bool) bool
 settings.Strings(ctx, q, key string, def []string) []string

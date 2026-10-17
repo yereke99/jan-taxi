@@ -15,7 +15,7 @@ function order(status: OrderStatus, version: number, extra: Partial<Order> = {})
     driver:
       status === 'searching'
         ? null
-        : { id: DRIVER, code: 'EMB001', first_name: 'Ерлан', last_name: 'Б.', phone: null, telegram_username: null, rating: 4.9, rating_count: 10, completed_trips: 20, photo_url: null },
+        : { id: DRIVER, code: 'EMB001', first_name: 'Ерлан', last_name: 'Б.', phone: null, rating: 4.9, rating_count: 10, completed_trips: 20, photo_url: null },
     driver_location: null,
     stops: [],
     ...extra,

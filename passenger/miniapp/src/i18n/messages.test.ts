@@ -6,7 +6,8 @@
 import { describe, expect, it } from 'vitest'
 import { KNOWN_PROHIBITED_ITEMS } from '../domain/prohibited'
 import { CATEGORIES, MODERATION_STATUSES, ORDER_STATUSES, PAYMENT_METHODS, TOPUP_STATUSES } from '../utils/status'
-import { LOCALES, type Locale } from './core'
+import { ApiError } from '../services/http'
+import { errorText, LOCALES, type Locale } from './core'
 import { i18n } from './index'
 
 type Tree = { [key: string]: string | Tree }
@@ -108,5 +109,28 @@ describe('passenger message catalogue', () => {
   it('has no Russian words inside Kazakh texts', () => {
     const offenders = [...kk].filter(([k, v]) => !k.startsWith('languages.') && russianWords(v).length > 0).map(([k, v]) => `${k}: ${v}`)
     expect(offenders).toEqual([])
+  })
+})
+
+describe('passenger error texts', () => {
+  const tr = {
+    t: (k: string) => i18n.global.t(k),
+    te: (k: string, l?: string) => (l ? i18n.global.te(k, l as Locale) : i18n.global.te(k)),
+  }
+
+  it('uses the text of a known 409 reason (orders/lifecycle ConflictReason)', () => {
+    const err = new ApiError(409, 'conflict', 'order already rated', {}, { reason: 'already_rated' })
+    expect(errorText(err, tr)).toBe(i18n.global.t('errors.conflict_reasons.already_rated'))
+  })
+
+  it('uses the reason of an invalid_transition when the app defines one', () => {
+    const err = new ApiError(409, 'invalid_transition', 'transition not allowed', {}, { from: 'completed', action: 'dispute', reason: 'dispute_window_closed' })
+    expect(errorText(err, tr)).toBe(i18n.global.t('errors.conflict_reasons.dispute_window_closed'))
+  })
+
+  it('falls back to the code text for unknown reasons and to errors.unknown for unknown codes', () => {
+    expect(errorText(new ApiError(409, 'conflict', 'x', {}, { reason: 'something_new' }), tr)).toBe(i18n.global.t('errors.conflict'))
+    expect(errorText(new ApiError(422, 'image_too_large', 'x'), tr)).toBe(i18n.global.t('errors.image_too_large'))
+    expect(errorText(new ApiError(418, 'teapot', 'x'), tr)).toBe(i18n.global.t('errors.unknown'))
   })
 })

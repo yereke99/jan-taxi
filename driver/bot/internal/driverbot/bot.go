@@ -17,6 +17,8 @@ type TelegramAPI interface {
 	runtime.MessageSender
 	AnswerCallbackQuery(ctx context.Context, p telegram.AnswerCallbackQueryParams) error
 	SetChatMenuButton(ctx context.Context, chatID *int64, button telegram.MenuButtonWebApp) error
+	GetFile(ctx context.Context, fileID string) (*telegram.File, error)
+	DownloadFile(ctx context.Context, filePath string, maxBytes int64) ([]byte, error)
 }
 
 // API is the part of the internal bot API the handlers use (*botapi.Client).
@@ -28,6 +30,7 @@ type API interface {
 	DriverOrders(ctx context.Context, tgID int64, limit int) (botapi.AvailableOrders, error)
 	VerifyContact(ctx context.Context, tgID int64, phone string, contactUserID int64) (botapi.ContactResult, error)
 	ReportLocation(ctx context.Context, tgID int64, in botapi.LocationReport) error
+	UploadTopUpReceipt(ctx context.Context, tgID int64, fileName string, data []byte) (botapi.TopUpReceiptResult, error)
 	Config(ctx context.Context) (botapi.Config, error)
 }
 
@@ -208,6 +211,11 @@ func (b *Bot) onMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.send(ctx, s, s.t("location_not_own"), b.keyboard(s))
 	case msg.Location != nil:
 		return b.onLocation(ctx, s, msg.Location)
+	case msg.Document != nil:
+		// A Kaspi receipt shared from the Kaspi app ("Share receipt").
+		return b.onDocument(ctx, s, msg.Document)
+	case len(msg.Photo) > 0:
+		return b.send(ctx, s, s.t("receipt_send_pdf"), b.topupKeyboard(ctx, s))
 	case cmd == "start":
 		return b.start(ctx, s, payload)
 	}

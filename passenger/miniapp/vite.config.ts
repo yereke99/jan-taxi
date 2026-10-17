@@ -2,7 +2,10 @@ import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
 
-export default defineConfig({
+// `--mode demo` builds the presentation version (mocked Telegram and API, see
+// src/demo). VITE_DEMO is defined as a literal so production builds drop the
+// demo import entirely.
+export default defineConfig(({ mode }) => ({
   // Served by Caddy at https://APP_DOMAIN/passenger/ (ARCHITECTURE §1).
   base: '/passenger/',
   plugins: [vue()],
@@ -10,6 +13,7 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   define: {
+    'import.meta.env.VITE_DEMO': JSON.stringify(mode === 'demo' ? '1' : ''),
     __VUE_OPTIONS_API__: 'false',
     __VUE_PROD_DEVTOOLS__: 'false',
     __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false',
@@ -37,4 +41,4 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     restoreMocks: true,
   },
-})
+}))

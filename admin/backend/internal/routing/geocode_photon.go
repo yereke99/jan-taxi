@@ -18,8 +18,22 @@ type Photon struct {
 	client *http.Client
 }
 
-// photonReverseRadiusKm limits reverse lookups to nearby objects.
-const photonReverseRadiusKm = "0.3"
+// Reverse lookups first look for objects within photonReverseRadiusKm, then
+// (e.g. on an empty field or a new street) within photonReverseWideKm, so a pin
+// is named after the nearest street or district rather than left unnamed.
+const (
+	photonReverseRadiusKm = "0.3"
+	photonReverseWideKm   = "1"
+)
+
+// Search near a position: Photon's location bias at city zoom with a low
+// bias scale (prominence matters less than distance), restricted to a box of
+// about ±photonNearBoxDeg around the position (~65 km north–south).
+const (
+	photonNearZoom      = "12"
+	photonNearBiasScale = "0.1"
+	photonNearBoxDeg    = 0.6
+)
 
 // NewPhoton builds a Photon client for baseURL (e.g. http://photon:2322).
 func NewPhoton(baseURL string, client *http.Client) (*Photon, error) {
@@ -61,33 +75,60 @@ type photonProps struct {
 	CountryCode string `json:"countrycode"`
 }
 
-// Search implements Geocoder.
+// Search implements Geocoder. With a position the search is local: results
+// inside the box around it, biased by distance. Only when the box has no
+// match is the whole country searched (still biased towards the position),
+// so a place in another city can be found on purpose.
 func (g *Photon) Search(ctx context.Context, query string, near *geo.Point, lang string, limit int) ([]Place, error) {
 	q := url.Values{}
 	q.Set("q", query)
 	q.Set("limit", strconv.Itoa(limit))
 	q.Set("lang", photonLang(lang))
 	q.Set("countrycode", "KZ")
-	if near != nil {
-		q.Set("lat", strconv.FormatFloat(near.Lat, 'f', 6, 64))
-		q.Set("lon", strconv.FormatFloat(near.Lon, 'f', 6, 64))
+	if near == nil {
+		return g.get(ctx, "/api", q)
+	}
+	q.Set("lat", strconv.FormatFloat(near.Lat, 'f', 6, 64))
+	q.Set("lon", strconv.FormatFloat(near.Lon, 'f', 6, 64))
+	q.Set("zoom", photonNearZoom)
+	q.Set("location_bias_scale", photonNearBiasScale)
+	local := url.Values{}
+	for k, v := range q {
+		local[k] = v
+	}
+	local.Set("bbox", photonBox(*near, photonNearBoxDeg))
+	places, err := g.get(ctx, "/api", local)
+	if err != nil || len(places) > 0 {
+		return places, err
 	}
 	return g.get(ctx, "/api", q)
 }
 
+// photonBox is Photon's bbox parameter (minLon,minLat,maxLon,maxLat) of
+// ±d degrees around p.
+func photonBox(p geo.Point, d float64) string {
+	f := func(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) }
+	return f(p.Lon-d) + "," + f(p.Lat-d) + "," + f(p.Lon+d) + "," + f(p.Lat+d)
+}
+
 // Reverse implements Geocoder.
 func (g *Photon) Reverse(ctx context.Context, p geo.Point, lang string) (*Place, error) {
-	q := url.Values{}
-	q.Set("lat", strconv.FormatFloat(p.Lat, 'f', 6, 64))
-	q.Set("lon", strconv.FormatFloat(p.Lon, 'f', 6, 64))
-	q.Set("lang", photonLang(lang))
-	q.Set("limit", "1")
-	q.Set("radius", photonReverseRadiusKm)
-	places, err := g.get(ctx, "/reverse", q)
-	if err != nil || len(places) == 0 {
-		return nil, err
+	for _, radius := range []string{photonReverseRadiusKm, photonReverseWideKm} {
+		q := url.Values{}
+		q.Set("lat", strconv.FormatFloat(p.Lat, 'f', 6, 64))
+		q.Set("lon", strconv.FormatFloat(p.Lon, 'f', 6, 64))
+		q.Set("lang", photonLang(lang))
+		q.Set("limit", "1")
+		q.Set("radius", radius)
+		places, err := g.get(ctx, "/reverse", q)
+		if err != nil {
+			return nil, err
+		}
+		if len(places) > 0 {
+			return &places[0], nil
+		}
 	}
-	return &places[0], nil
+	return nil, nil
 }
 
 func (g *Photon) get(ctx context.Context, path string, q url.Values) ([]Place, error) {
@@ -127,7 +168,12 @@ func photonLabel(p photonProps) (string, string) {
 	case p.Street != "":
 		return street, joinParts([]string{street}, p.District, locality, p.State)
 	default:
-		title := firstNonEmpty(locality, p.State)
-		return title, joinParts([]string{title}, p.County, p.State)
+		// No object and no street: the district and the town, e.g.
+		// "Медеу ауданы, Алматы".
+		title := joinParts(nil, p.District, firstNonEmpty(p.City, p.Locality, p.County))
+		if title == "" {
+			title = p.State
+		}
+		return title, joinParts([]string{title, p.District, p.City, p.Locality}, p.County, p.State)
 	}
 }

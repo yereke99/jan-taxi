@@ -5,6 +5,7 @@
 
 export const kk = {
   common: {
+    point_on_map: 'Картадағы нүкте',
     ok: 'Жарайды',
     cancel: 'Бас тарту',
     done: 'Дайын',
@@ -77,6 +78,10 @@ export const kk = {
     driver_not_registered: 'Алдымен жүргізуші ретінде тіркеліңіз.',
     payload_too_large: 'Файл тым үлкен.',
     unsupported_media_type: 'Бұл файл түрі қолдау көрсетілмейді.',
+    file_too_large: 'Файл тым үлкен: 10 МБ-тан аспауы керек.',
+    image_too_large: 'Суреттің өлшемі тым үлкен. Басқа фотосурет таңдаңыз.',
+    unsupported_file_type: 'Тек JPEG, PNG немесе WebP суреттері қабылданады.',
+    no_active_city: 'Қызмет әзірге қолжетімсіз: белсенді қала бапталмаған. Кейінірек қайта көріңіз.',
     unknown: 'Белгісіз қате шықты. Қайта көріңіз.',
   },
   field_errors: {

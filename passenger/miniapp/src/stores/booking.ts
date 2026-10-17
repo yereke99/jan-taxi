@@ -25,7 +25,6 @@ import {
   canAddStop,
   clampMaxPoints,
   createStops,
-  formatCoordinates,
   isComplete,
   moveStop as moveStopIn,
   outsideIndices,
@@ -37,6 +36,7 @@ import {
   type PlaceValue,
   type RouteStop,
 } from '../domain/route'
+import { i18n } from '../i18n'
 import { isApiError, newIdempotencyKey } from '../services/http'
 import type { DeviceLocation } from '../telegram'
 import type { Category, PaymentMethod } from '../utils/status'
@@ -177,7 +177,7 @@ export const useBookingStore = defineStore('booking', () => {
   })
 
   function previewInput(): PreviewInput | null {
-    const inputs = toStopInputs(stops.value)
+    const inputs = toStopInputs(stops.value, i18n.global.t('common.point_on_map'))
     if (!inputs || outsideIndices(stops.value).length > 0) return null
     return { key: routeKey.value, category: category.value, stops: inputs }
   }
@@ -266,11 +266,12 @@ export const useBookingStore = defineStore('booking', () => {
     let place: PlaceValue
     try {
       const r = await reverseGeocode(loc, { lang: session.language, signal })
-      place = { lat: r.lat, lon: r.lon, address: r.title, subtitle: r.subtitle, source: 'gps', inServiceArea: r.in_service_area }
+      place = { lat: r.lat, lon: r.lon, address: r.title, subtitle: r.title ? r.subtitle : null, source: 'gps', inServiceArea: r.in_service_area }
     } catch (err) {
       if (signal?.aborted) return
       if (isApiError(err) && !err.isNetworkError && err.code !== 'too_many_requests' && err.code !== 'internal') throw err
-      place = { lat: loc.lat, lon: loc.lon, address: formatCoordinates(loc), subtitle: null, source: 'gps', inServiceArea: null }
+      // Unnamed point: the UI shows "Point on the map", never coordinates.
+      place = { lat: loc.lat, lon: loc.lon, address: '', subtitle: null, source: 'gps', inServiceArea: null }
     }
     setStopPlace(0, place)
     pickupAccuracy.value = loc.accuracy_m

@@ -44,6 +44,12 @@ type Options struct {
 	PassengerMiniAppURL, DriverMiniAppURL   string
 	PassengerBotUsername, DriverBotUsername string
 	DefaultLanguage                         string
+
+	// Receipts attaches Kaspi receipts sent to the driver bot; without it
+	// POST /driver/{tg_id}/topup-receipt answers 503.
+	Receipts ReceiptIntake
+	// MaxReceiptBytes bounds one receipt (default DefaultMaxReceiptBytes).
+	MaxReceiptBytes int64
 }
 
 // Handler serves the internal bot endpoints.
@@ -52,6 +58,7 @@ type Handler struct {
 	log             *slog.Logger
 	opts            Options
 	locationLimiter *httpx.RateLimiter
+	receiptLimiter  *httpx.RateLimiter
 }
 
 // New validates opts and builds the Handler.
@@ -65,9 +72,13 @@ func New(opts Options) (*Handler, error) {
 	if opts.DefaultLanguage == "" {
 		opts.DefaultLanguage = "kk"
 	}
+	if opts.MaxReceiptBytes <= 0 {
+		opts.MaxReceiptBytes = DefaultMaxReceiptBytes
+	}
 	return &Handler{
 		pool: opts.Pool, log: opts.Log, opts: opts,
 		locationLimiter: httpx.NewRateLimiter(locationPerMinute, locationBurst),
+		receiptLimiter:  httpx.NewRateLimiter(receiptsPerMinute, receiptBurst),
 	}, nil
 }
 
@@ -89,6 +100,7 @@ func (h *Handler) Mount(r chi.Router) {
 	drv.Get("/driver/{tg_id}/orders", httpx.H(h.driverOrders))
 	drv.Post("/driver/{tg_id}/contact", httpx.H(h.driverContact))
 	drv.Post("/driver/{tg_id}/location", httpx.H(h.driverLocation))
+	drv.Post("/driver/{tg_id}/topup-receipt", httpx.H(h.driverTopUpReceipt))
 
 	r.Get("/config", httpx.H(h.config))
 }

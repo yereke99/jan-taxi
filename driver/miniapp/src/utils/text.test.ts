@@ -1,7 +1,7 @@
 // Shared with the other Mini App — keep both copies identical (make verify-shared).
 
 import { describe, expect, it } from 'vitest'
-import { cleanText, cleanedLength, codePointLength, fitsLimit, TEXT_MAX } from './text'
+import { cleanText, cleanedLength, codePointLength, fitsLimit, isUnnamedPlace, TEXT_MAX } from './text'
 
 const KAZAKH = 'әғқңөұүһі'
 
@@ -79,5 +79,15 @@ describe('cleanText', () => {
 
   it('measures the cleaned text', () => {
     expect(cleanedLength('  a  b  ')).toBe(3)
+  })
+})
+
+describe('isUnnamedPlace', () => {
+  it('treats empty text and bare coordinates as unnamed', () => {
+    for (const s of ['', '  ', null, undefined, '43.233617, 76.955665', '48.8264,58.1442', '-12.5; 130.1']) expect(isUnnamedPlace(s)).toBe(true)
+  })
+
+  it('keeps real names, including ones with numbers', () => {
+    for (const s of ['Абай көшесі, 12', '№2 мектеп', 'Жолдасбеков көшесі', '12 мкр, 5']) expect(isUnnamedPlace(s)).toBe(false)
   })
 })

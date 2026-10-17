@@ -170,7 +170,7 @@ export interface DriverProfile {
   created_at: string
 }
 
-export type AvailabilityBlock = 'not_approved' | 'suspended' | 'insufficient_balance'
+export type AvailabilityBlock = 'not_approved' | 'suspended' | 'insufficient_balance' | 'location_required'
 
 export interface Availability {
   is_online: boolean
@@ -263,9 +263,8 @@ export interface RouteSnapshot {
 
 export interface OrderPassenger {
   first_name: string
+  /** E.164 while the order is active, otherwise null. */
   phone: string | null
-  /** Telegram username without "@", when the backend provides it. */
-  username?: string | null
 }
 
 export type ActorType = 'passenger' | 'driver' | 'admin' | 'system'

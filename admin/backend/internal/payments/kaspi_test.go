@@ -15,6 +15,7 @@ import (
 
 func TestKaspiInstructions(t *testing.T) {
 	pool := testutil.NewDB(t)
+	useEnvKaspi(t, pool)
 	settings.Configure(settings.Env{}) // only the explicit fallbacks below apply
 	ctx := context.Background()
 	top := TopUp{Reference: "EMB001-TOPUP-000123", RequestedAmount: 2000}

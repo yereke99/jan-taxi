@@ -45,21 +45,29 @@ func (n Name) Get(lang string) string {
 	}
 }
 
-// City is a service city with its dispatch policy.
+// City is a service city: the tariff area of the orders resolved to it
+// (Resolve), the prefix of its drivers' codes and a map centre. It does not
+// restrict dispatch, which is by distance from the driver to the pickup
+// (ARCHITECTURE §7, settings dispatch.*).
 type City struct {
-	ID                    uuid.UUID
-	Code                  string
-	Name                  Name
-	Center                geo.Point
-	DefaultZoom           float64
-	Timezone              string
-	IsActive              bool
+	ID          uuid.UUID
+	Code        string
+	Name        Name
+	Center      geo.Point
+	DefaultZoom float64
+	Timezone    string
+	IsActive    bool
+	// DispatchRadiusM, RequireDriverLocation and DriverLocationMaxAgeS are
+	// legacy per-city dispatch fields. They are still stored and editable
+	// but nothing reads them: the global dispatch.* settings apply.
 	DispatchRadiusM       int
 	RequireDriverLocation bool
 	DriverLocationMaxAgeS int
-	SearchTimeoutS        int
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// SearchTimeoutS is how long an order resolved to this city searches
+	// for a driver before search_expiry cancels it.
+	SearchTimeoutS int
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // LatLon is the API coordinate shape {"lat":…,"lon":…}.

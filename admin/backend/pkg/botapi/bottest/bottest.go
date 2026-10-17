@@ -23,6 +23,10 @@ const Token = "100200300:FAKE-test-token"
 type Call struct {
 	Method string // Bot API method, or "GET /internal/v1/..." for the internal API
 	Body   map[string]any
+	// Raw and ContentType are the request body as sent (internal API only),
+	// e.g. a multipart upload.
+	Raw         []byte
+	ContentType string
 }
 
 // FakeTelegram records Bot API calls and answers them successfully unless a
@@ -31,16 +35,26 @@ type FakeTelegram struct {
 	mu       sync.Mutex
 	calls    []Call
 	failures map[string][]string // method → queued raw error responses
+	files    map[string][]byte   // file_id → content (served by getFile and /file/bot…)
 	srv      *httptest.Server
 }
 
 // NewFakeTelegram starts a fake Bot API server.
 func NewFakeTelegram(t testing.TB) *FakeTelegram {
-	f := &FakeTelegram{failures: map[string][]string{}}
+	f := &FakeTelegram{failures: map[string][]string{}, files: map[string][]byte{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
 }
+
+// AddFile makes a file downloadable through getFile and the file endpoint.
+func (f *FakeTelegram) AddFile(fileID string, content []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[fileID] = content
+}
+
+func filePath(fileID string) string { return "documents/" + fileID + ".pdf" }
 
 // Client returns a Bot API client talking to the fake.
 func (f *FakeTelegram) Client() *telegram.Client {
@@ -55,6 +69,24 @@ func (f *FakeTelegram) Fail(method, rawJSON string) {
 }
 
 func (f *FakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
+	if p, ok := strings.CutPrefix(r.URL.Path, "/file/bot"+Token+"/"); ok {
+		f.mu.Lock()
+		f.calls = append(f.calls, Call{Method: "download:" + p})
+		var content []byte
+		found := false
+		for id, c := range f.files {
+			if filePath(id) == p {
+				content, found = c, true
+			}
+		}
+		f.mu.Unlock()
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(content)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	method, ok := strings.CutPrefix(r.URL.Path, "/bot"+Token+"/")
 	if !ok {
@@ -87,6 +119,20 @@ func (f *FakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(b)
 	case "getUpdates":
 		_, _ = io.WriteString(w, `{"ok":true,"result":[]}`)
+	case "getFile":
+		id, _ := body["file_id"].(string)
+		f.mu.Lock()
+		content, found := f.files[id]
+		f.mu.Unlock()
+		if !found {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: invalid file_id"}`)
+			return
+		}
+		b, _ := json.Marshal(map[string]any{"ok": true, "result": map[string]any{
+			"file_id": id, "file_unique_id": "u-" + id, "file_size": len(content), "file_path": filePath(id),
+		}})
+		_, _ = w.Write(b)
 	default:
 		_, _ = io.WriteString(w, `{"ok":true,"result":true}`)
 	}
@@ -176,12 +222,18 @@ func (f *FakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("internal API call without service credentials: %s %s", r.Method, r.URL.Path)
 	}
 	route := r.Method + " " + strings.TrimPrefix(r.URL.Path, "/internal/v1")
-	var body map[string]any
+	var (
+		body map[string]any
+		raw  []byte
+	)
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ = io.ReadAll(r.Body)
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			_ = json.Unmarshal(raw, &body)
+		}
 	}
 	f.mu.Lock()
-	f.calls = append(f.calls, Call{Method: route, Body: body})
+	f.calls = append(f.calls, Call{Method: route, Body: body, Raw: raw, ContentType: r.Header.Get("Content-Type")})
 	h := f.routes[route]
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")

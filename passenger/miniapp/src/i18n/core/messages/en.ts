@@ -4,6 +4,7 @@ import type { CoreMessages } from './kk'
 
 export const en: CoreMessages = {
   common: {
+    point_on_map: 'Point on map',
     ok: 'OK',
     cancel: 'Cancel',
     done: 'Done',
@@ -76,6 +77,10 @@ export const en: CoreMessages = {
     driver_not_registered: 'Register as a driver first.',
     payload_too_large: 'The file is too large.',
     unsupported_media_type: 'This file type is not supported.',
+    file_too_large: 'The file is too large: 10 MB at most.',
+    image_too_large: 'The image resolution is too high. Choose another photo.',
+    unsupported_file_type: 'Only JPEG, PNG or WebP images are accepted.',
+    no_active_city: 'The service is not available yet: no active city is set up. Please try again later.',
     unknown: 'Something went wrong. Please try again.',
   },
   field_errors: {

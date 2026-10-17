@@ -190,7 +190,7 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return httpx.Internal(err)
 		}
-		if err := checkTopUpConsistency(ctx, tx, changes); err != nil {
+		if err := checkConsistency(ctx, tx, changes); err != nil {
 			return err
 		}
 		for _, k := range keys {
@@ -225,55 +225,74 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request) error {
 	return h.list(w, r)
 }
 
-// checkTopUpConsistency rejects a patch that would leave min > max or presets
-// outside [min, max], judged on the values that will be in effect afterwards.
-func checkTopUpConsistency(ctx context.Context, tx pgx.Tx, changes map[string]json.RawMessage) error {
-	touched := false
-	for _, k := range []string{"topup.min_amount", "topup.max_amount", "topup.presets"} {
-		if _, ok := changes[k]; ok {
-			touched = true
-		}
-	}
-	if !touched {
-		return nil
-	}
-	resolve := func(key string, dst any) error {
-		if v, ok := changes[key]; ok {
-			if v != nil {
-				return json.Unmarshal(v, dst)
-			}
-			d, _ := Lookup(key)
-			b, err := json.Marshal(d.DefaultValue(CurrentEnv()))
-			if err != nil {
-				return err
-			}
-			return json.Unmarshal(b, dst)
-		}
-		return Effective(ctx, tx, key, dst)
-	}
-	var lo, hi int64
-	var presets []int64
-	if err := resolve("topup.min_amount", &lo); err != nil {
-		return httpx.Internal(err)
-	}
-	if err := resolve("topup.max_amount", &hi); err != nil {
-		return httpx.Internal(err)
-	}
-	if err := resolve("topup.presets", &presets); err != nil {
-		return httpx.Internal(err)
-	}
+// checkConsistency rejects a patch whose related keys would contradict each
+// other once applied: top-up min > max or presets outside [min, max], and a
+// maximum dispatch radius below the base radius. Each rule is judged on the
+// values in effect afterwards and only when the patch touches one of its keys.
+func checkConsistency(ctx context.Context, tx pgx.Tx, changes map[string]json.RawMessage) error {
 	fields := map[string]string{}
-	if lo > hi {
-		fields["topup.min_amount"] = "greater_than_max"
+	if touches(changes, "topup.min_amount", "topup.max_amount", "topup.presets") {
+		var lo, hi int64
+		var presets []int64
+		if err := resolveAfter(ctx, tx, changes, "topup.min_amount", &lo); err != nil {
+			return httpx.Internal(err)
+		}
+		if err := resolveAfter(ctx, tx, changes, "topup.max_amount", &hi); err != nil {
+			return httpx.Internal(err)
+		}
+		if err := resolveAfter(ctx, tx, changes, "topup.presets", &presets); err != nil {
+			return httpx.Internal(err)
+		}
+		if lo > hi {
+			fields["topup.min_amount"] = "greater_than_max"
+		}
+		for _, p := range presets {
+			if p < lo || p > hi {
+				fields["topup.presets"] = ReasonOutOfRange
+				break
+			}
+		}
 	}
-	for _, p := range presets {
-		if p < lo || p > hi {
-			fields["topup.presets"] = ReasonOutOfRange
-			break
+	if touches(changes, "dispatch.radius_base_m", "dispatch.radius_max_m") {
+		var base, maxR int64
+		if err := resolveAfter(ctx, tx, changes, "dispatch.radius_base_m", &base); err != nil {
+			return httpx.Internal(err)
+		}
+		if err := resolveAfter(ctx, tx, changes, "dispatch.radius_max_m", &maxR); err != nil {
+			return httpx.Internal(err)
+		}
+		if maxR < base {
+			fields["dispatch.radius_max_m"] = "less_than_base"
 		}
 	}
 	if len(fields) > 0 {
 		return httpx.Validation(fields)
 	}
 	return nil
+}
+
+func touches(changes map[string]json.RawMessage, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := changes[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveAfter decodes the value key will have once changes are applied: the
+// patched value, the default for a reset, or the current effective value.
+func resolveAfter(ctx context.Context, tx pgx.Tx, changes map[string]json.RawMessage, key string, dst any) error {
+	if v, ok := changes[key]; ok {
+		if v != nil {
+			return json.Unmarshal(v, dst)
+		}
+		d, _ := Lookup(key)
+		b, err := json.Marshal(d.DefaultValue(CurrentEnv()))
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(b, dst)
+	}
+	return Effective(ctx, tx, key, dst)
 }

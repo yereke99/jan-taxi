@@ -117,7 +117,10 @@ type AdminOrder struct {
 	StartedAt          *time.Time         `json:"started_at"`
 	CompletedAt        *time.Time         `json:"completed_at"`
 	CancelledAt        *time.Time         `json:"cancelled_at"`
-	Warnings           []string           `json:"warnings,omitempty"`
+	// Warnings follow an assignment: offline, and one of location_required,
+	// location_stale or out_of_radius when the driver could not have taken
+	// the order themselves.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func adminPassenger(r record) AdminPassengerRef {

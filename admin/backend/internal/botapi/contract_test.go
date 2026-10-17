@@ -70,7 +70,17 @@ func TestClientAgainstWiredApp(t *testing.T) {
 		t.Fatalf("language: %q %v", lang, err)
 	}
 
-	// Driver actions.
+	// Driver actions. Going online needs a fresh location: a live location
+	// shared in the bot provides it.
+	_, err = drv.SetAvailability(ctx, d.TelegramID, true)
+	if e, ok := botapi.AsError(err); !ok || e.Status != 422 || e.Code != "location_required" {
+		t.Fatalf("online without location: %v", err)
+	} else if age, ok := e.DetailInt64("max_age_s"); !ok || age != 300 {
+		t.Fatalf("location max age: %v", e.Details)
+	}
+	if err := drv.ReportLocation(ctx, d.TelegramID, botapi.LocationReport{Lat: 48.8264, Lon: 58.1442, Live: true}); err != nil {
+		t.Fatalf("location: %v", err)
+	}
 	av, err := drv.SetAvailability(ctx, d.TelegramID, true)
 	if err != nil || !av.IsOnline || !av.CanGoOnline || av.Available != 1000 {
 		t.Fatalf("availability: %+v %v", av, err)
@@ -82,9 +92,6 @@ func TestClientAgainstWiredApp(t *testing.T) {
 	orders, err := drv.DriverOrders(ctx, d.TelegramID, 5)
 	if err != nil || !orders.Eligibility.Eligible || orders.Items == nil {
 		t.Fatalf("orders: %+v %v", orders, err)
-	}
-	if err := drv.ReportLocation(ctx, d.TelegramID, botapi.LocationReport{Lat: 48.8264, Lon: 58.1442, Live: true}); err != nil {
-		t.Fatalf("location: %v", err)
 	}
 	_, err = drv.VerifyContact(ctx, d.TelegramID, "77071234567", d.TelegramID+1)
 	if e, ok := botapi.AsError(err); !ok || e.Status != 403 || e.DetailString("reason") != "contact_mismatch" {

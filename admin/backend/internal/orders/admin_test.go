@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders"
@@ -129,7 +131,9 @@ func TestAdminAssignChecks(t *testing.T) {
 	e.expect(r, http.StatusOK, "")
 	var ao orders.AdminOrder
 	r.decode(t, &ao)
-	if ao.Status != "accepted" || ao.Driver == nil || ao.Driver.ID != offline.DriverID || len(ao.Warnings) != 1 || ao.Warnings[0] != "offline" {
+	// The offline driver has no location either: the operator is warned of both.
+	if ao.Status != "accepted" || ao.Driver == nil || ao.Driver.ID != offline.DriverID || len(ao.Warnings) != 2 ||
+		ao.Warnings[0] != "offline" || ao.Warnings[1] != "location_required" {
 		t.Fatalf("assigned: %+v", ao)
 	}
 	offers := map[string]string{}
@@ -144,6 +148,43 @@ func TestAdminAssignChecks(t *testing.T) {
 	}
 	if _, res := e.wallet(offline.DriverID); res != 80 {
 		t.Fatalf("reserved %d", res)
+	}
+}
+
+// TestAdminAssignSkipsRadius: an operator may give an order to a driver far
+// from the pickup, registered in another city or with a stale location; the
+// response warns about it and the radius never blocks the assignment.
+func TestAdminAssignSkipsRadius(t *testing.T) {
+	e := newEnv(t)
+	e.addCity("AKT", 50.2839, 57.1670)
+	assign := func(orderID uuid.UUID, d testDriver) orders.AdminOrder {
+		t.Helper()
+		r := e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/assign", orderID), map[string]any{"driver_id": d.DriverID})
+		e.expect(r, http.StatusOK, "")
+		var ao orders.AdminOrder
+		r.decode(t, &ao)
+		return ao
+	}
+	far := e.driverAt("AKT", 1000, lat20km, pickupLon)
+	o1, _, _ := e.order(embiStops[:2], 800)
+	if ao := assign(o1.ID, far); ao.Status != "accepted" || len(ao.Warnings) != 1 || ao.Warnings[0] != "out_of_radius" {
+		t.Fatalf("far driver: %+v", ao.Warnings)
+	}
+	if e.audits("order.assign", o1.ID.String()) != 1 {
+		t.Fatal("assignment not audited")
+	}
+
+	stale := e.driverAt("EMB", 1000, pickupLat, pickupLon)
+	e.locate(stale.DriverID, pickupLat, pickupLon, time.Hour)
+	o2, _, _ := e.order(embiStops[:2], 800)
+	if ao := assign(o2.ID, stale); len(ao.Warnings) != 1 || ao.Warnings[0] != "location_stale" {
+		t.Fatalf("stale driver: %+v", ao.Warnings)
+	}
+
+	near := e.driverAt("AKT", 1000, lat1km, pickupLon)
+	o3, _, _ := e.order(embiStops[:2], 800)
+	if ao := assign(o3.ID, near); len(ao.Warnings) != 0 {
+		t.Fatalf("driver in reach: %+v", ao.Warnings)
 	}
 }
 

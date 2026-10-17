@@ -61,7 +61,7 @@ describe('formatRelativeTime', () => {
   })
 
   it('formats past minutes and hours', () => {
-    expect(formatRelativeTime(now - 5 * 60_000, 'kk', now)).toBe(`5${S}минут бұрын`)
+    expect(formatRelativeTime(now - 5 * 60_000, 'kk', now)).toBe(`5${S}мин бұрын`)
     expect(formatRelativeTime(now - 5 * 60_000, 'ru', now)).toBe(`5${S}мин назад`)
     expect(formatRelativeTime(now - 3 * 3_600_000, 'en', now)).toBe(`3${S}h ago`)
   })

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
+	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/stops"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
@@ -48,42 +49,38 @@ const (
 	MaxLimit     = 100
 )
 
-// orderFilter is the per-order part of §7 for driver $1: same city, not the
-// driver's own passenger order, commission covered by the available balance
-// and, when the city requires it, a fresh location within the dispatch radius.
-// The affordability test is left to the caller so the same filter can count
-// orders that only the balance excludes.
+// orderFilter is the per-order part of §7 for driver @driver_id: a searching
+// order that is not the driver's own passenger order, with a pickup inside
+// the order's effective radius of the driver's fresh location. Nothing here
+// depends on the driver's or the order's city. The affordability test is left
+// to the caller so the same filter can count orders that only the balance
+// excludes.
 const orderFilter = `
 	o.status = 'searching'
-	AND o.city_id = d.city_id
 	AND o.passenger_id <> d.user_id
-	AND (NOT c.require_driver_location OR (
-		dl.recorded_at > now() - make_interval(secs => c.driver_location_max_age_s)
-		AND ST_DWithin(dl.location, o.pickup, c.dispatch_radius_m)))`
+	AND ` + freshLocation + `
+	AND ` + withinRadius
 
 const orderFrom = `
 	FROM orders o
-	JOIN driver_profiles d ON d.id = $1
-	JOIN cities c ON c.id = d.city_id
-	LEFT JOIN wallets w ON w.driver_id = d.id
-	LEFT JOIN driver_locations dl ON dl.driver_id = d.id`
+	JOIN driver_profiles d ON d.id = @driver_id
+	JOIN driver_locations dl ON dl.driver_id = d.id
+	LEFT JOIN wallets w ON w.driver_id = d.id`
 
 const affordable = `o.commission_amount <= COALESCE(w.balance - w.reserved, 0)`
 
-// listCards runs the card query for driver driverID; orderID limits it to one order.
-func listCards(ctx context.Context, q db.Querier, driverID uuid.UUID, orderID *uuid.UUID, limit int) ([]OrderCard, error) {
+// listCards runs the card query for driver driverID, nearest pickup first;
+// orderID limits it to one order.
+func listCards(ctx context.Context, q db.Querier, p settings.DispatchSettings, driverID uuid.UUID, orderID *uuid.UUID, limit int) ([]OrderCard, error) {
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.category, o.service_type, o.cargo_type, o.stop_count, o.comment,
 		       o.cargo_description, o.fare, o.currency, o.commission_amount, o.payment_method,
-		       o.distance_m, o.duration_s, o.created_at, o.search_expires_at,
-		       CASE WHEN dl.location IS NULL THEN NULL ELSE round(ST_Distance(dl.location, o.pickup))::int END
+		       o.distance_m, o.duration_s, o.created_at, o.search_expires_at, `+distanceToPickup+`
 		`+orderFrom+`
 		WHERE `+orderFilter+` AND `+affordable+`
-		  AND ($2::uuid IS NULL OR o.id = $2)
-		ORDER BY CASE WHEN dl.recorded_at > now() - make_interval(secs => c.driver_location_max_age_s)
-		              THEN ST_Distance(dl.location, o.pickup) END ASC NULLS LAST,
-		         o.created_at DESC, o.id DESC
-		LIMIT $3`, driverID, orderID, limit)
+		  AND (@order_id::uuid IS NULL OR o.id = @order_id)
+		ORDER BY ST_Distance(dl.location, o.pickup) ASC, o.created_at DESC, o.id DESC
+		LIMIT @limit`, policyArgs(p, pgx.NamedArgs{"driver_id": driverID, "order_id": orderID, "limit": limit}))
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: available orders: %w", err)
 	}
@@ -125,14 +122,18 @@ func listCards(ctx context.Context, q db.Querier, driverID uuid.UUID, orderID *u
 	return cards, nil
 }
 
-// countUnaffordable counts searching orders the driver would see if the
-// balance covered their commission.
-func countUnaffordable(ctx context.Context, q db.Querier, driverID uuid.UUID) (int, error) {
+// countOrders counts the searching orders in the driver's reach whose
+// commission the available balance covers (affordableOnly) or does not.
+func countOrders(ctx context.Context, q db.Querier, p settings.DispatchSettings, driverID uuid.UUID, affordableOnly bool) (int, error) {
+	cond := affordable
+	if !affordableOnly {
+		cond = `NOT (` + affordable + `)`
+	}
 	var n int
-	err := q.QueryRow(ctx, `SELECT count(*) `+orderFrom+`
-		WHERE `+orderFilter+` AND NOT (`+affordable+`)`, driverID).Scan(&n)
+	err := q.QueryRow(ctx, `SELECT count(*) `+orderFrom+` WHERE `+orderFilter+` AND `+cond,
+		policyArgs(p, pgx.NamedArgs{"driver_id": driverID})).Scan(&n)
 	if err != nil {
-		return 0, fmt.Errorf("dispatch: count unaffordable: %w", err)
+		return 0, fmt.Errorf("dispatch: count orders: %w", err)
 	}
 	return n, nil
 }
@@ -145,10 +146,10 @@ func clampLimit(limit int) int {
 }
 
 // AvailableOrders returns the searching orders driverID may accept right now:
-// live, in the driver's city, filtered by §7 (approved, online, no active
-// order, available balance ≥ commission, city location policy). Orders are
-// sorted by distance to the pickup when the driver has a fresh location,
-// otherwise newest first. A driver who is not eligible gets an empty list.
+// live, filtered by §7 (approved, online, no active order, fresh location
+// within each order's effective radius, available balance ≥ commission) and
+// sorted by distance to the pickup. A driver who is not eligible gets an
+// empty list.
 func AvailableOrders(ctx context.Context, q db.Querier, driverID uuid.UUID, limit int) ([]OrderCard, error) {
 	res, err := ListAvailable(ctx, q, driverID, limit)
 	if err != nil {
@@ -159,10 +160,11 @@ func AvailableOrders(ctx context.Context, q db.Querier, driverID uuid.UUID, limi
 
 // ListAvailable returns the available orders together with the driver's
 // eligibility. When the driver passes every driver-level rule but every
-// searching order is excluded only by the balance, eligibility is
+// searching order in reach is excluded only by the balance, eligibility is
 // insufficient_balance.
 func ListAvailable(ctx context.Context, q db.Querier, driverID uuid.UUID, limit int) (Available, error) {
-	s, err := loadDriverState(ctx, q, driverID)
+	p := settings.Dispatch(ctx, q)
+	s, err := loadDriverState(ctx, q, driverID, p)
 	if err != nil {
 		return Available{}, err
 	}
@@ -170,12 +172,12 @@ func ListAvailable(ctx context.Context, q db.Querier, driverID uuid.UUID, limit 
 	if !el.Eligible {
 		return Available{Items: []OrderCard{}, Eligibility: el}, nil
 	}
-	items, err := listCards(ctx, q, driverID, nil, clampLimit(limit))
+	items, err := listCards(ctx, q, p, driverID, nil, clampLimit(limit))
 	if err != nil {
 		return Available{}, err
 	}
 	if len(items) == 0 {
-		n, err := countUnaffordable(ctx, q, driverID)
+		n, err := countOrders(ctx, q, p, driverID, false)
 		if err != nil {
 			return Available{}, err
 		}
@@ -188,32 +190,29 @@ func ListAvailable(ctx context.Context, q db.Querier, driverID uuid.UUID, limit 
 
 // CountAvailable returns how many orders the driver could accept now.
 func CountAvailable(ctx context.Context, q db.Querier, driverID uuid.UUID) (int, error) {
-	s, err := loadDriverState(ctx, q, driverID)
+	p := settings.Dispatch(ctx, q)
+	s, err := loadDriverState(ctx, q, driverID, p)
 	if err != nil {
 		return 0, err
 	}
 	if !s.driverLevel().Eligible {
 		return 0, nil
 	}
-	var n int
-	err = q.QueryRow(ctx, `SELECT count(*) `+orderFrom+` WHERE `+orderFilter+` AND `+affordable, driverID).Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("dispatch: count available: %w", err)
-	}
-	return n, nil
+	return countOrders(ctx, q, p, driverID, true)
 }
 
 // AvailableCard returns the card of one searching order if driverID is
 // eligible for it right now (found=false otherwise).
 func AvailableCard(ctx context.Context, q db.Querier, driverID, orderID uuid.UUID) (OrderCard, bool, error) {
-	s, err := loadDriverState(ctx, q, driverID)
+	p := settings.Dispatch(ctx, q)
+	s, err := loadDriverState(ctx, q, driverID, p)
 	if err != nil {
 		return OrderCard{}, false, err
 	}
 	if !s.driverLevel().Eligible {
 		return OrderCard{}, false, nil
 	}
-	cards, err := listCards(ctx, q, driverID, &orderID, 1)
+	cards, err := listCards(ctx, q, p, driverID, &orderID, 1)
 	if err != nil || len(cards) == 0 {
 		return OrderCard{}, false, err
 	}

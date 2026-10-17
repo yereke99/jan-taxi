@@ -1,6 +1,8 @@
 // Maps a failed POST /driver/orders/{id}/accept to what the screen does next
 // (openapi acceptOrder: 402 insufficient_balance, 409 order_already_taken |
-// driver_has_active_order | driver_offline | invalid_transition, 403, 404).
+// driver_has_active_order | driver_offline | invalid_transition, 422
+// location_required (reason location_required | location_stale), 403, 404 —
+// taken, or no longer within the driver's dispatch radius).
 
 import { isApiError } from '../../services/http'
 
@@ -13,6 +15,8 @@ export type AcceptFailure =
   | { kind: 'has_active_order'; activeOrderId: string | null }
   /** The driver must go online first. */
   | { kind: 'offline' }
+  /** No recent location (dispatch is by distance): ask to enable location. */
+  | { kind: 'location_required'; stale: boolean }
   /** The profile is not approved (or suspended): re-run entry routing. */
   | { kind: 'not_approved' }
   /** Anything else: show the localized error. */
@@ -50,6 +54,9 @@ export function classifyAcceptError(err: unknown): AcceptFailure {
       return { kind: 'has_active_order', activeOrderId: typeof d.active_order_id === 'string' ? d.active_order_id : null }
     case 'driver_offline':
       return { kind: 'offline' }
+    case 'location_required':
+    case 'location_stale':
+      return { kind: 'location_required', stale: err.code === 'location_stale' || d.reason === 'location_stale' }
     case 'driver_not_approved':
     case 'driver_not_registered':
       return { kind: 'not_approved' }

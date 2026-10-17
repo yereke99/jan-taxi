@@ -5,13 +5,12 @@
   with an idempotency key that stays the same on retries.
 -->
 <script setup lang="ts">
-import { Check, Circle, CircleCheck, Info } from '@lucide/vue'
+import { ChevronRight, Circle, CircleCheck, Info } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import FarePicker from '../../components/booking/FarePicker.vue'
-import StopBadge from '../../components/StopBadge.vue'
-import { JButton, JSheet, JSpinner, JTextArea, JTextField, toast, type SheetSnap } from '../../components/ui'
+import { JButton, JSheet, JSpinner, JTextArea, JTextField, showActionSheet, toast, type SheetSnap } from '../../components/ui'
 import { isDelivery } from '../../domain/details'
 import { prohibitedItemKeys } from '../../domain/prohibited'
 import { useErrorText, useFieldErrorText } from '../../i18n/core'
@@ -35,11 +34,12 @@ const errorText = useErrorText()
 const fieldErrorText = useFieldErrorText()
 const router = useRouter()
 const stage = useStageScreen()
+stage.controls.back = true
 const booking = useBookingStore()
 const orders = useOrdersStore()
 const session = useSessionStore()
 
-const snap = ref<SheetSnap>('full')
+const snap = ref<SheetSnap>('half')
 const contentEl = ref<HTMLElement | null>(null)
 const lang = computed(() => session.language)
 const quote = computed(() => (booking.quoteCurrent ? booking.quote : null))
@@ -107,6 +107,15 @@ async function focusFirstError(): Promise<void> {
   if (el && 'focus' in el) el.focus({ preventScroll: true })
 }
 
+async function choosePayment(): Promise<void> {
+  const choice = await showActionSheet({
+    title: t('confirm.payment'),
+    message: t('confirm.payment_note'),
+    actions: methods.value.map((m) => ({ id: m, label: t(`payment_method.${m}`) })),
+  })
+  if (choice && (methods.value as string[]).includes(choice)) booking.paymentMethod = choice as PaymentMethod
+}
+
 async function submit(): Promise<void> {
   const res = await booking.submit()
   switch (res.kind) {
@@ -140,11 +149,10 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <JSheet v-model:snap="snap" :snap-points="['half', 'full']" :aria-label="t('confirm.title')" @height="(h) => (stage.sheetHeight.value = h)">
+  <JSheet v-model:snap="snap" :snap-points="['half', 'full']" :half-ratio="0.605" :aria-label="t('confirm.title')" @height="(h) => (stage.sheetHeight.value = h)">
     <template #header>
       <div class="confirm-head">
         <h1 class="confirm-head__title">{{ t('confirm.title') }}</h1>
-        <span class="confirm-head__category">{{ t(`category.${booking.category}`) }}</span>
       </div>
     </template>
 
@@ -154,18 +162,37 @@ async function submit(): Promise<void> {
         <span>{{ t('confirm.requoted') }}</span>
       </p>
 
-      <!-- Route -->
-      <section class="confirm-card">
-        <ol class="confirm-stops">
-          <li v-for="s in placedStops" :key="s.i" class="confirm-stops__row">
-            <StopBadge :letter="s.letter" size="small" />
-            <span class="confirm-stops__address">{{ s.place.address }}</span>
-          </li>
-        </ol>
-        <p v-if="quote" class="confirm-card__meta jt-tabular">
-          {{ t('booking.summary', { distance: formatDistance(quote.distance_m, lang), duration: formatDuration(quote.duration_s, lang) }) }}
+      <!-- Order facts (inset-grouped) -->
+      <section class="confirm-facts">
+        <div class="confirm-fact">
+          <span>{{ t('confirm.service') }}</span>
+          <span class="confirm-fact__value">{{ t(`category.${booking.category}`) }}</span>
+        </div>
+        <div class="confirm-fact">
+          <span>{{ t('booking.title') }}</span>
+          <span v-if="quote" class="confirm-fact__value jt-tabular">
+            {{ t('confirm.points', { n: placedStops.length }) }} · {{ formatDistance(quote.distance_m, lang) }}
+          </span>
+          <span v-else class="confirm-fact__value"><JSpinner /></span>
+        </div>
+        <div v-if="quote" class="confirm-fact">
+          <span>{{ t('confirm.duration') }}</span>
+          <span class="confirm-fact__value jt-tabular">~{{ formatDuration(quote.duration_s, lang) }}</span>
+        </div>
+        <button type="button" class="confirm-fact is-button" @click="choosePayment">
+          <span>{{ t('confirm.payment') }}</span>
+          <span class="confirm-fact__value">{{ t(`payment_method.${booking.paymentMethod}`) }}</span>
+          <ChevronRight :size="18" :stroke-width="2" class="confirm-fact__chevron" aria-hidden="true" />
+        </button>
+      </section>
+
+      <!-- Fare -->
+      <section class="confirm-fare">
+        <h2 class="confirm-fare__title">{{ t('confirm.fare') }}</h2>
+        <FarePicker v-if="quote" v-model="booking.fare" :fare="quote.fare" :locale="lang" :error="fieldError('fare')" />
+        <p v-if="quote" class="confirm-fare__range jt-tabular">
+          {{ t('confirm.fare_range', { min: formatMoney(quote.fare.min, lang), max: formatMoney(quote.fare.max, lang), step: formatMoney(quote.fare.step, lang) }) }}
         </p>
-        <p v-else class="confirm-card__meta is-loading"><JSpinner /> {{ t('booking.calculating') }}</p>
       </section>
 
       <!-- Category-specific details -->
@@ -193,8 +220,7 @@ async function submit(): Promise<void> {
         </template>
         <JTextArea
           v-model="booking.comment"
-          :label="t('confirm.comment')"
-          :placeholder="t('confirm.comment_placeholder')"
+          :placeholder="t('confirm.comment')"
           :max="TEXT_MAX"
           :rows="1"
           :error="fieldError('comment')"
@@ -221,54 +247,6 @@ async function submit(): Promise<void> {
         <p v-if="fieldError('prohibited_items_ack')" class="confirm-error" role="alert">{{ fieldError('prohibited_items_ack') }}</p>
       </section>
 
-      <!-- Fare -->
-      <section class="confirm-block">
-        <h2 class="confirm-block__title">{{ t('confirm.fare') }}</h2>
-        <FarePicker v-if="quote" v-model="booking.fare" :fare="quote.fare" :locale="lang" :error="fieldError('fare')" />
-        <p class="confirm-block__hint">{{ t('confirm.fare_hint') }}</p>
-      </section>
-
-      <!-- Payment -->
-      <section class="confirm-block">
-        <h2 class="confirm-block__title">{{ t('confirm.payment') }}</h2>
-        <div class="confirm-options" role="radiogroup" :aria-label="t('confirm.payment')">
-          <button
-            v-for="m in methods"
-            :key="m"
-            type="button"
-            role="radio"
-            class="confirm-option"
-            :aria-checked="booking.paymentMethod === m"
-            @click="booking.paymentMethod = m"
-          >
-            <span class="confirm-option__text">
-              <span class="confirm-option__title">{{ t(`payment_method.${m}`) }}</span>
-              <span class="confirm-option__subtitle">{{ t(`payment_hint.${m}`) }}</span>
-            </span>
-            <Check v-if="booking.paymentMethod === m" :size="20" :stroke-width="2.5" aria-hidden="true" />
-          </button>
-        </div>
-        <p class="confirm-block__hint">{{ t('confirm.payment_note') }}</p>
-      </section>
-
-      <!-- Summary -->
-      <section class="confirm-block">
-        <h2 class="confirm-block__title">{{ t('confirm.summary') }}</h2>
-        <dl class="confirm-summary">
-          <div><dt>{{ t('confirm.service') }}</dt><dd>{{ t(`category.${booking.category}`) }}</dd></div>
-          <div v-for="s in placedStops" :key="`sum-${s.i}`">
-            <dt><StopBadge :letter="s.letter" size="small" /></dt>
-            <dd>{{ s.place.address }}</dd>
-          </div>
-          <div v-if="quote"><dt>{{ t('confirm.distance') }}</dt><dd class="jt-tabular">{{ formatDistance(quote.distance_m, lang) }}</dd></div>
-          <div v-if="quote"><dt>{{ t('confirm.duration') }}</dt><dd class="jt-tabular">{{ formatDuration(quote.duration_s, lang) }}</dd></div>
-          <div v-if="booking.fare !== null"><dt>{{ t('confirm.fare') }}</dt><dd class="jt-tabular">{{ formatMoney(booking.fare, lang) }}</dd></div>
-          <div><dt>{{ t('confirm.payment') }}</dt><dd>{{ t(`payment_method.${booking.paymentMethod}`) }}</dd></div>
-          <div v-if="delivery && booking.cargoDescription.trim()"><dt>{{ t('confirm.description') }}</dt><dd>{{ booking.cargoDescription.trim() }}</dd></div>
-          <div v-if="booking.category === 'parcel' && booking.recipientPhone"><dt>{{ t('confirm.recipient') }}</dt><dd class="jt-tabular">{{ booking.recipientPhone }}</dd></div>
-          <div v-if="booking.comment.trim()"><dt>{{ t('detail.comment') }}</dt><dd>{{ booking.comment.trim() }}</dd></div>
-        </dl>
-      </section>
     </div>
 
     <template #footer>
@@ -276,15 +254,82 @@ async function submit(): Promise<void> {
         <JButton block :loading="booking.submitting" :disabled="!quote || booking.previewStatus !== 'ready'" @click="submit">
           {{ t('confirm.submit') }}<template v-if="booking.fare !== null"> · {{ formatMoney(booking.fare, lang) }}</template>
         </JButton>
-        <JButton block variant="plain" size="medium" :disabled="booking.submitting" @click="navigateBack(router)">
-          {{ t('confirm.back_to_route') }}
-        </JButton>
       </div>
     </template>
   </JSheet>
 </template>
 
 <style scoped>
+.confirm-facts {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-fill-secondary);
+  overflow: hidden;
+}
+
+.confirm-fact {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-2);
+  min-height: 44px;
+  padding: 0 var(--jt-space-4);
+  font: var(--jt-font-body);
+  text-align: left;
+}
+
+.confirm-fact + .confirm-fact::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--jt-space-4);
+  right: 0;
+  border-top: var(--jt-hairline) solid var(--jt-color-separator);
+}
+
+.confirm-fact > span:first-child {
+  flex: 1;
+}
+
+.confirm-fact__value {
+  color: var(--jt-color-label-secondary);
+}
+
+.confirm-fact__chevron {
+  margin-right: -4px;
+  color: var(--jt-color-label-tertiary);
+}
+
+.confirm-fact.is-button:active {
+  background: var(--jt-color-fill-tertiary);
+}
+
+.confirm-fare {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-2);
+  padding: var(--jt-space-3) var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-fill-secondary);
+  --jt-fare-step-bg: var(--jt-color-bg);
+}
+
+.confirm-fare :deep(.fare__step) {
+  width: 46px;
+  height: 46px;
+}
+
+.confirm-fare__title {
+  font: var(--jt-font-headline);
+}
+
+.confirm-fare__range {
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+  text-align: center;
+}
+
 .confirm-head {
   display: flex;
   align-items: baseline;
@@ -294,13 +339,9 @@ async function submit(): Promise<void> {
 }
 
 .confirm-head__title {
-  font: var(--jt-font-title2);
+  font: var(--jt-font-title1);
 }
 
-.confirm-head__category {
-  font: var(--jt-font-subheadline);
-  color: var(--jt-color-label-secondary);
-}
 
 .confirm {
   display: flex;
@@ -406,97 +447,6 @@ async function submit(): Promise<void> {
   margin-top: var(--jt-space-2);
   font: var(--jt-font-footnote);
   color: var(--jt-color-red-text);
-}
-
-.confirm-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--jt-space-3);
-}
-
-.confirm-block__title {
-  font: var(--jt-font-headline);
-}
-
-.confirm-block__hint {
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
-}
-
-.confirm-options {
-  border-radius: var(--jt-radius-card);
-  background: var(--jt-color-fill-secondary);
-  overflow: hidden;
-}
-
-.confirm-option {
-  display: flex;
-  align-items: center;
-  gap: var(--jt-space-3);
-  width: 100%;
-  min-height: 60px;
-  padding: 10px var(--jt-space-4);
-  text-align: left;
-}
-
-.confirm-option + .confirm-option {
-  box-shadow: inset 0 var(--jt-hairline) 0 var(--jt-color-separator);
-}
-
-.confirm-option:active {
-  opacity: var(--jt-opacity-pressed);
-}
-
-.confirm-option__text {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.confirm-option__title {
-  font: var(--jt-font-body);
-}
-
-.confirm-option__subtitle {
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
-}
-
-.confirm-summary {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: var(--jt-space-1) var(--jt-space-4);
-  border-radius: var(--jt-radius-card);
-  background: var(--jt-color-fill-secondary);
-}
-
-.confirm-summary > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--jt-space-4);
-  min-height: 44px;
-  padding: 10px 0;
-}
-
-.confirm-summary > div + div {
-  box-shadow: inset 0 var(--jt-hairline) 0 var(--jt-color-separator);
-}
-
-.confirm-summary dt {
-  flex: none;
-  color: var(--jt-color-label-secondary);
-  font: var(--jt-font-subheadline);
-}
-
-.confirm-summary dd {
-  margin: 0;
-  min-width: 0;
-  font: var(--jt-font-subheadline);
-  text-align: right;
-  overflow-wrap: anywhere;
 }
 
 .confirm-actions {

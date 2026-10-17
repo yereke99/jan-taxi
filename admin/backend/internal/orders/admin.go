@@ -251,6 +251,9 @@ func (s *Service) adminAssignOrder(w http.ResponseWriter, r *http.Request) error
 		if res.DriverOffline {
 			warnings = append(warnings, dispatch.ReasonOffline)
 		}
+		if res.LocationWarning != "" {
+			warnings = append(warnings, res.LocationWarning)
+		}
 		action := "order.assign"
 		if res.PreviousDriverID != nil {
 			action = "order.reassign"
@@ -259,7 +262,8 @@ func (s *Service) adminAssignOrder(w http.ResponseWriter, r *http.Request) error
 			Action: action, EntityType: "order", EntityID: id.String(),
 			Before: map[string]any{"status": res.Before.Status, "driver_id": res.Before.DriverID},
 			After: map[string]any{"status": res.After.Status, "driver_id": res.After.DriverID,
-				"driver_offline": res.DriverOffline, "released_commission": res.Released},
+				"driver_offline": res.DriverOffline, "location_warning": res.LocationWarning,
+				"distance_to_pickup_m": res.DistanceToPickupM, "released_commission": res.Released},
 		})
 	})
 }

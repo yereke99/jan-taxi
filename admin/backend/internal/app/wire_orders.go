@@ -19,6 +19,13 @@ func (a *App) wireOrders() error {
 	svc.MountAdmin(a.Admin)
 
 	pool, log := a.Pool, a.Log
+	a.AddJob("dispatch_expand", dispatch.ExpandInterval, func(ctx context.Context) error {
+		n, err := dispatch.ExpandOffers(ctx, pool)
+		if n > 0 {
+			log.Info("orders offered to more drivers", slog.Int("offers", n))
+		}
+		return err
+	})
 	a.AddJob("search_expiry", dispatch.SearchExpiryInterval, func(ctx context.Context) error {
 		n, err := dispatch.ExpireSearches(ctx, pool)
 		if n > 0 {

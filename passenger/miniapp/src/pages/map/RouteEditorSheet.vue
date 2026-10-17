@@ -12,7 +12,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { reverseGeocode } from '../../api/geo'
 import FarePreview from '../../components/booking/FarePreview.vue'
 import RouteStopList from '../../components/booking/RouteStopList.vue'
-import { JButton, JSegmented, JSheet, toast, type SegmentedOption } from '../../components/ui'
+import { JButton, JSheet, toast } from '../../components/ui'
 import { useErrorText } from '../../i18n/core'
 import { STOP_LETTERS } from '../../maps'
 import { ROUTE } from '../../router/names'
@@ -34,12 +34,7 @@ const location = useLocationStore()
 const session = useSessionStore()
 
 stage.controls.locate = true
-
-const categoryOptions = computed<SegmentedOption<Category>[]>(() => CATEGORIES.map((c) => ({ value: c, label: t(`category.${c}`) })))
-const category = computed({
-  get: () => booking.category,
-  set: (c: Category) => booking.setCategory(c),
-})
+stage.controls.back = true
 
 // The inline notice replaces the floating GPS chip on this screen.
 const lowAccuracy = computed(
@@ -90,7 +85,7 @@ async function onMarkerDrag(markerPos: number, point: LatLon): Promise<void> {
       lat: roundCoord(point.lat),
       lon: roundCoord(point.lon),
       address: r.title,
-      subtitle: r.subtitle,
+      subtitle: r.title ? r.subtitle : null,
       source: 'map',
       inServiceArea: r.in_service_area,
     })
@@ -190,7 +185,7 @@ function next(): void {
   <JSheet :snap="'content'" :snap-points="['content']" :aria-label="t('booking.title')" @height="(h) => (stage.sheetHeight.value = h)">
     <template #header>
       <div class="editor-head">
-        <JSegmented v-model="category" :options="categoryOptions" :aria-label="t('home.category_label')" />
+        <h1 class="editor-head__title">{{ t('booking.title') }}</h1>
       </div>
     </template>
 
@@ -225,6 +220,10 @@ function next(): void {
 <style scoped>
 .editor-head {
   padding-bottom: var(--jt-space-3);
+}
+
+.editor-head__title {
+  font: var(--jt-font-title1);
 }
 
 .editor-gps {

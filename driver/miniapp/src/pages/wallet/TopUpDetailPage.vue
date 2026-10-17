@@ -6,7 +6,7 @@
   admin confirms it against Kaspi records (realtime topup.confirmed).
 -->
 <script setup lang="ts">
-import { CircleCheck, CircleX, Clock3, ExternalLink, ImagePlus, RefreshCw } from '@lucide/vue'
+import { CircleCheck, CircleX, Clock3, ExternalLink, ImagePlus, Info, RefreshCw } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -19,7 +19,6 @@ import { useFormat } from '../../composables/useFormat'
 import { ImageError } from '../../features/media/image'
 import { useUploadTask } from '../../features/media/useUploadTask'
 import { ROUTE } from '../../router/names'
-import { useSessionStore } from '../../stores/session'
 import { useWalletStore } from '../../stores/wallet'
 import { haptics, openExternal } from '../../telegram'
 import { formatKzPhone } from '../../utils/phone'
@@ -33,7 +32,6 @@ const fmt = useFormat()
 const errorText = useDriverErrorText()
 const route = useRoute()
 const router = useRouter()
-const session = useSessionStore()
 const wallet = useWalletStore()
 
 const id = computed(() => String(route.params.id ?? ''))
@@ -48,7 +46,6 @@ const cancelling = ref(false)
 const receiptInput = ref<HTMLInputElement | null>(null)
 
 const pay = computed(() => topup.value?.payment ?? null)
-const driverCode = computed(() => session.driver?.code ?? '')
 
 const receipt = useUploadTask<TopUp>((blob, onProgress, signal) => wallet.uploadReceipt(id.value, blob, onProgress, signal))
 const receiptBusy = computed(() => receipt.state.value === 'preparing' || receipt.state.value === 'uploading')
@@ -116,11 +113,15 @@ async function cancel(): Promise<void> {
 }
 
 watch(id, () => void load())
+onMounted(() => {
+  if (!wallet.wallet) void wallet.refreshWallet()
+})
+
 onMounted(() => void load())
 </script>
 
 <template>
-  <DriverPage :title="topup ? t('topup.number', { number: topup.number }) : t('topup.title')">
+  <DriverPage :title="topup && topup.status !== 'created' ? t('topup.number', { number: topup.number }) : t('topup.title')">
     <div v-if="!topup && loading" class="td__skeleton" aria-busy="true">
       <JSkeleton height="160px" radius="22px" />
       <JSkeleton height="220px" radius="22px" />
@@ -135,23 +136,34 @@ onMounted(() => void load())
     <template v-else>
       <!-- Waiting for the payment: instructions. -->
       <template v-if="topup.status === 'created' && pay">
-        <section class="td__card">
-          <CopyField :label="t('topup.amount')" :value="fmt.money(pay.amount)" :copy-value="String(pay.amount)" large />
-          <CopyField :label="t('topup.reference')" :value="pay.reference" large />
-          <p class="td__hint">{{ t('topup.reference_hint') }}</p>
+        <section v-if="wallet.wallet" class="td__balance">
+          <span class="td__balance-label">{{ t('wallet.available') }}</span>
+          <strong class="td__balance-value jt-tabular">{{ fmt.money(wallet.wallet.available) }}</strong>
+          <span v-if="wallet.wallet.reserved > 0" class="td__balance-meta jt-tabular">
+            {{ t('topup.reserved_short', { amount: fmt.money(wallet.wallet.reserved) }) }}
+          </span>
         </section>
 
-        <JListGroup>
-          <JListRow :title="t('topup.recipient')" :value="pay.recipient_name" />
-          <JListRow v-if="pay.recipient_phone" :title="t('topup.recipient_phone')" :value="formatKzPhone(pay.recipient_phone)" />
-          <JListRow v-if="driverCode" :title="t('topup.driver_code')" :value="driverCode" />
-          <JListRow :title="t('topup.status')">
-            <template #accessory><JBadge :tone="topUpStatusTone(topup.status)" :label="t(`topup_status.${topup.status}`)" /></template>
-          </JListRow>
-        </JListGroup>
+        <h2 class="td__section">{{ t('topup.details_title') }}</h2>
+        <section class="td__details">
+          <div class="td__row">
+            <span>{{ t('topup.amount') }}</span>
+            <strong class="jt-tabular">{{ fmt.money(pay.amount) }}</strong>
+          </div>
+          <div class="td__row is-stacked">
+            <span class="td__row-label">{{ t('topup.recipient') }}</span>
+            <span class="td__row-value">{{ pay.recipient_name }}</span>
+          </div>
+          <div v-if="pay.recipient_phone" class="td__row">
+            <span>{{ t('topup.recipient_phone') }}</span>
+            <span class="td__row-value jt-tabular">{{ formatKzPhone(pay.recipient_phone) }}</span>
+          </div>
+          <div class="td__row is-copy">
+            <CopyField :label="t('topup.reference')" :value="pay.reference" />
+          </div>
+        </section>
 
         <section class="td__steps">
-          <h2 class="td__title">{{ t('topup.steps_title') }}</h2>
           <ol class="td__list">
             <li><span class="td__num">1</span>{{ t('topup.step1') }}</li>
             <li><span class="td__num">2</span>{{ t('topup.step2', { amount: fmt.money(pay.amount) }) }}</li>
@@ -159,8 +171,12 @@ onMounted(() => void load())
             <li><span class="td__num">4</span>{{ t('topup.step4') }}</li>
           </ol>
           <p v-if="pay.instructions" class="td__server">{{ pay.instructions }}</p>
-          <p class="td__expires">{{ t('topup.expires_at', { time: fmt.dateTime(topup.expires_at) }) }}</p>
         </section>
+
+        <p class="td__note">
+          <Info :size="18" :stroke-width="2" aria-hidden="true" />
+          <span>{{ t('topup.verification_note') }} {{ t('topup.expires_at', { time: fmt.dateTime(topup.expires_at) }) }}.</span>
+        </p>
 
         <section v-if="paidMode" class="td__paid">
           <h2 class="td__title">{{ t('topup.paid_title') }}</h2>
@@ -269,6 +285,105 @@ onMounted(() => void load())
 </template>
 
 <style scoped>
+.td__balance {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 var(--jt-side-margin) var(--jt-space-5);
+  padding: var(--jt-space-4) var(--jt-space-4) var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-bg);
+}
+
+.td__balance-label,
+.td__balance-meta {
+  font: var(--jt-font-subheadline);
+  color: var(--jt-color-label-secondary);
+}
+
+.td__balance-value {
+  font: 700 34px/41px var(--jt-font-family);
+  letter-spacing: -0.4px;
+}
+
+.td__section {
+  margin: 0 calc(var(--jt-side-margin) + var(--jt-space-4)) var(--jt-space-2);
+  font: var(--jt-font-subheadline);
+  font-weight: 600;
+  color: var(--jt-color-label-secondary);
+}
+
+.td__details {
+  margin: 0 var(--jt-side-margin) var(--jt-space-4);
+  padding: 0 0 0 var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-bg);
+  overflow: hidden;
+}
+
+.td__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jt-space-3);
+  min-height: 52px;
+  padding: var(--jt-space-3) var(--jt-space-4) var(--jt-space-3) 0;
+  box-sizing: border-box;
+  font: var(--jt-font-body);
+}
+
+.td__row + .td__row {
+  border-top: var(--jt-hairline) solid var(--jt-color-separator);
+}
+
+.td__row strong {
+  font-weight: 700;
+}
+
+.td__row.is-stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.td__row-label {
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+}
+
+.td__row-value {
+  color: var(--jt-color-label-secondary);
+  overflow-wrap: anywhere;
+}
+
+.td__row.is-stacked .td__row-value {
+  color: var(--jt-color-label);
+}
+
+.td__row.is-copy {
+  display: block;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.td__row.is-copy :deep(.cfield) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.td__note {
+  display: flex;
+  gap: var(--jt-space-2);
+  margin: 0 calc(var(--jt-side-margin) + var(--jt-space-1)) var(--jt-space-4);
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+}
+
+.td__note svg {
+  flex: none;
+  margin-top: 1px;
+}
+
 .td__skeleton {
   display: flex;
   flex-direction: column;

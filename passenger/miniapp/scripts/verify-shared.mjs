@@ -32,9 +32,19 @@ export const SHARED = [
   'src/services/config.test.ts',
   'src/utils',
   'src/i18n/core',
+  'src/demo/core.ts',
+  'src/demo/fixtures',
   'scripts/verify-shared.mjs',
   'scripts/lint.mjs',
 ]
+
+/**
+ * Paths inside the shared set that belong to one app only by design. They are
+ * skipped by both the drift check and --sync. The 2GIS link builder is
+ * driver-only (it now lives in src/features/navigation); the entry stays so a
+ * copy placed back under src/utils never fails the check.
+ */
+export const APP_ONLY = new Set(['src/utils/twogis.ts', 'src/utils/twogis.test.ts'])
 
 const HEADER = 'Shared with the other Mini App — keep both copies identical (make verify-shared).'
 
@@ -51,11 +61,13 @@ function digest(file) {
 
 const sync = process.argv.includes('--sync')
 const problems = []
-const filesA = new Set(SHARED.flatMap((p) => walk(A, p)))
-const filesB = new Set(SHARED.flatMap((p) => walk(B, p)))
+const shared = (root) => new Set(SHARED.flatMap((p) => walk(root, p)).filter((f) => !APP_ONLY.has(f.split('\\').join('/'))))
+const filesA = shared(A)
+const filesB = shared(B)
 
 for (const f of filesA) {
-  if (!readFileSync(join(A, f), 'utf8').slice(0, 400).includes(HEADER)) problems.push(`missing shared header: passenger/miniapp/${f}`)
+  // JSON fixtures cannot carry a comment; they are covered by the byte comparison.
+  if (!f.endsWith('.json') && !readFileSync(join(A, f), 'utf8').slice(0, 400).includes(HEADER)) problems.push(`missing shared header: passenger/miniapp/${f}`)
   if (sync) {
     mkdirSync(dirname(join(B, f)), { recursive: true })
     copyFileSync(join(A, f), join(B, f))

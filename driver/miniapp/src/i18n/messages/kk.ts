@@ -5,7 +5,7 @@ export const kk = {
   nav: {
     home: 'Басты',
     orders: 'Тапсырыстар',
-    wallet: 'Әмиян',
+    wallet: 'Баланс',
     profile: 'Профиль',
     main: 'Негізгі бөлімдер',
   },
@@ -57,6 +57,12 @@ export const kk = {
   },
   orders: {
     title: 'Тапсырыстар',
+    nearby: 'Сізге жақын тапсырыстар ({km} км радиус)',
+    ago: '{time} бұрын',
+    from_you: 'Сізден {distance}',
+    balance: 'Баланс',
+    online: 'Желіде',
+    offline: 'Желіде емес',
     empty_title: 'Қолжетімді тапсырыс жоқ',
     empty_text: 'Жаңа тапсырыс түскенде осы жерде бірден пайда болады.',
     refresh_hint: 'Жаңарту үшін төмен тартыңыз',
@@ -78,6 +84,8 @@ export const kk = {
   },
   order: {
     title: 'Тапсырыс №{number}',
+    location_toast: 'Тапсырысты қабылдау үшін геолокацияны қосыңыз.',
+    location_ready: 'Геолокация жіберілді. Қайта қабылдап көріңіз.',
     loading: 'Тапсырыс жүктелуде',
     accept: 'Тапсырысты қабылдау',
     taken: 'Тапсырысты басқа жүргізуші қабылдады',
@@ -134,7 +142,6 @@ export const kk = {
     map_unavailable: 'Құрылғыңыз картаны көрсете алмайды. Нүктелер тізімі мен 2GIS батырмасы жұмыс істейді.',
     passenger: 'Клиент',
     call_passenger: 'Клиентке қоңырау шалу',
-    write_passenger: 'Telegram-да жазу',
     recipient: 'Алушы',
     call_recipient: 'Алушыға қоңырау шалу',
     no_contact: 'Телефон нөмірі көрсетілмеген',
@@ -204,6 +211,8 @@ export const kk = {
     topup_confirmed_toast: 'Төлем расталды, баланс толтырылды',
   },
   topup: {
+    details_title: 'Төлем мәліметтері',
+    reserved_short: 'Резервте {amount}',
     title: 'Балансты толтыру',
     amount_title: 'Соманы таңдаңыз',
     custom: 'Басқа сома',

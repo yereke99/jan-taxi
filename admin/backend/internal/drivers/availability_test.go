@@ -42,11 +42,46 @@ func TestAvailabilityRules(t *testing.T) {
 		t.Fatalf("missing online: %s", res)
 	}
 
+	// Dispatch is by distance to the pickup, so going online needs a location
+	// fix younger than dispatch.location_max_age_s (default 300 s), wherever
+	// the driver is registered.
 	rich := testutil.CreateDriver(t, env.Pool, testutil.DriverOptions{Balance: 500})
 	c = env.AppClient(rich.UserID, auth.AppDriver)
 	res = c.Do(http.MethodPatch, pathAvailability, `{"online":true}`)
+	if res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "location_required" || res.Details()["max_age_s"] != float64(300) {
+		t.Fatalf("online without location: %s", res)
+	}
+	if v, err := drivers.Availability(ctx, env.Pool, rich.DriverID); err != nil || v.CanGoOnline || v.BlockedReason == nil ||
+		*v.BlockedReason != drivers.BlockedLocationRequired {
+		t.Fatalf("availability without location: %+v %v", v, err)
+	}
+	stale := time.Now().Add(-10 * time.Minute)
+	if err := drivers.RecordLocation(ctx, env.Pool, rich.DriverID, drivers.LocationInput{Lat: 48.8264, Lon: 58.1442, RecordedAt: stale}, drivers.SourceBotStatic); err != nil {
+		t.Fatal(err)
+	}
+	if res := c.Do(http.MethodPatch, pathAvailability, `{"online":true}`); res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "location_required" {
+		t.Fatalf("online with stale location: %s", res)
+	}
+	// An admin may shorten or lengthen the freshness window.
+	if _, err := env.Pool.Exec(ctx, `INSERT INTO app_settings (key, value) VALUES ('dispatch.location_max_age_s', '900')`); err != nil {
+		t.Fatal(err)
+	}
+	if res := c.Do(http.MethodPatch, pathAvailability, `{"online":true}`); res.Code != http.StatusOK {
+		t.Fatalf("online within a longer window: %s", res)
+	}
+	if res := c.Do(http.MethodPatch, pathAvailability, `{"online":false}`); res.Code != http.StatusOK {
+		t.Fatalf("offline: %s", res)
+	}
+	if _, err := env.Pool.Exec(ctx, `DELETE FROM app_settings WHERE key = 'dispatch.location_max_age_s'`); err != nil {
+		t.Fatal(err)
+	}
+	if res := c.Do(http.MethodPost, "/api/v1/driver/location", `{"lat":48.8270,"lon":58.1450,"accuracy_m":12}`); res.Code != http.StatusNoContent {
+		t.Fatalf("report location: %s", res)
+	}
+	res = c.Do(http.MethodPatch, pathAvailability, `{"online":true}`)
 	if res.Code != http.StatusOK || res.Body["is_online"] != true || res.Body["online_since"] == nil || res.Body["can_go_online"] != true ||
-		res.Body["available"] != float64(500) || res.Body["min_online_balance"] != float64(50) || res.Body["currency"] != "KZT" {
+		res.Body["blocked_reason"] != nil || res.Body["available"] != float64(500) || res.Body["min_online_balance"] != float64(50) ||
+		res.Body["currency"] != "KZT" {
 		t.Fatalf("go online: %s", res)
 	}
 	if res := c.Do(http.MethodPatch, pathAvailability, `{"online":true}`); res.Code != http.StatusOK || res.Body["is_online"] != true {
@@ -57,26 +92,17 @@ func TestAvailabilityRules(t *testing.T) {
 		t.Fatalf("go offline: %s", res)
 	}
 
-	// A city that dispatches by location needs a fresh fix first.
-	if _, err := env.Pool.Exec(ctx, `UPDATE cities SET require_driver_location = true, driver_location_max_age_s = 300 WHERE code = 'EMB'`); err != nil {
+	// A driver registered in another city goes online with a fresh fix
+	// anywhere in Kazakhstan: the registered city does not matter.
+	if _, err := env.Pool.Exec(ctx, `
+		INSERT INTO cities (code, name_kk, name_ru, name_en, center_lat, center_lon)
+		VALUES ('AKT', 'Ақтөбе', 'Актобе', 'Aktobe', 50.2839, 57.1670)`); err != nil {
 		t.Fatal(err)
 	}
-	res = c.Do(http.MethodPatch, pathAvailability, `{"online":true}`)
-	if res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "location_required" || res.Details()["max_age_s"] != float64(300) {
-		t.Fatalf("online without location: %s", res)
-	}
-	stale := time.Now().Add(-10 * time.Minute)
-	if err := drivers.RecordLocation(ctx, env.Pool, rich.DriverID, drivers.LocationInput{Lat: 48.8264, Lon: 58.1442, RecordedAt: stale}, drivers.SourceBotStatic); err != nil {
-		t.Fatal(err)
-	}
-	if res := c.Do(http.MethodPatch, pathAvailability, `{"online":true}`); res.ErrorCode() != "location_required" {
-		t.Fatalf("online with stale location: %s", res)
-	}
-	if res := c.Do(http.MethodPost, "/api/v1/driver/location", `{"lat":48.8270,"lon":58.1450,"accuracy_m":12}`); res.Code != http.StatusNoContent {
-		t.Fatalf("report location: %s", res)
-	}
-	if res := c.Do(http.MethodPatch, pathAvailability, `{"online":true}`); res.Code != http.StatusOK || res.Body["is_online"] != true {
-		t.Fatalf("online with fresh location: %s", res)
+	away := testutil.CreateDriver(t, env.Pool, testutil.DriverOptions{City: "AKT", Balance: 500,
+		Location: &testutil.LatLon{Lat: 43.2389, Lon: 76.8897}}) // Almaty
+	if res := env.AppClient(away.UserID, auth.AppDriver).Do(http.MethodPatch, pathAvailability, `{"online":true}`); res.Code != http.StatusOK {
+		t.Fatalf("driver of another city goes online: %s", res)
 	}
 }
 

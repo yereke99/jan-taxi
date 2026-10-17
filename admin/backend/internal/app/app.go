@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/payments"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
@@ -33,6 +34,8 @@ type App struct {
 	Auth *auth.Service // set by wireIdentity
 	Hub  *realtime.Hub // set by wireIdentity
 	MW   Middlewares   // set by wireIdentity
+
+	Payments *payments.Service // set by wireFinance
 
 	// Mounted under /api/v1. Passenger, Driver and AnyApp carry the app-token
 	// middleware (Driver also loads the driver profile).

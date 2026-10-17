@@ -48,7 +48,11 @@ onBeforeUnmount(() => observer?.disconnect())
       </h1>
       <div class="jt-navbar__side jt-navbar__side--trailing"><slot name="trailing" /></div>
     </div>
-    <h1 v-if="large" ref="largeEl" class="jt-navbar__large">{{ title }}</h1>
+    <div v-if="large && $slots['large-trailing']" class="jt-navbar__large-row">
+      <h1 ref="largeEl" class="jt-navbar__large">{{ title }}</h1>
+      <div class="jt-navbar__large-trailing"><slot name="large-trailing" /></div>
+    </div>
+    <h1 v-else-if="large" ref="largeEl" class="jt-navbar__large">{{ title }}</h1>
   </header>
 </template>
 
@@ -107,8 +111,36 @@ onBeforeUnmount(() => observer?.disconnect())
   transition: opacity var(--jt-duration-fast) linear;
 }
 
+/* While hidden the compact title takes no width, so wide leading/trailing
+   content (e.g. the driver's name and online switch) gets the whole row. */
+.jt-navbar__title:not(.is-visible) {
+  max-width: 0;
+}
+
 .jt-navbar__title.is-visible {
   opacity: 1;
+}
+
+.jt-navbar__large-row {
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-2);
+  padding-right: calc(var(--jt-side-margin) + var(--jt-safe-right));
+}
+
+.jt-navbar__large-row .jt-navbar__large {
+  flex: 1;
+  min-width: 0;
+  padding-right: 0;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jt-navbar__large-trailing {
+  flex: none;
+  padding-bottom: var(--jt-space-2);
 }
 
 .jt-navbar__large {

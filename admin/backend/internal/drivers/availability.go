@@ -41,9 +41,10 @@ type eligibility struct {
 	userBlocked      bool
 	available        int64
 	minOnlineBalance int64
-	requireLocation  bool
 	locationMaxAge   time.Duration
-	lastFix          *time.Time
+	// locationFresh: the last fix is younger than locationMaxAge by the
+	// database clock (the same clock dispatch uses).
+	locationFresh bool
 }
 
 func loadEligibility(ctx context.Context, q db.Querier, driverID uuid.UUID, lock bool) (eligibility, Profile, error) {
@@ -59,18 +60,19 @@ func loadEligibility(ctx context.Context, q db.Querier, driverID uuid.UUID, lock
 	if err != nil {
 		return eligibility{}, Profile{}, err
 	}
-	e := eligibility{status: p.Status, userID: p.UserID, minOnlineBalance: settings.MinOnlineBalance(ctx, q)}
-	var maxAgeS int
+	e := eligibility{
+		status: p.Status, userID: p.UserID, minOnlineBalance: settings.MinOnlineBalance(ctx, q),
+		locationMaxAge: settings.Dispatch(ctx, q).LocationMaxAge(),
+	}
 	err = q.QueryRow(ctx, `
-		SELECT u.is_blocked, c.require_driver_location, c.driver_location_max_age_s, l.recorded_at
+		SELECT u.is_blocked,
+		       COALESCE((SELECT l.recorded_at > now() - $3::float8 * interval '1 second'
+		                 FROM driver_locations l WHERE l.driver_id = $2), false)
 		FROM users u
-		JOIN cities c ON c.id = $2
-		LEFT JOIN driver_locations l ON l.driver_id = $3
-		WHERE u.id = $1`, p.UserID, p.CityID, p.ID).Scan(&e.userBlocked, &e.requireLocation, &maxAgeS, &e.lastFix)
+		WHERE u.id = $1`, p.UserID, p.ID, e.locationMaxAge.Seconds()).Scan(&e.userBlocked, &e.locationFresh)
 	if err != nil {
 		return eligibility{}, Profile{}, fmt.Errorf("drivers: eligibility: %w", err)
 	}
-	e.locationMaxAge = time.Duration(maxAgeS) * time.Second
 	w, err := wallets.Get(ctx, q, p.ID)
 	switch {
 	case err == nil:
@@ -81,8 +83,10 @@ func loadEligibility(ctx context.Context, q db.Querier, driverID uuid.UUID, lock
 	return e, p, nil
 }
 
-// blockedReason is "" when the driver may go online now.
-func (e eligibility) blockedReason(now time.Time) string {
+// blockedReason is "" when the driver may go online now. Dispatch is by
+// distance from the driver's location to the pickup (ARCHITECTURE §7), so a
+// driver without a fresh location fix cannot go online.
+func (e eligibility) blockedReason() string {
 	switch {
 	case e.status == StatusSuspended:
 		return BlockedSuspended
@@ -90,7 +94,7 @@ func (e eligibility) blockedReason(now time.Time) string {
 		return BlockedNotApproved
 	case e.available < e.minOnlineBalance:
 		return BlockedInsufficientBalance
-	case e.requireLocation && (e.lastFix == nil || now.Sub(*e.lastFix) > e.locationMaxAge):
+	case !e.locationFresh:
 		return BlockedLocationRequired
 	}
 	return ""
@@ -118,9 +122,11 @@ func (e eligibility) error(ctx context.Context, q db.Querier, reason string) err
 // SetAvailability switches a driver online or offline. Going online requires
 // status approved (403 driver_not_approved, details.reason "suspended" for a
 // suspended driver), an available balance of at least
-// settings driver.min_online_balance (402 insufficient_balance) and, when the
-// city requires it, a fresh location (422 location_required). Going offline is
-// always allowed and does not affect an active order. Status changes publish
+// settings driver.min_online_balance (402 insufficient_balance) and a location
+// fix younger than settings dispatch.location_max_age_s (422
+// location_required, details.max_age_s), sent by the Mini App or as a
+// Telegram live location in the driver bot. Going offline is always allowed
+// and does not affect an active order. Status changes publish
 // driver.status_changed to the driver and the admin panel.
 func SetAvailability(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID, online bool) (AvailabilityResult, error) {
 	var res AvailabilityResult
@@ -133,7 +139,7 @@ func SetAvailability(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID
 			if e.userBlocked {
 				return auth.ErrUserBlocked
 			}
-			if reason := e.blockedReason(time.Now()); reason != "" {
+			if reason := e.blockedReason(); reason != "" {
 				return e.error(ctx, tx, reason)
 			}
 		}
@@ -192,7 +198,7 @@ func Availability(ctx context.Context, q db.Querier, driverID uuid.UUID) (Availa
 		IsOnline: p.IsOnline, OnlineSince: utcPtr(p.OnlineSince), Available: e.available,
 		MinOnlineBalance: e.minOnlineBalance, Currency: "KZT",
 	}
-	if reason := e.blockedReason(time.Now()); reason != "" {
+	if reason := e.blockedReason(); reason != "" {
 		v.BlockedReason = &reason
 	} else {
 		v.CanGoOnline = true

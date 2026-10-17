@@ -7,6 +7,7 @@ import { createI18n, useI18n } from 'vue-i18n'
 import { isApiError } from '../../services/http'
 import { LocationError } from '../../telegram/location'
 import type { Locale } from '../../utils/format'
+import { isUnnamedPlace } from '../../utils/text'
 import { en } from './messages/en'
 import { kk, type CoreMessages } from './messages/kk'
 import { ru } from './messages/ru'
@@ -76,9 +77,21 @@ interface Translator {
   te: (key: string, locale?: string) => boolean
 }
 
-/** User-facing sentence for any error thrown by services (ApiError, LocationError, other). */
+/** Error codes whose details.reason names the exact cause (orders/lifecycle ConflictReason). */
+const REASON_CODES: ReadonlySet<string> = new Set(['conflict', 'invalid_transition', 'validation_failed'])
+
+/**
+ * User-facing sentence for any error thrown by services (ApiError, LocationError, other).
+ * A 409/422 whose details.reason has its own text (errors.conflict_reasons.<reason>,
+ * defined by the app) uses that text instead of the generic one.
+ */
 export function errorText(err: unknown, i18n: Translator): string {
   if (isApiError(err)) {
+    const reason = err.details.reason
+    if (REASON_CODES.has(err.code) && typeof reason === 'string' && /^[a-z_]+$/.test(reason)) {
+      const reasonKey = `errors.conflict_reasons.${reason}`
+      if (i18n.te(reasonKey, DEFAULT_LOCALE)) return i18n.t(reasonKey)
+    }
     const key = `errors.${err.code}`
     return i18n.te(key, DEFAULT_LOCALE) ? i18n.t(key) : i18n.t('errors.unknown')
   }
@@ -90,6 +103,16 @@ export function errorText(err: unknown, i18n: Translator): string {
 export function useErrorText(): (err: unknown) => string {
   const { t, te } = useI18n()
   return (err) => errorText(err, { t: (k, n) => (n ? t(k, n) : t(k)), te: (k, l) => (l ? te(k, l) : te(k)) })
+}
+
+/**
+ * Address text for display: a place without a name (empty, or bare
+ * coordinates from an older record) reads "Point on the map" in the UI
+ * language; numbers are never shown as an address.
+ */
+export function useAddressText(): (address: string | null | undefined) => string {
+  const { t } = useI18n()
+  return (address) => (isUnnamedPlace(address) ? t('common.point_on_map') : (address ?? '').trim())
 }
 
 /** Short message for a per-field validation reason (ApiError.fields value). */

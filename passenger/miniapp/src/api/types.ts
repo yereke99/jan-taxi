@@ -112,8 +112,6 @@ export interface OrderDriver {
   last_name: string
   /** E.164 while the order is active, otherwise null. */
   phone: string | null
-  /** Telegram username when the API provides one. */
-  telegram_username: string | null
   rating: number | null
   rating_count: number
   completed_trips: number

@@ -9,6 +9,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Stop, StopSummary } from '../../api/types'
 import { sortedStops, stopLetter } from '../../features/trip/sequence'
+import { useAddressText } from '../../i18n/core'
 
 const props = withDefaults(
   defineProps<{
@@ -21,6 +22,7 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
+const addr = useAddressText()
 
 const list = computed(() => sortedStops(props.stops))
 
@@ -53,7 +55,7 @@ function kindLabel(s: Stop | StopSummary): string {
       </span>
       <span class="stops__text">
         <span class="stops__kind">{{ kindLabel(s) }}</span>
-        <span class="stops__addr">{{ s.address }}</span>
+        <span class="stops__addr">{{ addr(s.address) }}</span>
         <span v-if="details(s)" class="stops__details">{{ details(s) }}</span>
       </span>
     </li>

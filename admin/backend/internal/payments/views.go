@@ -30,9 +30,11 @@ type TopUpView struct {
 	RejectedAt             *time.Time          `json:"rejected_at"`
 	RejectedReason         *string             `json:"rejected_reason"`
 	RefundedAt             *time.Time          `json:"refunded_at"`
+	// Receipt is the check of the latest uploaded receipt (nil without one).
+	Receipt *DriverReceiptView `json:"receipt"`
 }
 
-func driverTopUpView(t TopUp, pay PaymentInstructions) TopUpView {
+func driverTopUpView(t TopUp, pay PaymentInstructions, rc *receiptRow) TopUpView {
 	return TopUpView{
 		ID:                     t.ID,
 		Number:                 t.Number,
@@ -56,6 +58,7 @@ func driverTopUpView(t TopUp, pay PaymentInstructions) TopUpView {
 		RejectedAt:             utc(t.RejectedAt),
 		RejectedReason:         t.RejectReason,
 		RefundedAt:             utc(t.RefundedAt),
+		Receipt:                driverReceiptView(t, rc),
 	}
 }
 
@@ -132,6 +135,7 @@ type AdminTopUpView struct {
 	ProviderTransactionID  *string    `json:"provider_transaction_id"`
 	PaidAt                 *time.Time `json:"paid_at"`
 	ConfirmedBy            *AdminRef  `json:"confirmed_by"`
+	ConfirmedAutomatically bool       `json:"confirmed_automatically"`
 	ConfirmedAt            *time.Time `json:"confirmed_at"`
 	RejectedBy             *AdminRef  `json:"rejected_by"`
 	RejectedAt             *time.Time `json:"rejected_at"`
@@ -162,7 +166,7 @@ type PaymentTransactionView struct {
 // twice: another top-up with the same driver-entered payment reference, or a
 // recorded payment transaction whose provider id equals that reference.
 type DuplicateWarning struct {
-	Kind                 string     `json:"kind"` // same_driver_payment_reference | provider_transaction_recorded
+	Kind                 string     `json:"kind"` // same_driver_payment_reference | provider_transaction_recorded | receipt_serial_used
 	TopUpID              *uuid.UUID `json:"topup_id"`
 	Reference            *string    `json:"reference"`
 	Status               *string    `json:"status"`
@@ -175,15 +179,21 @@ type DuplicateWarning struct {
 const (
 	WarnSameDriverReference = "same_driver_payment_reference"
 	WarnTransactionRecorded = "provider_transaction_recorded"
+	WarnReceiptSerialUsed   = "receipt_serial_used"
 )
 
-// AdminTopUpDetail adds the history, the recorded payment and duplicate
-// warnings to AdminTopUpView.
+// AdminTopUpDetail adds the history, the recorded payment, duplicate
+// warnings and the parsed receipts to AdminTopUpView.
 type AdminTopUpDetail struct {
 	AdminTopUpView
 	Events             []TopUpEvent            `json:"events"`
 	PaymentTransaction *PaymentTransactionView `json:"payment_transaction"`
 	DuplicateWarnings  []DuplicateWarning      `json:"duplicate_warnings"`
+	// Receipt is the latest parsed PDF receipt, Receipts every one (newest
+	// first), ConfirmPrefill the confirmation form values taken from Receipt.
+	Receipt        *AdminReceiptView  `json:"receipt"`
+	Receipts       []AdminReceiptView `json:"receipts"`
+	ConfirmPrefill *ConfirmPrefill    `json:"confirm_prefill"`
 }
 
 func utc(t *time.Time) *time.Time {

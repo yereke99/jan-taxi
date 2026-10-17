@@ -4,7 +4,7 @@ export const en: DriverMessages = {
   nav: {
     home: 'Home',
     orders: 'Orders',
-    wallet: 'Wallet',
+    wallet: 'Balance',
     profile: 'Profile',
     main: 'Main sections',
   },
@@ -56,6 +56,12 @@ export const en: DriverMessages = {
   },
   orders: {
     title: 'Orders',
+    nearby: 'Orders near you ({km} km radius)',
+    ago: '{time} ago',
+    from_you: '{distance} from you',
+    balance: 'Balance',
+    online: 'Online',
+    offline: 'Offline',
     empty_title: 'No available orders',
     empty_text: 'A new order appears here right away.',
     refresh_hint: 'Pull down to refresh',
@@ -77,6 +83,8 @@ export const en: DriverMessages = {
   },
   order: {
     title: 'Order #{number}',
+    location_toast: 'Turn on location to accept orders.',
+    location_ready: 'Location sent. Try accepting again.',
     loading: 'Loading order',
     accept: 'Accept order',
     taken: 'Another driver accepted this order',
@@ -133,7 +141,6 @@ export const en: DriverMessages = {
     map_unavailable: 'Your device cannot show the map. The stop list and the 2GIS button still work.',
     passenger: 'Customer',
     call_passenger: 'Call the customer',
-    write_passenger: 'Message on Telegram',
     recipient: 'Recipient',
     call_recipient: 'Call the recipient',
     no_contact: 'No phone number provided',
@@ -203,6 +210,8 @@ export const en: DriverMessages = {
     topup_confirmed_toast: 'Payment confirmed, balance topped up',
   },
   topup: {
+    details_title: 'Payment details',
+    reserved_short: 'Reserved {amount}',
     title: 'Top up balance',
     amount_title: 'Choose an amount',
     custom: 'Other amount',

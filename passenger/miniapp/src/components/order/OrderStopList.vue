@@ -4,9 +4,11 @@ import { useI18n } from 'vue-i18n'
 import type { OrderStop } from '../../api/types'
 import { STOP_LETTERS } from '../../maps/constants'
 import StopBadge from '../StopBadge.vue'
+import { useAddressText } from '../../i18n/core'
 
 withDefaults(defineProps<{ stops: OrderStop[]; showDone?: boolean }>(), { showDone: false })
 const { t } = useI18n()
+const addr = useAddressText()
 </script>
 
 <template>
@@ -14,7 +16,7 @@ const { t } = useI18n()
     <li v-for="(s, i) in stops" :key="s.id" class="order-stops__row" :class="{ 'is-done': showDone && s.completed_at }">
       <StopBadge :letter="STOP_LETTERS[i] ?? ''" :done="showDone && s.completed_at !== null" size="small" />
       <span class="order-stops__text">
-        <span class="order-stops__address">{{ s.address }}</span>
+        <span class="order-stops__address">{{ addr(s.address) }}</span>
         <span v-if="s.address_details" class="order-stops__details">{{ s.address_details }}</span>
       </span>
       <span v-if="showDone && s.completed_at" class="order-stops__done">{{ t('order.stop_done') }}</span>

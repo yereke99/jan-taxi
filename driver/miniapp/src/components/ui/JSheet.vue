@@ -8,6 +8,7 @@
     'half'     halfRatio of the viewport
     'full'     viewport minus the top safe area and fullTopGap
     'content'  natural height of header + content + footer (clamped to full)
+    'header'   grabber + header + footer only; the content waits below the fold
     <number>   absolute occupied height in px
   Drag the grabber/header (or the content when not at the top snap) and
   release with velocity to move between snaps; at the top snap the content
@@ -39,6 +40,8 @@ const props = withDefaults(
     floating?: boolean
     /** Glass surface while floating; the docked sheet is always solid white. */
     glass?: boolean
+    /** Leaves room for the floating tab bar under the sheet (main sections). */
+    tabBar?: boolean
     ariaLabel?: string
   }>(),
   {
@@ -49,6 +52,7 @@ const props = withDefaults(
     fullTopGap: 12,
     floating: true,
     glass: true,
+    tabBar: false,
     ariaLabel: undefined,
   },
 )
@@ -63,6 +67,8 @@ const FLOAT_INSET = 8
 const BOTTOM_PAD = 12
 /** The glass hairline border (0.5px top + bottom) takes space inside the sheet. */
 const GLASS_BORDER_PX = 1
+/** Floating tab bar (JTabBar): --jt-tabbar-height plus the gaps above and below it. */
+const TAB_BAR_RESERVE = 62 + 2 * FLOAT_INSET
 
 const { t } = useI18n()
 const slots = useSlots()
@@ -82,7 +88,8 @@ const viewportHeight = computed(() => {
 })
 
 /** Distance between the floating sheet and the screen (or keyboard) bottom. */
-const bottomGap = computed(() => (tg.state.keyboardOpen ? FLOAT_INSET : Math.max(FLOAT_INSET, safe.value.bottom)))
+const tabReserve = computed(() => (props.tabBar && !tg.state.keyboardOpen ? TAB_BAR_RESERVE : 0))
+const bottomGap = computed(() => (tg.state.keyboardOpen ? FLOAT_INSET : Math.max(FLOAT_INSET, safe.value.bottom) + tabReserve.value))
 const fullHeight = computed(() => Math.max(0, viewportHeight.value - safe.value.top - props.fullTopGap))
 
 // --- Content measurement for the 'content' snap ---------------------------
@@ -140,6 +147,13 @@ function heightOf(s: SheetSnap): number {
       (hasFooter.value ? m.footer : BOTTOM_PAD) +
       (props.glass ? GLASS_BORDER_PX : 0) +
       (props.floating ? bottomGap.value : safe.value.bottom)
+  } else if (s === 'header') {
+    const m = measured.value
+    h =
+      m.handle +
+      (hasFooter.value ? m.footer : BOTTOM_PAD) +
+      (props.glass ? GLASS_BORDER_PX : 0) +
+      (props.floating ? bottomGap.value : safe.value.bottom)
   } else h = s
   return Math.max(0, Math.min(h, fullHeight.value))
 }
@@ -175,7 +189,7 @@ const sheetStyle = computed(() => {
     bottom: `calc(var(--jt-keyboard) + ${gap}px)`,
     height: `${Math.max(0, Math.round(occupiedHeight.value - gap))}px`,
     '--jt-sheet-bottom-pad': docked.value
-      ? `${(tg.state.keyboardOpen ? 0 : safe.value.bottom) + FLOAT_INSET}px`
+      ? `${(tg.state.keyboardOpen ? 0 : safe.value.bottom) + FLOAT_INSET + tabReserve.value}px`
       : `${BOTTOM_PAD}px`,
   }
 })

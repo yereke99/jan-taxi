@@ -16,7 +16,8 @@ func TestConcurrentAcceptExactlyOneWinner(t *testing.T) {
 	const n = 50
 	drivers := make([]testDriver, n)
 	for i := range drivers {
-		drivers[i] = e.driver(1000, true)
+		// Fresh fixes within 600 m of the pickup (48.8264, 58.1442).
+		drivers[i] = e.driverAt("EMB", 1000, 48.8264+float64(i)*0.0001, 58.1442-float64(i%5)*0.0002)
 	}
 	o, pid, _ := e.order(embiStops[:2], 800)
 	if got := e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1 AND status = 'sent'`, o.ID); got != n {

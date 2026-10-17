@@ -23,7 +23,6 @@ import (
 type lockedDriver struct {
 	ID          uuid.UUID
 	UserID      uuid.UUID
-	CityID      uuid.UUID
 	Status      string
 	IsOnline    bool
 	UserBlocked bool
@@ -32,11 +31,11 @@ type lockedDriver struct {
 func lockDriver(ctx context.Context, tx pgx.Tx, driverID uuid.UUID) (lockedDriver, error) {
 	var d lockedDriver
 	err := tx.QueryRow(ctx, `
-		SELECT d.id, d.user_id, d.city_id, d.status, d.is_online, u.is_blocked
+		SELECT d.id, d.user_id, d.status, d.is_online, u.is_blocked
 		FROM driver_profiles d JOIN users u ON u.id = d.user_id
 		WHERE d.id = $1
 		FOR SHARE OF d`, driverID).
-		Scan(&d.ID, &d.UserID, &d.CityID, &d.Status, &d.IsOnline, &d.UserBlocked)
+		Scan(&d.ID, &d.UserID, &d.Status, &d.IsOnline, &d.UserBlocked)
 	if db.IsNoRows(err) {
 		return lockedDriver{}, httpx.NotFound()
 	}
@@ -96,10 +95,20 @@ type AcceptResult struct {
 	Replayed bool
 }
 
+// errLocation is 422 location_required for a driver without a fresh location
+// fix; details.reason tells location_required (no fix) from location_stale.
+func errLocation(reason string, p settings.DispatchSettings) *httpx.Error {
+	return httpx.Unprocessable("location_required", "a fresh location is required to take orders").
+		WithDetails(map[string]any{"reason": reason, "max_age_s": p.LocationMaxAgeS})
+}
+
 // Accept assigns a searching order to the driver, exactly-one-winner
 // (ARCHITECTURE §5.1), in the caller's transaction:
 //
-//  1. the driver is approved, online, not blocked and in the order's city;
+//  1. the driver is approved, online and not blocked, has no active order
+//     and has a fresh location (422 location_required) within the order's
+//     effective radius of the pickup (404 otherwise: the order is not in the
+//     driver's reach); the city plays no part;
 //  2. the wallet row is locked FOR UPDATE and must cover the commission
 //     (402 insufficient_balance);
 //  3. UPDATE … WHERE status='searching' AND driver_id IS NULL — 0 rows means
@@ -124,9 +133,8 @@ func Accept(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) (Accept
 	if err != nil {
 		return AcceptResult{}, err
 	}
-	// Orders of another city, and the driver's own passenger orders, are
-	// invisible to this driver.
-	if o.CityID != drv.CityID || o.PassengerID == drv.UserID {
+	// The driver's own passenger orders are invisible to them.
+	if o.PassengerID == drv.UserID {
 		return AcceptResult{}, httpx.NotFound()
 	}
 	if o.HasDriver(driverID) && lifecycle.OccupiesDriver(o.Status) {
@@ -139,6 +147,18 @@ func Accept(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) (Accept
 		return AcceptResult{}, err
 	} else if active != uuid.Nil {
 		return AcceptResult{}, lifecycle.ErrDriverHasActiveOrder(active)
+	}
+	p := settings.Dispatch(ctx, tx)
+	rc, err := loadReach(ctx, tx, orderID, driverID, p)
+	if err != nil {
+		return AcceptResult{}, lifecycle.DBError(err)
+	}
+	switch reason := rc.problem(); reason {
+	case "":
+	case ReasonOutOfRadius:
+		return AcceptResult{}, httpx.NotFound()
+	default:
+		return AcceptResult{}, errLocation(reason, p)
 	}
 	if err := checkFunds(ctx, tx, driverID, o.CommissionAmount); err != nil {
 		return AcceptResult{}, err

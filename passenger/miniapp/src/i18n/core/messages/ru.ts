@@ -4,6 +4,7 @@ import type { CoreMessages } from './kk'
 
 export const ru: CoreMessages = {
   common: {
+    point_on_map: 'Точка на карте',
     ok: 'ОК',
     cancel: 'Отмена',
     done: 'Готово',
@@ -76,6 +77,10 @@ export const ru: CoreMessages = {
     driver_not_registered: 'Сначала зарегистрируйтесь как водитель.',
     payload_too_large: 'Файл слишком большой.',
     unsupported_media_type: 'Этот тип файла не поддерживается.',
+    file_too_large: 'Файл слишком большой: не больше 10 МБ.',
+    image_too_large: 'Слишком большое разрешение изображения. Выберите другое фото.',
+    unsupported_file_type: 'Принимаются только изображения JPEG, PNG или WebP.',
+    no_active_city: 'Сервис пока недоступен: не настроен активный город. Попробуйте позже.',
     unknown: 'Произошла неизвестная ошибка. Попробуйте ещё раз.',
   },
   field_errors: {

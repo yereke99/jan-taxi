@@ -1,6 +1,7 @@
 package driverbot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -263,9 +264,16 @@ func TestGoOnline(t *testing.T) {
 		t.Fatalf("top-up button: %v", b)
 	}
 
+	// Dispatch is by distance to the pickup: without a fresh location the
+	// driver is told how to send GPS (live location here, or the Mini App).
 	status, body = http.StatusUnprocessableEntity, bottest.APIError("location_required", map[string]any{"max_age_s": 300})
-	if msgs := e.text(t, "/online"); !strings.Contains(msgText(msgs[0]), "Геолокация қажет") {
+	msgs = e.text(t, "/online")
+	if text := msgText(msgs[0]); !strings.Contains(text, "Геолокация қажет") || !strings.Contains(text, "тірі геолокация") ||
+		!strings.Contains(text, "қосымшаны ашып") {
 		t.Fatalf("location required: %v", msgs)
+	}
+	if b := bottest.InlineButtons(msgs[0]); len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp=home" {
+		t.Fatalf("location button: %v", b)
 	}
 
 	status, body = http.StatusForbidden, bottest.APIError("driver_not_approved", map[string]any{"reason": "suspended", "status": "suspended"})
@@ -458,11 +466,18 @@ func TestOrdersList(t *testing.T) {
 		"offline":              texts.T("kk", "go_online_first"),
 		"has_active_order":     texts.T("kk", "finish_trip_first"),
 		"insufficient_balance": texts.T("kk", "orders_need_balance"),
+		"location_required":    texts.T("kk", "need_location"),
 		"location_stale":       texts.T("kk", "location_stale"),
 	} {
 		res = map[string]any{"items": []any{}, "eligibility": map[string]any{"eligible": false, "reason": reason}}
-		if msgs := e.text(t, "/orders"); msgText(msgs[0]) != want {
+		msgs := e.text(t, "/orders")
+		if msgText(msgs[0]) != want {
 			t.Errorf("%s: %q", reason, msgText(msgs[0]))
+		}
+		if strings.HasPrefix(reason, "location_") {
+			if b := bottest.InlineButtons(msgs[0]); len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp=home" {
+				t.Errorf("%s button: %v", reason, b)
+			}
 		}
 	}
 	res = map[string]any{"items": []any{}, "eligibility": map[string]any{"eligible": true, "reason": nil}}
@@ -594,5 +609,105 @@ func TestProfileMenu(t *testing.T) {
 	}
 	if p.MenuButton == nil || p.MenuButton.WebApp.URL != appURL {
 		t.Fatalf("menu button: %+v", p.MenuButton)
+	}
+}
+
+func TestReceiptDocuments(t *testing.T) {
+	const topupID = "5b0f8a52-6f7e-4f4c-9d7e-2b1a3c4d5e6f"
+	e := newEnv(t)
+	e.approved(false)
+	pdf := []byte("%PDF-1.7 synthetic receipt")
+	e.tg.AddFile("F1", pdf)
+	doc := &telegram.Document{FileID: "F1", FileUniqueID: "U1", FileName: "receipt_QR18149336524.pdf", MimeType: "application/pdf", FileSize: int64(len(pdf))}
+	route := "POST " + tgPath + "/topup-receipt"
+	var answer func() (int, any)
+	e.api.Handle(route, func(map[string]any, string) (int, any) { return answer() })
+
+	// Credited at once.
+	answer = func() (int, any) {
+		return 200, map[string]any{"outcome": "credited", "reasons": []string{}, "balance": 1500,
+			"topup": map[string]any{"id": topupID, "reference": "EMB007-TOPUP-000042", "amount": 1000, "verified_amount": 1000, "status": "confirmed"}}
+	}
+	msgs := e.message(t, telegram.Message{Document: doc})
+	calls := e.tg.Calls()
+	if calls[0].Method != "getFile" || calls[0].Body["file_id"] != "F1" || calls[1].Method != "download:documents/F1.pdf" {
+		t.Fatalf("telegram calls: %+v", calls)
+	}
+	var up bottest.Call
+	for _, c := range e.api.Calls() {
+		if c.Method == route {
+			up = c
+		}
+	}
+	if !strings.HasPrefix(up.ContentType, "multipart/form-data") || !bytes.Contains(up.Raw, pdf) ||
+		!bytes.Contains(up.Raw, []byte(`filename="receipt_QR18149336524.pdf"`)) {
+		t.Fatalf("upload: %s %q", up.ContentType, up.Raw)
+	}
+	if len(msgs) != 1 || !strings.Contains(msgText(msgs[0]), "Баланс толтырылды") || !strings.Contains(msgText(msgs[0]), "+1 000 ₸ · EMB007-TOPUP-000042") ||
+		!strings.Contains(msgText(msgs[0]), "Баланс: 1 500 ₸") {
+		t.Fatalf("credited reply: %v", msgs)
+	}
+	if b := bottest.InlineButtons(msgs[0]); len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp=wallet" {
+		t.Fatalf("credited button: %v", b)
+	}
+
+	// Left for review, in the driver's language, with the known reasons only.
+	e.user["language"] = "ru"
+	answer = func() (int, any) {
+		return 200, map[string]any{"outcome": "pending_verification", "reasons": []string{"amount_mismatch", "something_new"}, "balance": nil,
+			"topup": map[string]any{"id": topupID, "reference": "EMB007-TOPUP-000042", "amount": 5000, "verified_amount": nil, "status": "pending_verification"}}
+	}
+	msgs = e.message(t, telegram.Message{Document: doc})
+	text := msgText(msgs[0])
+	if !strings.Contains(text, "Чек получен") || !strings.Contains(text, "• сумма в чеке не совпадает с суммой заявки") || strings.Contains(text, "something_new") {
+		t.Fatalf("pending reply: %s", text)
+	}
+	if b := bottest.InlineButtons(msgs[0]); len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp=topup_"+topupID {
+		t.Fatalf("pending button: %v", b)
+	}
+
+	// Refusals.
+	e.user["language"] = "kk"
+	for _, tt := range []struct {
+		code, want, startapp string
+	}{
+		{"no_open_topup", "Ашық толтыру өтінімі жоқ", "topup"},
+		{"receipt_already_used", "Бұл чек бұрын пайдаланылған", ""},
+		{"pdf_not_allowed", "Kaspi чегі ретінде оқу мүмкін болмады", ""},
+	} {
+		answer = func() (int, any) { return 409, bottest.APIError(tt.code, nil) }
+		msgs = e.message(t, telegram.Message{Document: doc})
+		if len(msgs) != 1 || !strings.Contains(msgText(msgs[0]), tt.want) {
+			t.Fatalf("%s: %v", tt.code, msgs)
+		}
+		if b := bottest.InlineButtons(msgs[0]); tt.startapp != "" && (len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp="+tt.startapp) {
+			t.Fatalf("%s button: %v", tt.code, b)
+		}
+	}
+
+	// Not a PDF, a photo, or too large: nothing is uploaded.
+	before := e.api.Count(route)
+	for _, m := range []telegram.Message{
+		{Document: &telegram.Document{FileID: "F2", FileName: "receipt.jpg", MimeType: "image/jpeg", FileSize: 1000}},
+		{Photo: []telegram.PhotoSize{{FileID: "P1", Width: 800, Height: 1600}}},
+	} {
+		msgs = e.message(t, m)
+		if !strings.Contains(msgText(msgs[0]), "PDF файл ретінде жіберіңіз") {
+			t.Fatalf("not a pdf: %v", msgs)
+		}
+	}
+	big := *doc
+	big.FileSize = 6 << 20
+	if msgs = e.message(t, telegram.Message{Document: &big}); !strings.Contains(msgText(msgs[0]), "Файл тым үлкен") {
+		t.Fatalf("too large: %v", msgs)
+	}
+	if e.api.Count(route) != before {
+		t.Fatal("refused files must not reach the API")
+	}
+
+	// Not registered yet: the registration is explained instead.
+	e.driver["registered"], e.driver["status"] = false, nil
+	if msgs = e.message(t, telegram.Message{Document: doc}); !strings.Contains(msgText(msgs[0]), "Jan Taxi-де жүргізуші болу") || e.api.Count(route) != before {
+		t.Fatalf("unregistered: %v", msgs)
 	}
 }

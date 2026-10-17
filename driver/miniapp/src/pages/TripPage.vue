@@ -26,8 +26,10 @@ import { isApiError } from '../services/http'
 import { useLocationStore } from '../stores/location'
 import { useTripStore } from '../stores/trip'
 import { haptics } from '../telegram'
+import { useAddressText } from '../i18n/core'
 
 const { t } = useI18n()
+const addr = useAddressText()
 const fmt = useFormat()
 const errorText = useDriverErrorText()
 const router = useRouter()
@@ -136,7 +138,7 @@ onBeforeUnmount(() => {
         <template #header>
           <div class="tpage__head">
             <p class="tpage__state">{{ heading }}</p>
-            <p v-if="target" class="tpage__target">{{ target.address }}</p>
+            <p v-if="target" class="tpage__target">{{ addr(target.address) }}</p>
             <p v-if="target?.address_details" class="tpage__details">{{ target.address_details }}</p>
             <p class="tpage__meta jt-tabular">
               {{ t('trip.order_number', { number: order.number }) }} · {{ fmt.money(order.fare) }} · {{ t(`payment_method.${order.payment_method}`) }}

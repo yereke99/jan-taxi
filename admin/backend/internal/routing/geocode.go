@@ -184,5 +184,6 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// defaultProviderTimeout bounds one provider call inside a user request.
-const defaultProviderTimeout = 1200 * time.Millisecond
+// defaultProviderTimeout bounds one provider call inside a user request. The
+// public Photon server often needs 1.5–2 s; a local search may make two calls.
+const defaultProviderTimeout = 2500 * time.Millisecond

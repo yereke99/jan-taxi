@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:demo": "vite --mode demo",
     "build": "vue-tsc --noEmit -p tsconfig.app.json && vite build",
+    "build:demo": "vue-tsc --noEmit -p tsconfig.app.json && vite build --mode demo --outDir dist-demo",
     "preview": "vite preview",
+    "preview:demo": "vite preview --outDir dist-demo",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && vue-tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "lint": "node scripts/lint.mjs"

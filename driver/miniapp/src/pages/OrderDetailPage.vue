@@ -6,16 +6,16 @@
   are handled per openapi acceptOrder.
 -->
 <script setup lang="ts">
+import { ChevronLeft, Clock, MapPin, Route } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { getOrder } from '../api/orders'
 import type { DriverOrderDetail } from '../api/types'
-import CategoryIcon from '../components/driver/CategoryIcon.vue'
 import FareBreakdown from '../components/driver/FareBreakdown.vue'
 import StopList from '../components/driver/StopList.vue'
 import TripMap from '../components/driver/TripMap.vue'
-import { JBadge, JButton, JEmptyState, JListGroup, JListRow, JSheet, JSkeleton, toast, type SheetSnap } from '../components/ui'
+import { JBadge, JButton, JEmptyState, JMapButton, JSheet, JSkeleton, toast, type SheetSnap } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
 import { classifyAcceptError } from '../features/orders/acceptOutcome'
 import { isActiveTripStatus } from '../features/trip/sequence'
@@ -28,7 +28,8 @@ import { useLocationStore } from '../stores/location'
 import { useOrdersStore } from '../stores/orders'
 import { useSessionStore } from '../stores/session'
 import { useTripStore } from '../stores/trip'
-import { haptics } from '../telegram'
+import { normalizeTwoGisBase, planNavigation } from '../features/navigation/twogis'
+import { canOpenLocationSettings, effectiveSafeInsets, haptics, navigateBack, openExternal, openLocationSettings, useTelegramFullscreen } from '../telegram'
 import { orderStatusTone } from '../utils/status'
 
 const { t } = useI18n()
@@ -50,10 +51,36 @@ const gone = ref(false)
 const accepting = ref(false)
 const snap = ref<SheetSnap>('half')
 const sheetHeight = ref(0)
+const tg = useTelegramFullscreen()
+// Inside Telegram the client shows its own back control (BackButton).
+const inTelegram = tg.state.isTelegram
+const backStyle = computed(() => {
+  const safe = effectiveSafeInsets(tg.state)
+  return { top: `${safe.top + 8}px`, left: `${safe.left + 16}px` }
+})
+
+/** 2GIS route through every stop (from the driver's position when known). */
+const twoGisUrl = computed(() => {
+  const o = order.value
+  if (!o || o.stops.length === 0) return null
+  const plan = planNavigation({
+    base: normalizeTwoGisBase(session.config.navigation.twogis_base_url),
+    platform: tg.state.platform,
+    origin: location.current ? { lat: location.current.lat, lon: location.current.lon } : null,
+    remaining: [...o.stops].sort((a, b) => a.seq - b.seq).map((st) => ({ lat: st.lat, lon: st.lon })),
+  })
+  return plan?.primaryUrl ?? null
+})
+
+function openTwoGis(): void {
+  const url = twoGisUrl.value
+  if (!url) return
+  haptics.impact('light')
+  if (!openExternal(url)) toast.error(t('trip.open_failed'))
+}
 
 const id = computed(() => String(route.params.id ?? ''))
 const canAcceptNow = computed(() => Boolean(order.value?.can_accept && !gone.value))
-const extraStops = computed(() => Math.max(0, (order.value?.stop_count ?? 0) - 2))
 
 async function load(): Promise<void> {
   loading.value = true
@@ -84,6 +111,20 @@ function markGone(): void {
   if (order.value && !order.value.is_mine) {
     gone.value = true
     orders.remove(id.value)
+  }
+}
+
+/** Opens the location settings, or reads and sends a fresh fix where possible. */
+async function enableLocation(): Promise<void> {
+  if (canOpenLocationSettings() && location.issue === 'denied') {
+    void openLocationSettings()
+    return
+  }
+  try {
+    await location.sendNow(await location.locateOnce())
+    toast.show(t('order.location_ready'))
+  } catch {
+    if (canOpenLocationSettings()) void openLocationSettings()
   }
 }
 
@@ -118,6 +159,13 @@ async function accept(): Promise<void> {
         toast.show({
           message: t('order.offline_toast'),
           action: { label: t('orders.go_online'), run: () => void goOnline() },
+          duration: 6000,
+        })
+        break
+      case 'location_required':
+        toast.show({
+          message: t('order.location_toast'),
+          action: { label: t('orders.enable_location'), run: () => void enableLocation() },
           duration: 6000,
         })
         break
@@ -159,6 +207,11 @@ watch(id, () => void load())
 <template>
   <div class="odetail">
     <TripMap v-if="order" :order="order" :position="location.current" :sheet-height="sheetHeight" @locate="location.locateOnce().catch(() => undefined)" />
+    <div v-if="!inTelegram" class="odetail__back" :style="backStyle">
+      <JMapButton :label="t('common.back')" @click="navigateBack(router)">
+        <ChevronLeft :size="26" :stroke-width="2" aria-hidden="true" />
+      </JMapButton>
+    </div>
 
     <!-- Keyed: JSheet decides once whether it has a footer, and the accept button appears after loading. -->
     <JSheet
@@ -166,19 +219,16 @@ watch(id, () => void load())
       v-model:snap="snap"
       :snap-points="['peek', 'half', 'full']"
       :peek-height="190"
+      :half-ratio="0.62"
       :aria-label="order ? t('order.title', { number: order.number }) : t('order.loading')"
       @height="(h) => (sheetHeight = h)"
     >
       <template #header>
         <div v-if="order" class="odetail__head">
-          <div class="odetail__titles">
-            <p class="odetail__cat"><CategoryIcon :category="order.category" :size="18" /> {{ t(`category.${order.category}`) }}</p>
-            <h1 class="odetail__title">{{ t('order.title', { number: order.number }) }}</h1>
-          </div>
-          <div class="odetail__fare">
-            <span class="odetail__amount jt-tabular">{{ fmt.money(order.fare) }}</span>
-            <span class="odetail__route jt-tabular">{{ fmt.distance(order.distance_m) }} · {{ fmt.duration(order.duration_s) }}</span>
-          </div>
+          <h1 class="odetail__title">
+            {{ t(`category.${order.category}`) }} · <span class="jt-tabular">{{ fmt.money(order.fare) }}</span>
+          </h1>
+          <JBadge v-if="order.is_mine" :tone="orderStatusTone(order.status)" :label="t(`trip.status.${order.status}`)" />
         </div>
       </template>
 
@@ -205,25 +255,17 @@ watch(id, () => void load())
       </div>
 
       <template v-else-if="order">
-        <JListGroup class="odetail__group">
-          <JListRow
-            :title="t('order.to_pickup')"
-            :value="order.distance_to_pickup_m !== null ? fmt.distance(order.distance_to_pickup_m) : t('order.unknown')"
-          />
-          <JListRow :title="t('order.distance')" :value="fmt.distance(order.distance_m)" />
-          <JListRow :title="t('order.duration')" :value="fmt.duration(order.duration_s)" />
-          <JListRow v-if="order.is_mine" :title="t('order.status_title')">
-            <template #accessory><JBadge :tone="orderStatusTone(order.status)" :label="t(`trip.status.${order.status}`)" /></template>
-          </JListRow>
-        </JListGroup>
-
-        <section class="odetail__card">
-          <h2 class="odetail__section">
-            {{ t('order.route_title') }}
-            <span v-if="extraStops > 0" class="odetail__more">{{ t('orders.more_stops', { n: extraStops }) }}</span>
-          </h2>
+        <section class="odetail__stops">
           <StopList :stops="order.stops" :live="order.is_mine" />
         </section>
+
+        <div class="odetail__chips jt-tabular">
+          <span class="odetail__chip"><Route :size="18" :stroke-width="2" aria-hidden="true" />{{ fmt.distance(order.distance_m) }}</span>
+          <span class="odetail__chip"><Clock :size="17" :stroke-width="2" aria-hidden="true" />{{ fmt.duration(order.duration_s) }}</span>
+          <span v-if="order.distance_to_pickup_m !== null" class="odetail__chip">
+            <MapPin :size="17" :stroke-width="2" aria-hidden="true" />{{ t('orders.from_you', { distance: fmt.distance(order.distance_to_pickup_m) }) }}
+          </span>
+        </div>
 
         <section v-if="order.cargo_description || order.comment" class="odetail__card">
           <template v-if="order.cargo_description">
@@ -242,7 +284,13 @@ watch(id, () => void load())
           :commission="order.commission_amount"
           :commission-bps="order.commission_bps"
           :payment-method="order.payment_method"
+          :compact="!order.is_mine"
         />
+
+        <JButton v-if="twoGisUrl" class="odetail__nav" variant="secondary" block @click="openTwoGis">
+          <template #icon><MapPin :size="20" :stroke-width="2" aria-hidden="true" /></template>
+          {{ t('trip.open_2gis') }}
+        </JButton>
 
         <p v-if="!order.is_mine" class="odetail__hidden">{{ t('order.details_hidden') }}</p>
       </template>
@@ -270,35 +318,44 @@ watch(id, () => void load())
   padding: var(--jt-space-1) 0 var(--jt-space-3);
 }
 
-.odetail__titles {
-  min-width: 0;
+.odetail__back {
+  position: fixed;
+  z-index: var(--jt-z-floating);
 }
 
-.odetail__cat {
+.odetail__stops {
+  margin-bottom: var(--jt-space-3);
+  padding: var(--jt-space-1) var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-fill-secondary);
+}
+
+.odetail__chips {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  margin-bottom: var(--jt-space-3);
+}
+
+.odetail__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--jt-radius-capsule);
+  background: var(--jt-color-fill-secondary);
   font: var(--jt-font-subheadline);
-  color: var(--jt-color-label-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.odetail__nav {
+  margin-top: var(--jt-space-3);
 }
 
 .odetail__title {
-  font: var(--jt-font-title3);
-}
-
-.odetail__fare {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.odetail__amount {
   font: var(--jt-font-title1);
-}
-
-.odetail__route {
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
 }
 
 /* Inside the sheet the side margin comes from the sheet itself. */
@@ -327,11 +384,6 @@ watch(id, () => void load())
   align-items: baseline;
   margin: var(--jt-space-1) 0 var(--jt-space-1);
   font: var(--jt-font-headline);
-}
-
-.odetail__more {
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
 }
 
 .odetail__text {

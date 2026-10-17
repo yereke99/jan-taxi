@@ -59,6 +59,39 @@ func TestNormalize(t *testing.T) {
 		{"driver.online_idle_hours", `24`, `24`, ""},
 		{"driver.online_idle_hours", `0`, ``, ReasonOutOfRange},
 		{"topup.expiry_hours", `null`, ``, ReasonInvalidType},
+		{"dispatch.radius_base_m", `5000`, `5000`, ""},
+		{"dispatch.radius_base_m", `499`, ``, ReasonOutOfRange},
+		{"dispatch.radius_base_m", `50001`, ``, ReasonOutOfRange},
+		{"dispatch.radius_step_m", `0`, `0`, ""},
+		{"dispatch.radius_step_m", `20001`, ``, ReasonOutOfRange},
+		{"dispatch.radius_step_s", `9`, ``, ReasonOutOfRange},
+		{"dispatch.radius_step_s", `600`, `600`, ""},
+		{"dispatch.radius_max_m", `100000`, `100000`, ""},
+		{"dispatch.radius_max_m", `100001`, ``, ReasonOutOfRange},
+		{"dispatch.location_max_age_s", `29`, ``, ReasonOutOfRange},
+		{"dispatch.location_max_age_s", `3600`, `3600`, ""},
+		{"dispatch.location_max_age_s", `"300"`, ``, ReasonInvalidType},
+		{"kaspi.payment_url", `"https://pay.kaspi.kz/pay/xbp1imhd"`, `"https://pay.kaspi.kz/pay/xbp1imhd"`, ""},
+		{"kaspi.recipient_name", `"ИП \"JAN-TAXI\""`, `"ИП \"JAN-TAXI\""`, ""},
+		{"company.bin", `"000809500289"`, `"000809500289"`, ""},
+		{"company.bin", `"0008 0950 0289"`, `"000809500289"`, ""},
+		{"company.bin", `"000809500288"`, ``, ReasonInvalid}, // wrong check digit
+		{"company.bin", `"12345"`, ``, ReasonInvalid},
+		{"company.iban", `"kz05 722S 0000 5717 6693"`, `"KZ05722S000057176693"`, ""},
+		{"company.iban", `"KZ06722S000057176693"`, ``, ReasonInvalid}, // wrong check digits
+		{"company.iban", `"DE89370400440532013000"`, ``, ReasonInvalid},
+		{"company.bic", `"caspkzka"`, `"CASPKZKA"`, ""},
+		{"company.bic", `"CASP"`, ``, ReasonInvalid},
+		{"company.kbe", `"19"`, `"19"`, ""},
+		{"company.kbe", `"1"`, ``, ReasonInvalid},
+		{"company.bank", `" АО  \"Kaspi Bank\" "`, `"АО \"Kaspi Bank\""`, ""},
+		{"topup.auto_confirm_enabled", `false`, `false`, ""},
+		{"topup.auto_max_per_day", `0`, `0`, ""},
+		{"topup.auto_max_per_day", `101`, ``, ReasonOutOfRange},
+		{"topup.auto_max_amount_per_day", `50000`, `50000`, ""},
+		{"topup.auto_max_amount_per_day", `-1`, ``, ReasonOutOfRange},
+		{"topup.receipt_max_age_hours", `0`, ``, ReasonOutOfRange},
+		{"topup.receipt_max_age_hours", `72`, `72`, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key+" "+tt.in, func(t *testing.T) {
@@ -99,6 +132,10 @@ func TestRegistryCoversSeedAndExtraKeys(t *testing.T) {
 		"delivery.prohibited_items", "delivery.blocked_keywords",
 		"kaspi.payment_url", "kaspi.recipient_name", "kaspi.instructions",
 		"navigation.twogis_base_url", "driver.online_idle_hours",
+		"dispatch.radius_base_m", "dispatch.radius_step_m", "dispatch.radius_step_s", "dispatch.radius_max_m",
+		"dispatch.location_max_age_s",
+		"topup.auto_confirm_enabled", "topup.auto_max_per_day", "topup.auto_max_amount_per_day", "topup.receipt_max_age_hours",
+		"company.bin", "company.iban", "company.bank", "company.bic", "company.kbe", "company.address",
 	}
 	for _, k := range want {
 		if _, ok := Lookup(k); !ok {
@@ -149,5 +186,27 @@ func TestLocalizedGet(t *testing.T) {
 		if got := l.Get(lang); got != want {
 			t.Errorf("Get(%q) = %q, want %q", lang, got, want)
 		}
+	}
+}
+
+func TestDispatchRadiusAt(t *testing.T) {
+	d := DispatchSettings{RadiusBaseM: 5000, RadiusStepM: 2500, RadiusStepS: 60, RadiusMaxM: 10000, LocationMaxAgeS: 300}
+	tests := []struct {
+		age  time.Duration
+		want int
+	}{
+		{-time.Second, 5000}, {0, 5000}, {59 * time.Second, 5000}, {60 * time.Second, 7500},
+		{119 * time.Second, 7500}, {120 * time.Second, 10000}, {time.Hour, 10000}, {1000 * time.Hour, 10000},
+	}
+	for _, tt := range tests {
+		if got := d.RadiusAt(tt.age); got != tt.want {
+			t.Errorf("RadiusAt(%v) = %d, want %d", tt.age, got, tt.want)
+		}
+	}
+	if got := (DispatchSettings{RadiusBaseM: 3000, RadiusStepM: 0, RadiusStepS: 60, RadiusMaxM: 15000}).RadiusAt(time.Hour); got != 3000 {
+		t.Errorf("no growth = %d", got)
+	}
+	if d.LocationMaxAge() != 5*time.Minute {
+		t.Errorf("LocationMaxAge = %v", d.LocationMaxAge())
 	}
 }

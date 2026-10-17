@@ -259,7 +259,7 @@ paths:
       operationId: getOpenApiSpec
       tags: [system]
       summary: This contract
-      description: The embedded document, served with a strong `ETag` and `Cache-Control: no-cache`.
+      description: 'The embedded document, served with a strong `ETag` and `Cache-Control: no-cache`.'
       security: []
       parameters:
         - name: If-None-Match
@@ -1694,15 +1694,24 @@ paths:
     post:
       operationId: uploadTopUpReceipt
       tags: [topups]
-      summary: Attach a payment receipt
+      summary: Attach a payment receipt (Kaspi PDF or image)
       description: |
-        Optional evidence (screenshot of the Kaspi receipt) while `created` or
-        `pending_verification` (`409 invalid_transition` with `action: upload_receipt`
-        otherwise); replaces the shown receipt (the previous one stays referenced in the history).
-        The first form part named `file` is stored; other parts are ignored (`fields.file =
-        required` when there is none). Same image rules as registration uploads
-        (`413 file_too_large`, `422 unsupported_file_type | image_too_large`). Evidence only: it
-        never credits the wallet.
+        Allowed while `created` or `pending_verification` (`409 invalid_transition` with
+        `action: upload_receipt` otherwise). The first form part named `file` is used; other parts
+        are ignored (`fields.file = required` when there is none). The file type is sniffed.
+
+        * **Kaspi receipt PDF** (shared from the Kaspi app): stored byte for byte in private
+          storage, parsed (receipt number "№ чека", amount, date-time, seller BIN/name, masked
+          payer) and checked (ARCHITECTURE §6.1). When every check passes the wallet is credited at
+          once through the same path as an admin confirmation (`status: confirmed`,
+          `receipt.decision: auto_confirmed`). Otherwise the top-up becomes `pending_verification`
+          with `receipt.reasons`. A receipt used before (same file, receipt number or QR payload)
+          rejects this top-up (`409 receipt_already_used`, top-up `rejected` with
+          `rejected_reason: duplicate_receipt`, the driver is notified). Re-sending the receipt the
+          top-up already has is a no-op. Encrypted PDFs and PDFs with scripts, attachments or form
+          submission are refused (`422 pdf_not_allowed`).
+        * **Image** (JPEG, PNG, WebP): evidence for the finance review only; never credits
+          (`receipt.kind: image`). Same image rules as registration uploads.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       requestBody:
@@ -1712,10 +1721,10 @@ paths:
             schema: {$ref: '#/components/schemas/ReceiptUpload'}
             encoding:
               file:
-                contentType: image/jpeg, image/png, image/webp
+                contentType: application/pdf, image/jpeg, image/png, image/webp
       responses:
         '200':
-          description: 'Top-up with `has_receipt: true`.'
+          description: 'Top-up with `has_receipt: true` and the `receipt` check (`status: confirmed` when credited).'
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TopUp'}
@@ -1723,7 +1732,7 @@ paths:
         '401': {$ref: '#/components/responses/AppUnauthorized'}
         '403': {$ref: '#/components/responses/WalletForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
-        '409': {$ref: '#/components/responses/InvalidTransition'}
+        '409': {$ref: '#/components/responses/ReceiptConflict'}
         '413': {$ref: '#/components/responses/FileTooLarge'}
         '415':
           description: '`unsupported_media_type`: not `multipart/form-data`.'
@@ -1731,7 +1740,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
               example: {error: {code: unsupported_media_type, message: expected multipart/form-data}}
-        '422': {$ref: '#/components/responses/UnprocessableUpload'}
+        '422': {$ref: '#/components/responses/UnprocessableReceipt'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
   /driver/wallet/topups/{id}/submit:
     parameters:
@@ -2985,12 +2994,15 @@ paths:
     get:
       operationId: adminGetTopUpReceipt
       tags: [admin-topups]
-      summary: Receipt image uploaded by the driver
-      description: '`404` when the top-up has no receipt.'
+      summary: Latest receipt file uploaded by the driver
+      description: |
+        The latest uploaded receipt: the original Kaspi PDF (`application/pdf`, inline) or the
+        sanitised JPEG. Older receipts are listed in `AdminTopUpDetail.receipts` and served by
+        `GET /admin/files/{file_id}`. `404` when the top-up has no receipt.
       x-jantaxi-permission: finance.view
       security: [{adminSession: []}]
       responses:
-        '200': {$ref: '#/components/responses/JpegImage'}
+        '200': {$ref: '#/components/responses/ReceiptFile'}
         '401': {$ref: '#/components/responses/AdminUnauthorized'}
         '403': {$ref: '#/components/responses/AdminForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -3113,7 +3125,7 @@ paths:
       operationId: adminListLedger
       tags: [admin-ledger]
       summary: Search ledger entries
-      description: Newest first. `fields`: `driver_id` / `type` / `from` / `to` / `page` / `page_size` = `invalid`.
+      description: 'Newest first. `fields`: `driver_id` / `type` / `from` / `to` / `page` / `page_size` = `invalid`.'
       x-jantaxi-permission: finance.view
       security: [{adminSession: []}]
       parameters:
@@ -3417,7 +3429,7 @@ paths:
       operationId: adminUpdatePlace
       tags: [admin-cities]
       summary: Update a curated place
-      description: Partial update with the same rules as creation; `city_id: null` detaches the place from its city. Audit-logged.
+      description: 'Partial update with the same rules as creation; `city_id: null` detaches the place from its city. Audit-logged.'
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -4127,6 +4139,57 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+  /internal/v1/driver/{tg_id}/topup-receipt:
+    servers:
+      - url: http://api:8081
+        description: Internal bot API listener (compose network only; never published or proxied).
+    parameters:
+      - $ref: '#/components/parameters/TgIdPath'
+      - $ref: '#/components/parameters/BotHeader'
+    post:
+      operationId: botUploadTopUpReceipt
+      tags: [internal]
+      summary: Kaspi receipt PDF sent to the driver bot
+      description: |
+        The driver bot downloads a PDF document the driver sent (getFile, at most 5 MiB) and
+        forwards it here. It is attached to the driver's most recent open top-up (`created` or
+        `pending_verification`) with the same checks as `POST /driver/wallet/topups/{id}/receipt`.
+        Without an open top-up: `409 receipt_already_used` when this receipt was already used,
+        else `409 no_open_topup`. Not idempotent: the bot does not retry it. Requires
+        `X-Jantaxi-Bot: driver`; 10 receipts per minute per driver.
+      security: [{serviceSecret: []}]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: {$ref: '#/components/schemas/ReceiptUpload'}
+            encoding:
+              file:
+                contentType: application/pdf
+      responses:
+        '200':
+          description: Outcome (`credited`, `pending_verification` with reasons).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BotTopUpReceiptResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/ReceiptConflict'}
+        '413': {$ref: '#/components/responses/FileTooLarge'}
+        '415':
+          description: '`unsupported_media_type`: not `multipart/form-data`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '422': {$ref: '#/components/responses/UnprocessableReceipt'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503':
+          description: Receipt intake is not configured on this API instance.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /internal/v1/config:
     servers:
       - url: http://api:8081
@@ -4458,6 +4521,62 @@ components:
                   details: {missing_fields: [id_back, vehicle_photos]}
             phone:
               value: {error: {code: phone_not_verified, message: phone not verified}}
+    FileTooLarge:
+      description: '`file_too_large`: the upload exceeds the limit (`MAX_UPLOAD_BYTES`; 5 MiB for PDF receipts).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example: {error: {code: file_too_large, message: file is too large}}
+    ReceiptConflict:
+      description: |
+        `invalid_transition` (the top-up is closed), `receipt_already_used` (the receipt was used
+        before; the top-up named in `details.topup_id` is now `rejected`; the earlier use is never
+        disclosed) or `no_open_topup` (bot intake without an open top-up).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            used:
+              value:
+                error:
+                  code: receipt_already_used
+                  message: this receipt was already used
+                  details: {reason: duplicate_receipt, topup_id: 8e9f0a1b-2c3d-4e4f-9a5b-6c7d8e9f0a1b, status: rejected}
+            noTopUp:
+              value: {error: {code: no_open_topup, message: 'create a top-up first, then send its receipt'}}
+    ReceiptFile:
+      description: Private receipt file (original PDF, or a sanitised JPEG for images).
+      headers:
+        Cache-Control:
+          description: Always `private, no-store`.
+          schema: {type: string, const: 'private, no-store'}
+        Content-Disposition:
+          description: '`inline; filename="<file_id>.pdf"` (or `.jpg`).'
+          schema: {type: string}
+      content:
+        application/pdf:
+          schema: {type: string, contentMediaType: application/pdf}
+        image/jpeg:
+          schema: {type: string, contentMediaType: image/jpeg}
+    UnprocessableReceipt:
+      description: |
+        `unsupported_file_type` (neither a PDF nor a JPEG/PNG/WebP image), `pdf_unreadable`,
+        `pdf_not_allowed` (`details.reason`: `encrypted` or `active_content` with `details.features`)
+        or `image_too_large`.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example:
+            error:
+              code: pdf_not_allowed
+              message: encrypted PDFs and PDFs with scripts, attachments or data submission are not accepted
+              details: {reason: active_content, features: [JavaScript]}
+    UnprocessableUpload:
+      description: '`unsupported_file_type` (not a JPEG, PNG or WebP image) or `image_too_large`.'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example: {error: {code: unsupported_file_type, message: 'only JPEG, PNG and WebP images are accepted'}}
     UnprocessableRoute:
       description: '`validation_failed`, `outside_service_area` (with `details.field`/`index`) or `route_unavailable` (no road route between the points).'
       content:
@@ -4893,7 +5012,7 @@ components:
           items: {$ref: '#/components/schemas/AdminPermission'}
     AdminTopUp:
       type: object
-      required: [id, number, reference, status, provider, amount, verified_amount, currency, driver, payment_url, driver_payment_reference, driver_note, has_receipt, receipt_url, driver_reported_paid_at, provider_transaction_id, paid_at, confirmed_by, confirmed_at, rejected_by, rejected_at, rejected_reason, refunded_by, refunded_at, refund_reason, expires_at, created_at, updated_at]
+      required: [id, number, reference, status, provider, amount, verified_amount, currency, driver, payment_url, driver_payment_reference, driver_note, has_receipt, receipt_url, driver_reported_paid_at, provider_transaction_id, paid_at, confirmed_by, confirmed_automatically, confirmed_at, rejected_by, rejected_at, rejected_reason, refunded_by, refunded_at, refund_reason, expires_at, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         number: {type: integer, format: int64}
@@ -4932,13 +5051,31 @@ components:
         expires_at: {type: string, format: date-time}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        confirmed_automatically:
+          type: boolean
+          description: Credited by the system from a Kaspi PDF receipt (`confirmed_by` is null then).
     AdminTopUpDetail:
       description: Top-up detail for finance (`GET /admin/topups/{id}` and the confirm / reject / refund responses).
       allOf:
         - $ref: '#/components/schemas/AdminTopUp'
         - type: object
-          required: [events, payment_transaction, duplicate_warnings]
+          required: [events, payment_transaction, duplicate_warnings, receipt, receipts, confirm_prefill]
           properties:
+            receipt:
+              description: Latest parsed Kaspi PDF receipt (null without one).
+              oneOf:
+                - $ref: '#/components/schemas/PaymentReceipt'
+                - type: 'null'
+            receipts:
+              type: array
+              description: Every PDF receipt attached to the top-up, newest first.
+              items: {$ref: '#/components/schemas/PaymentReceipt'}
+            confirm_prefill:
+              description: Values for the confirmation form, taken from `receipt`.
+              oneOf:
+                - $ref: '#/components/schemas/ConfirmPrefill'
+                - type: 'null'
+
             events:
               type: array
               description: Status history, oldest first (receipt uploads appear with `from_status = to_status`).
@@ -5956,7 +6093,7 @@ components:
         (`payment_transaction_id`, `provider_transaction_id`, and the linked top-up if any).
       required: [kind, topup_id, reference, status, driver_code, payment_transaction_id, provider_transaction_id]
       properties:
-        kind: {type: string, enum: [same_driver_payment_reference, provider_transaction_recorded]}
+        kind: {type: string, enum: [same_driver_payment_reference, provider_transaction_recorded, receipt_serial_used]}
         topup_id: {type: [string, 'null'], format: uuid}
         reference: {type: [string, 'null']}
         status:
@@ -6852,8 +6989,11 @@ components:
       enum: [cash, bank_transfer]
     PaymentProvider:
       type: string
-      description: '`kaspi_manual`: the driver pays via Kaspi and a finance admin verifies the payment in Kaspi Pay.'
-      enum: [kaspi_manual]
+      description: |
+        `kaspi_manual`: the driver pays via Kaspi (top-ups are created with it). `kaspi_pdf`: a
+        payment proven by a Kaspi PDF receipt (payment transactions only); Kaspi numbers are unique
+        across both.
+      enum: [kaspi_manual, kaspi_pdf]
     PaymentTransaction:
       type: object
       required: [id, provider, provider_transaction_id, amount, currency, paid_at, payer_info, source, recorded_by, created_at]
@@ -6865,7 +7005,10 @@ components:
         currency: {$ref: '#/components/schemas/Currency'}
         paid_at: {type: [string, 'null'], format: date-time}
         payer_info: {type: [string, 'null']}
-        source: {type: string, enum: [manual_admin, webhook]}
+        source:
+          type: string
+          enum: [manual_admin, webhook, receipt_auto]
+          description: '`receipt_auto`: credited automatically from a Kaspi PDF receipt (`recorded_by` null).' 
         recorded_by:
           oneOf:
             - $ref: '#/components/schemas/AdminRef'
@@ -7106,7 +7249,7 @@ components:
         - driver.phone_verified
     RealtimePingFrame:
       type: object
-      description: Optional application-level ping; the server answers `{"type": "pong"}`. Other client frames are ignored.
+      description: 'Optional application-level ping; the server answers `{"type": "pong"}`. Other client frames are ignored.'
       required: [type]
       properties:
         type: {type: string, const: ping}
@@ -7128,6 +7271,84 @@ components:
           required: [type]
           properties:
             type: {type: string, enum: [pong, resync]}
+    BotTopUpReceiptResult:
+      type: object
+      required: [outcome, reasons, topup, balance]
+      properties:
+        outcome: {type: string, enum: [credited, pending_verification]}
+        reasons:
+          type: array
+          items: {$ref: '#/components/schemas/ReceiptReviewReason'}
+        topup:
+          type: object
+          required: [id, reference, amount, verified_amount, status]
+          properties:
+            id: {type: string, format: uuid}
+            reference: {type: string}
+            amount: {type: integer, format: int64}
+            verified_amount: {type: [integer, 'null'], format: int64}
+            status: {$ref: '#/components/schemas/TopUpStatus'}
+        balance: {type: [integer, 'null'], format: int64, description: Wallet balance after the credit.}
+    ConfirmPrefill:
+      type: object
+      required: [verified_amount, provider_transaction_id, paid_at, payer_info]
+      properties:
+        verified_amount: {type: [integer, 'null'], format: int64}
+        provider_transaction_id: {type: [string, 'null'], description: Receipt number, e.g. QR18149336524.}
+        paid_at: {type: [string, 'null'], format: date-time}
+        payer_info: {type: [string, 'null'], description: Masked payer name.}
+    DriverReceiptCheck:
+      type: object
+      required: [kind, decision, reasons, receipt_serial, amount, paid_at]
+      properties:
+        kind: {type: string, enum: [pdf, image]}
+        decision: {type: [string, 'null'], enum: [auto_confirmed, manual_review, null]}
+        reasons:
+          type: array
+          description: Why the receipt was not credited automatically (`image_receipt` for images, `duplicate_receipt` for a reused receipt).
+          items: {type: string}
+        receipt_serial: {type: [string, 'null']}
+        amount: {type: [integer, 'null'], format: int64}
+        paid_at: {type: [string, 'null'], format: date-time}
+    PaymentReceipt:
+      type: object
+      description: A Kaspi PDF receipt as parsed (payment_receipts). Unique by file, receipt number and QR payload.
+      required: [id, provider, file_id, file_url, file_sha256, receipt_serial, qr_payload_hash, amount, paid_at, recipient_name, recipient_bin, payer_masked, payment_method, producer, parse_status, flags, decision, reasons, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        provider: {type: string, enum: [kaspi_pdf]}
+        file_id: {type: string, format: uuid}
+        file_url: {type: string, description: '`/api/v1/admin/files/{file_id}` (original PDF, finance.view).'}
+        file_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        receipt_serial: {type: [string, 'null'], example: QR18149336524}
+        qr_payload_hash: {type: [string, 'null']}
+        amount: {type: [integer, 'null'], format: int64}
+        paid_at: {type: [string, 'null'], format: date-time}
+        recipient_name: {type: [string, 'null'], example: ИП "JAN-TAXI"}
+        recipient_bin: {type: [string, 'null'], example: '000809500289'}
+        payer_masked: {type: [string, 'null'], example: Е*** Б.}
+        payment_method: {type: [string, 'null'], example: с Kaspi Gold}
+        producer: {type: [string, 'null'], example: WeasyPrint 70.0}
+        parse_status: {type: string, enum: [parsed, partial, unreadable]}
+        flags:
+          type: array
+          description: |
+            Parser findings, e.g. `incremental_update`, `object_redefined`, `trailing_data`,
+            `producer_unexpected`, `creator_present`, `moddate_present`, `xmp_metadata_present`,
+            `font_unexpected`, `annotations_present`, `qr_mismatch`, `serial_ambiguous`,
+            `amount_fractional`, `status_missing`, `filename_serial_mismatch` (block automatic
+            crediting) and the informational `qr_not_found`, `bin_missing`, `status_kazakh`.
+          items: {type: string}
+        decision: {type: string, enum: [auto_confirmed, manual_review]}
+        reasons:
+          type: array
+          items: {$ref: '#/components/schemas/ReceiptReviewReason'}
+        created_at: {type: string, format: date-time}
+    ReceiptReviewReason:
+      type: string
+      enum: [auto_confirm_disabled, receipt_unreadable, receipt_incomplete, receipt_inconsistent, tamper_suspected,
+        recipient_mismatch, amount_mismatch, paid_before_topup, paid_in_future, receipt_too_old, daily_count_limit,
+        daily_amount_limit]
     ReceiptUpload:
       type: object
       required: [file]
@@ -7135,7 +7356,10 @@ components:
         file:
           type: string
           contentMediaType: application/octet-stream
-          description: JPEG, PNG or WebP image, at most `MAX_UPLOAD_BYTES` (10 MiB). Other form parts are ignored.
+          description: |
+            A Kaspi receipt PDF (at most 5 MiB) or a JPEG, PNG or WebP image (at most
+            `MAX_UPLOAD_BYTES`, 10 MiB). Other form parts are ignored. The file name of a Kaspi
+            share ("receipt_QR….pdf") is cross-checked with the receipt number.
     ReconciliationMismatch:
       type: object
       required: [wallet_id, driver, balance, reserved, ledger_balance, ledger_reserved, balance_diff, reserved_diff, active_reservations, reasons]
@@ -7444,7 +7668,7 @@ components:
           example: 'query_id=AAH...&user=%7B%22id%22%3A784512369%7D&auth_date=1760606400&signature=...&hash=...'
     TopUp:
       type: object
-      required: [id, number, reference, amount, verified_amount, currency, status, provider, payment, driver_payment_reference, driver_note, has_receipt, can_upload_receipt, can_submit, can_cancel, created_at, driver_reported_paid_at, expires_at, confirmed_at, rejected_at, rejected_reason, refunded_at]
+      required: [id, number, reference, amount, verified_amount, currency, status, provider, payment, driver_payment_reference, driver_note, has_receipt, can_upload_receipt, can_submit, can_cancel, created_at, driver_reported_paid_at, expires_at, confirmed_at, rejected_at, rejected_reason, refunded_at, receipt]
       properties:
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 123}
@@ -7473,8 +7697,13 @@ components:
         expires_at: {type: string, format: date-time, description: Unpaid top-ups expire at this time.}
         confirmed_at: {type: [string, 'null'], format: date-time}
         rejected_at: {type: [string, 'null'], format: date-time}
-        rejected_reason: {type: [string, 'null'], maxLength: 300}
+        rejected_reason: {type: [string, 'null'], maxLength: 300, description: '`duplicate_receipt` when the receipt was used before.'}
         refunded_at: {type: [string, 'null'], format: date-time}
+        receipt:
+          description: Check of the latest uploaded receipt (null without one).
+          oneOf:
+            - $ref: '#/components/schemas/DriverReceiptCheck'
+            - type: 'null'
       example:
         id: 8e9f0a1b-2c3d-4e4f-9a5b-6c7d8e9f0a1b
         number: 123

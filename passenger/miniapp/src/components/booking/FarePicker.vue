@@ -105,9 +105,7 @@ function onKeydown(e: KeyboardEvent): void {
             <span :key="value" class="fare__amount jt-tabular">{{ formatMoney(value, locale) }}</span>
           </Transition>
         </span>
-        <span class="fare__note">
-          {{ raisedBy > 0 ? t('confirm.fare_raised', { amount: formatMoney(raisedBy, locale) }) : t('confirm.fare_recommended') }}
-        </span>
+        <span v-if="raisedBy > 0" class="fare__note">{{ t('confirm.fare_raised', { amount: formatMoney(raisedBy, locale) }) }}</span>
       </div>
 
       <button
@@ -139,7 +137,7 @@ function onKeydown(e: KeyboardEvent): void {
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  background: var(--jt-color-fill-secondary);
+  background: var(--jt-fare-step-bg, var(--jt-color-fill-secondary));
   color: var(--jt-color-label);
   transition: opacity 120ms linear;
 }

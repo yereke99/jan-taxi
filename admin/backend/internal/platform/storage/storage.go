@@ -1,7 +1,9 @@
 // Package storage keeps private user files (driver documents, avatars, vehicle
 // photos, top-up receipts) on a local volume that is never served statically.
-// Every upload is sniffed, decoded and re-encoded as JPEG, which strips EXIF
-// metadata including GPS position, and is recorded in the files table.
+// Every image upload is sniffed, decoded and re-encoded as JPEG, which strips
+// EXIF metadata including GPS position. Top-up receipts may also be PDFs,
+// which are checked (no encryption, no active content) and kept byte for
+// byte as payment evidence. Every file is recorded in the files table.
 package storage
 
 import (
@@ -42,14 +44,17 @@ func ValidPurpose(p string) bool {
 // DefaultMaxBytes is the upload limit used when Store.MaxBytes is not set.
 const DefaultMaxBytes int64 = 10 << 20
 
-// Store saves and opens files below Dir. The zero MaxBytes means DefaultMaxBytes.
+// Store saves and opens files below Dir. The zero MaxBytes means
+// DefaultMaxBytes; PDFs are further capped by MaxPDFBytes (zero means
+// DefaultMaxPDFBytes).
 type Store struct {
-	Dir      string
-	MaxBytes int64
+	Dir         string
+	MaxBytes    int64
+	MaxPDFBytes int64
 }
 
-// File is the metadata of a stored image. OwnerUserID is uuid.Nil when the
-// owner account no longer exists.
+// File is the metadata of a stored file. OwnerUserID is uuid.Nil when the
+// owner account no longer exists; Width and Height are 0 for PDFs.
 type File struct {
 	ID          uuid.UUID `json:"id"`
 	OwnerUserID uuid.UUID `json:"-"`

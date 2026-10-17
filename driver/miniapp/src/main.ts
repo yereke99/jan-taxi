@@ -29,6 +29,11 @@ function takeStartParam(param: string | null): string | null {
 }
 
 async function main(): Promise<void> {
+  // Presentation build only: a mocked Telegram client and in-memory API. The
+  // condition is a build-time constant, so production bundles omit the import.
+  const demo = import.meta.env.VITE_DEMO === '1' ? await import('./demo') : null
+  const demoRuntime = demo?.installDemo() ?? null
+
   // Shell first: safe areas and viewport height must be final before the first render.
   const tg = await bootTelegram()
 
@@ -41,7 +46,7 @@ async function main(): Promise<void> {
   await session.bootstrap()
   app.use(router)
 
-  const realtime = initRealtime({ getToken, refreshToken: reauthenticate })
+  const realtime = initRealtime({ getToken, refreshToken: reauthenticate, createSocket: demoRuntime?.createSocket })
   // Also covers a session that becomes ready later (retry after a failed start).
   watch(
     () => session.isReady,
@@ -60,6 +65,7 @@ async function main(): Promise<void> {
   await router.isReady()
   const param = takeStartParam(tg.state.startParam)
   if (param) await router.replace(intentLocation(parseStartParam(param), router))
+  if (demo) await demo.openDemoScreen(pinia, router)
 
   app.mount('#app')
 }

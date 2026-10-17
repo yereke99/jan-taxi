@@ -29,6 +29,37 @@ export interface CarMarker {
   remove(): void
 }
 
+/**
+ * Moves a marker smoothly to each new position (ease-out over `ms`), so
+ * once-a-second fixes read as continuous motion. Reduced motion jumps.
+ */
+function createGlider(marker: Marker, ms: number, onFrame?: () => void): { to(p: LatLon): void; cancel(): void } {
+  let frame = 0
+  return {
+    to(p) {
+      cancelAnimationFrame(frame)
+      const from = marker.getLngLat()
+      if (prefersReducedMotion()) {
+        marker.setLngLat([p.lon, p.lat])
+        onFrame?.()
+        return
+      }
+      const start = performance.now()
+      const step = (now: number): void => {
+        const t = Math.min(1, (now - start) / ms)
+        const e = 1 - (1 - t) ** 3
+        marker.setLngLat([from.lng + (p.lon - from.lng) * e, from.lat + (p.lat - from.lat) * e])
+        onFrame?.()
+        if (t < 1) frame = requestAnimationFrame(step)
+      }
+      frame = requestAnimationFrame(step)
+    },
+    cancel() {
+      cancelAnimationFrame(frame)
+    },
+  }
+}
+
 /** Creates a car marker on `map`. Positions glide unless reduced motion is on. */
 export function createCarMarker(map: MapLibreMap, initial: CarPosition, label = ''): CarMarker {
   const el = document.createElement('div')
@@ -43,32 +74,15 @@ export function createCarMarker(map: MapLibreMap, initial: CarPosition, label = 
     .setRotation(initial.heading ?? 0)
     .addTo(map)
 
-  let frame = 0
-
-  function glide(to: LatLon): void {
-    cancelAnimationFrame(frame)
-    const from = marker.getLngLat()
-    if (prefersReducedMotion()) {
-      marker.setLngLat([to.lon, to.lat])
-      return
-    }
-    const start = performance.now()
-    const step = (now: number): void => {
-      const t = Math.min(1, (now - start) / GLIDE_MS)
-      const e = 1 - (1 - t) ** 3
-      marker.setLngLat([from.lng + (to.lon - from.lng) * e, from.lat + (to.lat - from.lat) * e])
-      if (t < 1) frame = requestAnimationFrame(step)
-    }
-    frame = requestAnimationFrame(step)
-  }
+  const glider = createGlider(marker, GLIDE_MS)
 
   return {
     update(pos) {
       if (typeof pos.heading === 'number' && Number.isFinite(pos.heading)) marker.setRotation(pos.heading)
-      glide(pos)
+      glider.to(pos)
     },
     remove() {
-      cancelAnimationFrame(frame)
+      glider.cancel()
       marker.remove()
     },
   }
@@ -89,6 +103,8 @@ export interface UserLocationMarker {
 }
 
 const MAX_HALO_PX = 600
+/** Slightly shorter than the ~1 s fix interval so the dot settles between fixes. */
+const USER_GLIDE_MS = 850
 
 export function createUserLocationMarker(map: MapLibreMap, initial: UserLocation, label = ''): UserLocationMarker {
   const el = document.createElement('div')
@@ -105,6 +121,7 @@ export function createUserLocationMarker(map: MapLibreMap, initial: UserLocation
 
   let current = initial
   const marker = new Marker({ element: el, anchor: 'center' }).setLngLat([initial.lon, initial.lat]).addTo(map)
+  const glider = createGlider(marker, USER_GLIDE_MS)
 
   function sizeHalo(): void {
     const acc = current.accuracy_m
@@ -124,10 +141,11 @@ export function createUserLocationMarker(map: MapLibreMap, initial: UserLocation
   return {
     update(loc) {
       current = loc
-      marker.setLngLat([loc.lon, loc.lat])
+      glider.to(loc)
       sizeHalo()
     },
     remove() {
+      glider.cancel()
       map.off('zoom', sizeHalo)
       marker.remove()
     },

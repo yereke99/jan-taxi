@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -40,7 +41,15 @@ func driverLang(ctx context.Context, q db.Querier, userID uuid.UUID) string {
 }
 
 func (s *Service) render(ctx context.Context, t TopUp, lang string) TopUpView {
-	return driverTopUpView(t, s.provider(t.Provider).Instructions(ctx, t, lang))
+	rc, err := latestReceipt(ctx, s.pool, t)
+	if err != nil {
+		s.log.Warn("load receipt failed", slog.String("topup_id", t.ID.String()), slog.Any("err", err))
+	}
+	return s.renderWith(ctx, t, lang, rc)
+}
+
+func (s *Service) renderWith(ctx context.Context, t TopUp, lang string, rc *receiptRow) TopUpView {
+	return driverTopUpView(t, s.provider(t.Provider).Instructions(ctx, t, lang), rc)
 }
 
 // publishTopUp sends a top-up hint to the driver's app and, when admin is set,
@@ -210,13 +219,27 @@ func (s *Service) listDriverTopUps(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	lang := driverLang(ctx, s.pool, d.UserID)
+	var receiptIDs []uuid.UUID
+	for _, t := range list {
+		if t.PaymentReceiptID != nil {
+			receiptIDs = append(receiptIDs, *t.PaymentReceiptID)
+		}
+	}
+	receipts, err := receiptsByID(ctx, s.pool, receiptIDs)
+	if err != nil {
+		return err
+	}
 	out := httpx.CursorList[TopUpView]{Items: make([]TopUpView, 0, min(len(list), limit))}
 	for i, t := range list {
 		if i == limit {
 			out.NextCursor = nextCursor(list[limit-1].Number)
 			break
 		}
-		out.Items = append(out.Items, s.render(ctx, t, lang))
+		var rc *receiptRow
+		if t.PaymentReceiptID != nil {
+			rc = receipts[*t.PaymentReceiptID]
+		}
+		out.Items = append(out.Items, s.renderWith(ctx, t, lang, rc))
 	}
 	return httpx.OK(w, out)
 }

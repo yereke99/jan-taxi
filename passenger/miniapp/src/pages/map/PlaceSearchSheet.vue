@@ -13,8 +13,9 @@ import type { GeoPlace } from '../../api/types'
 import { JSheet, JSkeleton, JSpinner, JTextField, toast } from '../../components/ui'
 import { createLatest } from '../../domain/latest'
 import type { PlaceValue } from '../../domain/route'
-import { useErrorText } from '../../i18n/core'
+import { useAddressText, useErrorText } from '../../i18n/core'
 import { ROUTE } from '../../router/names'
+import type { LatLon } from '../../utils/geo'
 import { useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
@@ -26,6 +27,7 @@ import { codePointLength } from '../../utils/text'
 const SEARCH_DEBOUNCE_MS = 300
 
 const { t } = useI18n()
+const addr = useAddressText()
 const errorText = useErrorText()
 const route = useRoute()
 const router = useRouter()
@@ -53,9 +55,18 @@ const usingLocation = ref(false)
 const trimmed = computed(() => query.value.trim())
 const tooShort = computed(() => codePointLength(trimmed.value) < GEO_SEARCH_MIN_CHARS)
 
+/**
+ * Where results should be near: the live GPS position, else the route's
+ * pickup, else the map centre, else the city centre from the config — the
+ * search is always local (the API orders and filters by distance).
+ */
+function searchNear(): LatLon {
+  return location.current ?? booking.stops[0]?.place ?? stage.center() ?? session.config.map.default_center
+}
+
 const runner = createLatest<string, GeoPlace[]>({
   delayMs: SEARCH_DEBOUNCE_MS,
-  run: (q, signal) => searchPlaces(q, { near: location.current ?? stage.center(), lang: session.language, signal }),
+  run: (q, signal) => searchPlaces(q, { near: searchNear(), lang: session.language, signal }),
   onStart: () => {
     searching.value = true
   },
@@ -174,7 +185,7 @@ onBeforeUnmount(() => runner.cancel())
         <button v-for="p in recent" :key="`${p.lat},${p.lon}`" type="button" class="search-row" @click="choose(p)">
           <span class="search-row__icon"><Clock :size="18" :stroke-width="2" aria-hidden="true" /></span>
           <span class="search-row__text">
-            <span class="search-row__title">{{ p.address }}</span>
+            <span class="search-row__title">{{ addr(p.address) }}</span>
           </span>
         </button>
       </section>

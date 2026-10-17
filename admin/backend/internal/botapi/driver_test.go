@@ -117,24 +117,34 @@ func TestDriverOrdersEligibility(t *testing.T) {
 		t.Fatalf("limit=21: %d", st)
 	}
 
-	// City location policy.
-	if _, err := e.pool.Exec(ctx, `UPDATE cities SET require_driver_location = true, driver_location_max_age_s = 60 WHERE code = 'EMB'`); err != nil {
+	// Orders are listed by distance from the driver's fresh location to the
+	// pickup (dispatch.location_max_age_s defaults to 300 s).
+	if _, err := e.pool.Exec(ctx, `DELETE FROM driver_locations WHERE driver_id = $1`, ok.DriverID); err != nil {
 		t.Fatal(err)
 	}
-	if _, b := list(ok.TelegramID, ""); reason(b) != "location_required" {
+	if _, b := list(ok.TelegramID, ""); reason(b) != "location_required" || len(b["items"].([]any)) != 0 {
 		t.Fatalf("location required: %v", b)
 	}
-	if _, err := e.pool.Exec(ctx, `INSERT INTO driver_locations (driver_id, lat, lon, source, recorded_at) VALUES ($1, 48.8270, 58.1450, 'bot_live', now() - interval '5 minutes')`, ok.DriverID); err != nil {
-		t.Fatal(err)
-	}
-	if _, b := list(ok.TelegramID, ""); reason(b) != "location_stale" {
+	testutil.SetDriverLocation(t, e.pool, ok.DriverID, testutil.LatLon{Lat: 48.8270, Lon: 58.1450}, 10*time.Minute)
+	if _, b := list(ok.TelegramID, ""); reason(b) != "location_stale" || len(b["items"].([]any)) != 0 {
 		t.Fatalf("stale location: %v", b)
 	}
-	if _, err := e.pool.Exec(ctx, `UPDATE driver_locations SET recorded_at = now() WHERE driver_id = $1`, ok.DriverID); err != nil {
-		t.Fatal(err)
+	// 19 km north of the pickups: eligible, but no order is within reach.
+	testutil.SetDriverLocation(t, e.pool, ok.DriverID, testutil.LatLon{Lat: 49.0000, Lon: 58.1442}, 0)
+	if _, b := list(ok.TelegramID, ""); b["eligibility"].(map[string]any)["eligible"] != true || len(b["items"].([]any)) != 0 {
+		t.Fatalf("far away: %v", b)
 	}
-	if _, b := list(ok.TelegramID, ""); b["eligibility"].(map[string]any)["eligible"] != true || len(b["items"].([]any)) != 3 {
+	if _, b := e.call(t, "driver", http.MethodGet, "/driver/"+itoa(ok.TelegramID)+"/summary", nil); b["available_orders"] != float64(0) {
+		t.Fatalf("far away summary: %v", b["available_orders"])
+	}
+	testutil.SetDriverLocation(t, e.pool, ok.DriverID, testutil.LatLon{Lat: 48.8270, Lon: 58.1450}, 0)
+	_, b = list(ok.TelegramID, "")
+	if b["eligibility"].(map[string]any)["eligible"] != true || len(b["items"].([]any)) != 3 {
 		t.Fatalf("fresh location: %v", b)
+	}
+	card = b["items"].([]any)[0].(map[string]any)
+	if d, _ := card["distance_to_pickup_m"].(float64); d < 50 || d > 100 {
+		t.Fatalf("distance to pickup: %v", card["distance_to_pickup_m"])
 	}
 
 	_, plain := testutil.CreateUser(t, e.pool)
@@ -158,7 +168,21 @@ func TestDriverAvailability(t *testing.T) {
 	set := func(tg int64, body any) (int, map[string]any) {
 		return e.call(t, "driver", http.MethodPost, "/driver/"+itoa(tg)+"/availability", body)
 	}
+	// Going online needs a fresh location (live location in the bot or the
+	// Mini App's GPS), because dispatch is by distance to the pickup.
 	st, b := set(d.TelegramID, map[string]any{"online": true})
+	if st != http.StatusUnprocessableEntity || errCode(b) != "location_required" || errDetail(b, "max_age_s") != float64(300) {
+		t.Fatalf("online without location: %d %v", st, b)
+	}
+	testutil.SetDriverLocation(t, e.pool, d.DriverID, testutil.LatLon{Lat: 48.8264, Lon: 58.1442}, 10*time.Minute)
+	if st, b := set(d.TelegramID, map[string]any{"online": true}); st != http.StatusUnprocessableEntity || errCode(b) != "location_required" {
+		t.Fatalf("online with a stale location: %d %v", st, b)
+	}
+	if st, b := e.call(t, "driver", http.MethodPost, "/driver/"+itoa(d.TelegramID)+"/location",
+		map[string]any{"lat": 48.8270, "lon": 58.1450, "live": true}); st != http.StatusNoContent {
+		t.Fatalf("live location: %d %v", st, b)
+	}
+	st, b = set(d.TelegramID, map[string]any{"online": true})
 	if st != 200 || b["is_online"] != true || b["online_since"] == nil || b["can_go_online"] != true || b["blocked_reason"] != nil ||
 		b["available"] != float64(1000) || b["min_online_balance"] != float64(50) || b["currency"] != "KZT" {
 		t.Fatalf("go online: %d %v", st, b)

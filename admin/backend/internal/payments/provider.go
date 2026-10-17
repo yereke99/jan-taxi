@@ -3,10 +3,12 @@
 // finance admin verification flow, wallet ledger views and adjustments, and the
 // top-up expiry job.
 //
-// Money only reaches a wallet when a finance admin confirms a top-up with the
-// amount and transaction number taken from trusted merchant records. A driver's
-// "I paid" and uploaded receipts are evidence for that review and never credit
-// anything by themselves.
+// Money reaches a wallet in exactly one way, confirmTopUp, used by two
+// callers: a finance admin confirming a top-up with the amount and number from
+// trusted merchant records, or the system when a Kaspi PDF receipt passes
+// every automatic check (unique receipt, payee BIN or name, exact amount, time
+// window, no signs of editing, daily limits, kill switch; see receipt.go). A
+// driver's "I paid" and image receipts never credit anything by themselves.
 package payments
 
 import (

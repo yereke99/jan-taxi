@@ -4,6 +4,7 @@
 // are unit-tested. Stops are never re-ordered automatically: only an explicit
 // move of an intermediate stop changes the order.
 
+import { isUnnamedPlace } from '../utils/text'
 import type { StopInput } from '../api/types'
 import { roundCoord, type LatLon } from '../utils/geo'
 
@@ -132,14 +133,21 @@ export function outsideIndices(stops: readonly RouteStop[]): number[] {
   return stops.flatMap((s, i) => (s.place?.inServiceArea === false ? [i] : []))
 }
 
-/** The API request stops in the user's order, or null while incomplete. */
-export function toStopInputs(stops: readonly RouteStop[]): StopInput[] | null {
+/**
+ * The API request stops in the user's order, or null while incomplete. A
+ * point without a name is sent as `unnamed` ("Point on the map"), never as
+ * coordinates text.
+ */
+export function toStopInputs(stops: readonly RouteStop[], unnamed = ''): StopInput[] | null {
   if (!isComplete(stops)) return null
-  return stops.map((s) => ({
-    lat: roundCoord(s.place!.lat),
-    lon: roundCoord(s.place!.lon),
-    address: s.place!.address.slice(0, 200) || formatCoordinates(s.place!),
-  }))
+  return stops.map((s) => {
+    const address = s.place!.address.trim().slice(0, 200)
+    return {
+      lat: roundCoord(s.place!.lat),
+      lon: roundCoord(s.place!.lon),
+      address: isUnnamedPlace(address) ? unnamed || address : address,
+    }
+  })
 }
 
 /** Identity of the routable part of a route (changes trigger a new quote). */
@@ -149,7 +157,7 @@ export function routeFingerprint(stops: readonly RouteStop[]): string {
     .join('|')
 }
 
-/** "48.826400, 58.144200" — the API's own fallback title format. */
+/** "48.826400, 58.144200" — for logs and accessibility hints, never shown as an address. */
 export function formatCoordinates(p: LatLon): string {
   return `${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`
 }

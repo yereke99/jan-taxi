@@ -1,7 +1,13 @@
 /* Shared with the other Mini App — keep both copies identical (make verify-shared). */
 /* Map marker visuals (§14/§15): monochrome, blue only for the GPS dot. */
 
+/* Stacking: the live location dot under the stop letters, the car on top. */
+.jt-user-location {
+  z-index: 1;
+}
+
 .jt-stop-marker {
+  z-index: 2;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -56,6 +62,7 @@
 }
 
 .jt-car-marker {
+  z-index: 3;
   width: 36px;
   height: 36px;
   display: flex;

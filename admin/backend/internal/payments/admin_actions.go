@@ -13,6 +13,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/audit"
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
+	"github.com/yereke99/jantaxi/admin/backend/internal/payments/receipt"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
@@ -130,56 +131,27 @@ func (s *Service) Confirm(ctx context.Context, r *http.Request, adminID, id uuid
 		if !t.Open() {
 			return invalidTransition(t.Status, "confirm")
 		}
-		paymentID, err := recordManualPayment(ctx, tx, t, in, adminID)
-		if err != nil {
+		// A receipt number already attached to another top-up is that top-up's payment.
+		var other uuid.UUID
+		err = tx.QueryRow(ctx, `
+			SELECT topup_id FROM payment_receipts
+			WHERE provider = $1 AND receipt_serial = $2 AND topup_id <> $3 LIMIT 1`,
+			receipt.Provider, in.ProviderTransactionID, t.ID).Scan(&other)
+		switch {
+		case err == nil:
+			return referenceUsed(ctx, tx, &other)
+		case !db.IsNoRows(err):
+			return fmt.Errorf("payments: find receipt number: %w", err)
+		}
+		c := confirmer{adminID: adminID, provider: t.Provider, source: SourceManualAdmin}
+		// Confirming with the number of the attached Kaspi receipt records the
+		// payment as that receipt's.
+		if rc, err := linkedReceipt(ctx, tx, t); err != nil {
 			return err
+		} else if rc != nil && rc.serial != nil && *rc.serial == in.ProviderTransactionID {
+			c.provider, c.receiptID = receipt.Provider, &rc.id
 		}
-		if err := wallets.CreditTopUp(ctx, tx, t.DriverID, t.ID, in.VerifiedAmount, adminID); err != nil {
-			return wallets.HTTPError(err)
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE top_up_requests
-			SET status = 'confirmed', verified_amount = $2, provider_transaction_id = $3, paid_at = $4,
-			    confirmed_by = $5, confirmed_at = now()
-			WHERE id = $1`, id, in.VerifiedAmount, in.ProviderTransactionID, in.PaidAt, adminID); err != nil {
-			return fmt.Errorf("payments: confirm top-up: %w", err)
-		}
-		meta := map[string]any{
-			"verified_amount":         in.VerifiedAmount,
-			"provider_transaction_id": in.ProviderTransactionID,
-			"payment_transaction_id":  paymentID.String(),
-		}
-		if err := addEvent(ctx, tx, id, t.Status, StatusConfirmed, ActorAdmin, &adminID, deref(in.Note), meta); err != nil {
-			return err
-		}
-		wal, err := wallets.Get(ctx, tx, t.DriverID)
-		if err != nil {
-			return wallets.HTTPError(err)
-		}
-		if err := audit.Log(ctx, tx, r, audit.Entry{
-			Action: "topup.confirm", EntityType: "topup", EntityID: id.String(),
-			Before: map[string]any{"status": t.Status, "requested_amount": t.RequestedAmount, "reference": t.Reference},
-			After: map[string]any{"status": StatusConfirmed, "verified_amount": in.VerifiedAmount,
-				"provider_transaction_id": in.ProviderTransactionID, "paid_at": in.PaidAt,
-				"payment_transaction_id": paymentID, "balance_after": wal.Balance, "note": in.Note},
-			AdminID: &adminID,
-		}); err != nil {
-			return err
-		}
-		if err := notifications.Enqueue(ctx, tx, notifications.Notification{
-			Bot: notifications.DriverBot, UserID: t.DriverUserID, Template: notifications.TplTopUpConfirmed,
-			Params:    map[string]any{"reference": t.Reference, "amount": in.VerifiedAmount, "balance": wal.Balance},
-			DedupeKey: "topup_confirmed:" + id.String(),
-		}); err != nil {
-			return fmt.Errorf("payments: enqueue topup_confirmed: %w", err)
-		}
-		if err := publishWallet(ctx, tx, t.DriverID, t.DriverUserID, wal); err != nil {
-			return err
-		}
-		if err := publishTopUp(ctx, tx, t, realtime.TopUpConfirmed, StatusConfirmed, false); err != nil {
-			return err
-		}
-		if err := publishAdminTopUp(ctx, tx, t, StatusConfirmed); err != nil {
+		if _, _, err := confirmTopUp(ctx, tx, r, t, in, c); err != nil {
 			return err
 		}
 		out, err = loadAdminTopUpDetail(ctx, tx, id)
@@ -188,26 +160,131 @@ func (s *Service) Confirm(ctx context.Context, r *http.Request, adminID, id uuid
 	return out, err
 }
 
-// recordManualPayment stores the admin-verified payment. A transaction id that
-// a verified provider callback already reported (source webhook, not yet tied
+// Payment sources (payment_transactions.source).
+const (
+	SourceManualAdmin = "manual_admin"
+	SourceWebhook     = "webhook"
+	SourceReceiptAuto = "receipt_auto"
+)
+
+// confirmer is who credits a top-up: a finance admin, or the system when a
+// Kaspi PDF receipt passed every automatic check (adminID is uuid.Nil then).
+type confirmer struct {
+	adminID   uuid.UUID
+	provider  string     // payment_transactions.provider
+	source    string     // payment_transactions.source
+	receiptID *uuid.UUID // payment_receipts row the payment comes from
+}
+
+func (c confirmer) system() bool { return c.adminID == uuid.Nil }
+
+// confirmTopUp is the only path that credits a top-up, shared by the admin
+// confirmation and the automatic crediting from receipts: payment
+// transaction, wallet credit (wallets.CreditTopUp, idempotent per top-up),
+// confirmed status, history event, audit row, notification and realtime
+// events. t must be locked and open; it runs inside tx.
+func confirmTopUp(ctx context.Context, tx pgx.Tx, r *http.Request, t TopUp, in ConfirmInput, c confirmer) (wallets.Wallet, uuid.UUID, error) {
+	paymentID, err := recordPayment(ctx, tx, t, in, c)
+	if err != nil {
+		return wallets.Wallet{}, uuid.Nil, err
+	}
+	if err := wallets.CreditTopUp(ctx, tx, t.DriverID, t.ID, in.VerifiedAmount, c.adminID); err != nil {
+		return wallets.Wallet{}, uuid.Nil, wallets.HTTPError(err)
+	}
+	var confirmedBy *uuid.UUID
+	if !c.system() {
+		confirmedBy = &c.adminID
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE top_up_requests
+		SET status = 'confirmed', verified_amount = $2, provider_transaction_id = $3, paid_at = $4,
+		    confirmed_by = $5, confirmed_by_system = $6, confirmed_at = now()
+		WHERE id = $1`, t.ID, in.VerifiedAmount, in.ProviderTransactionID, in.PaidAt, confirmedBy, c.system()); err != nil {
+		return wallets.Wallet{}, uuid.Nil, fmt.Errorf("payments: confirm top-up: %w", err)
+	}
+	meta := map[string]any{
+		"verified_amount":         in.VerifiedAmount,
+		"provider_transaction_id": in.ProviderTransactionID,
+		"payment_transaction_id":  paymentID.String(),
+	}
+	if c.receiptID != nil {
+		meta["receipt_id"] = c.receiptID.String()
+	}
+	actorType, note := ActorAdmin, deref(in.Note)
+	if c.system() {
+		actorType, note = ActorSystem, NoteAutoConfirmed
+	}
+	if err := addEvent(ctx, tx, t.ID, t.Status, StatusConfirmed, actorType, confirmedBy, note, meta); err != nil {
+		return wallets.Wallet{}, uuid.Nil, err
+	}
+	wal, err := wallets.Get(ctx, tx, t.DriverID)
+	if err != nil {
+		return wallets.Wallet{}, uuid.Nil, wallets.HTTPError(err)
+	}
+	entry := audit.Entry{
+		Action: "topup.confirm", EntityType: "topup", EntityID: t.ID.String(),
+		Before: map[string]any{"status": t.Status, "requested_amount": t.RequestedAmount, "reference": t.Reference},
+		After: map[string]any{"status": StatusConfirmed, "verified_amount": in.VerifiedAmount,
+			"provider_transaction_id": in.ProviderTransactionID, "paid_at": in.PaidAt,
+			"payment_transaction_id": paymentID, "balance_after": wal.Balance, "note": in.Note,
+			"provider": c.provider, "receipt_id": c.receiptID},
+		AdminID: confirmedBy,
+	}
+	auditReq := r
+	if c.system() {
+		entry.Action, auditReq = "topup.auto_confirm", nil
+	}
+	if err := audit.Log(ctx, tx, auditReq, entry); err != nil {
+		return wallets.Wallet{}, uuid.Nil, err
+	}
+	if err := notifications.Enqueue(ctx, tx, notifications.Notification{
+		Bot: notifications.DriverBot, UserID: t.DriverUserID, Template: notifications.TplTopUpConfirmed,
+		Params:    map[string]any{"reference": t.Reference, "amount": in.VerifiedAmount, "balance": wal.Balance},
+		DedupeKey: "topup_confirmed:" + t.ID.String(),
+	}); err != nil {
+		return wallets.Wallet{}, uuid.Nil, fmt.Errorf("payments: enqueue topup_confirmed: %w", err)
+	}
+	if err := publishWallet(ctx, tx, t.DriverID, t.DriverUserID, wal); err != nil {
+		return wallets.Wallet{}, uuid.Nil, err
+	}
+	if err := publishTopUp(ctx, tx, t, realtime.TopUpConfirmed, StatusConfirmed, false); err != nil {
+		return wallets.Wallet{}, uuid.Nil, err
+	}
+	if err := publishAdminTopUp(ctx, tx, t, StatusConfirmed); err != nil {
+		return wallets.Wallet{}, uuid.Nil, err
+	}
+	return wal, paymentID, nil
+}
+
+// isKaspi reports the providers that share one Kaspi payment number space.
+func isKaspi(provider string) bool {
+	return provider == ProviderKaspiManual || provider == receipt.Provider
+}
+
+// recordPayment stores the verified payment. A transaction id that a
+// verified provider callback already reported (source webhook, not yet tied
 // to a top-up) is linked when the amounts agree; any other existing row means
-// the payment was already used: 409 payment_reference_used.
-func recordManualPayment(ctx context.Context, tx pgx.Tx, t TopUp, in ConfirmInput, adminID uuid.UUID) (uuid.UUID, error) {
+// the payment was already used: 409 payment_reference_used. Kaspi numbers
+// are unique across kaspi_manual and kaspi_pdf.
+func recordPayment(ctx context.Context, tx pgx.Tx, t TopUp, in ConfirmInput, c confirmer) (uuid.UUID, error) {
 	var (
-		existingID     uuid.UUID
-		existingTopUp  *uuid.UUID
-		existingSource string
-		existingAmount int64
+		existingID       uuid.UUID
+		existingTopUp    *uuid.UUID
+		existingSource   string
+		existingAmount   int64
+		existingProvider string
 	)
 	err := tx.QueryRow(ctx, `
-		SELECT id, topup_id, source, amount FROM payment_transactions
-		WHERE provider = $1 AND provider_transaction_id = $2 FOR UPDATE`, t.Provider, in.ProviderTransactionID).
-		Scan(&existingID, &existingTopUp, &existingSource, &existingAmount)
+		SELECT id, topup_id, source, amount, provider FROM payment_transactions
+		WHERE (provider = $1 OR ($3 AND provider IN ('kaspi_manual', 'kaspi_pdf'))) AND provider_transaction_id = $2
+		ORDER BY created_at LIMIT 1 FOR UPDATE`, c.provider, in.ProviderTransactionID, isKaspi(c.provider)).
+		Scan(&existingID, &existingTopUp, &existingSource, &existingAmount, &existingProvider)
 	switch {
 	case err == nil:
-		if existingTopUp == nil && existingSource == "webhook" && existingAmount == in.VerifiedAmount {
+		if existingTopUp == nil && existingSource == SourceWebhook && existingProvider == c.provider &&
+			existingAmount == in.VerifiedAmount && !c.system() {
 			if _, err := tx.Exec(ctx, `UPDATE payment_transactions SET topup_id = $2, recorded_by = $3 WHERE id = $1`,
-				existingID, t.ID, adminID); err != nil {
+				existingID, t.ID, c.adminID); err != nil {
 				return uuid.Nil, fmt.Errorf("payments: link provider payment: %w", err)
 			}
 			return existingID, nil
@@ -216,12 +293,17 @@ func recordManualPayment(ctx context.Context, tx pgx.Tx, t TopUp, in ConfirmInpu
 	case !db.IsNoRows(err):
 		return uuid.Nil, fmt.Errorf("payments: find payment transaction: %w", err)
 	}
+	var recordedBy *uuid.UUID
+	if !c.system() {
+		recordedBy = &c.adminID
+	}
 	var id uuid.UUID
 	err = tx.QueryRow(ctx, `
 		INSERT INTO payment_transactions (provider, provider_transaction_id, amount, currency, paid_at, payer_info,
-		                                  source, topup_id, recorded_by)
-		VALUES ($1, $2, $3, 'KZT', $4, $5, 'manual_admin', $6, $7)
-		RETURNING id`, t.Provider, in.ProviderTransactionID, in.VerifiedAmount, in.PaidAt, in.PayerInfo, t.ID, adminID).Scan(&id)
+		                                  source, topup_id, recorded_by, receipt_id)
+		VALUES ($1, $2, $3, 'KZT', $4, $5, $6, $7, $8, $9)
+		RETURNING id`, c.provider, in.ProviderTransactionID, in.VerifiedAmount, in.PaidAt, in.PayerInfo, c.source,
+		t.ID, recordedBy, c.receiptID).Scan(&id)
 	if db.IsUniqueViolation(err, "") {
 		// A concurrent confirmation recorded the same transaction first.
 		return uuid.Nil, errPaymentReferenceUsed(nil, nil)

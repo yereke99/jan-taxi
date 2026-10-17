@@ -36,6 +36,7 @@ defineExpose({
       <JNavBar :title="title" :large="large">
         <template v-if="$slots.leading" #leading><slot name="leading" /></template>
         <template v-if="$slots.trailing" #trailing><slot name="trailing" /></template>
+        <template v-if="$slots['large-trailing']" #large-trailing><slot name="large-trailing" /></template>
       </JNavBar>
       <slot name="top" />
       <div class="dpage__content">

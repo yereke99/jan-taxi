@@ -129,7 +129,8 @@ func TestPublicConfigDriverAndAdmin(t *testing.T) {
 	_, cfg := getConfig(t, s, "?app=driver")
 	kaspi := cfg["kaspi"].(map[string]any)
 	instr := kaspi["instructions"].(map[string]any)
-	if kaspi["payment_url"] != "https://pay.kaspi.kz/pay/env" || kaspi["recipient_name"] != "ТОО Jan Taxi" ||
+	// The payee link seeded by the migrations wins over the environment default.
+	if kaspi["payment_url"] != "https://pay.kaspi.kz/pay/xbp1imhd" || kaspi["recipient_name"] != "ТОО Jan Taxi" ||
 		instr["kk"] == "" || instr["ru"] == "" || instr["en"] == "" {
 		t.Errorf("kaspi = %v", kaspi)
 	}

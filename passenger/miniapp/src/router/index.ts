@@ -5,6 +5,8 @@ declare module 'vue-router' {
   interface RouteMeta {
     /** i18n key of the screen title (navigation bar, document title). */
     titleKey?: string
+    /** Main section of the floating tab bar; screens without one hide the bar. */
+    tab?: 'order' | 'trip' | 'history'
   }
 }
 
@@ -18,7 +20,8 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     component: () => import('../pages/map/MapShell.vue'),
     children: [
-      { path: '', name: ROUTE.home, component: () => import('../pages/map/HomeSheet.vue'), meta: { back: false } },
+      { path: '', name: ROUTE.home, component: () => import('../pages/map/HomeSheet.vue'), meta: { back: false, tab: 'order' } },
+      { path: 'trip', name: ROUTE.trip, component: () => import('../pages/map/TripSheet.vue'), meta: { back: false, tab: 'trip' } },
       { path: 'ride', name: ROUTE.book, component: () => import('../pages/map/RouteEditorSheet.vue'), meta: { backTo: home } },
       {
         path: 'ride/search/:index(\\d)',
@@ -38,11 +41,11 @@ const routes: RouteRecordRaw[] = [
         name: ROUTE.order,
         component: () => import('../pages/map/OrderSheet.vue'),
         // A live order never goes "back" into the booking form that created it.
-        meta: { backTo: home, backReplace: true },
+        meta: { back: false, backTo: home, backReplace: true, tab: 'trip' },
       },
     ],
   },
-  { path: '/orders', name: ROUTE.orders, component: () => import('../pages/OrdersPage.vue'), meta: { backTo: home } },
+  { path: '/orders', name: ROUTE.orders, component: () => import('../pages/OrdersPage.vue'), meta: { back: false, tab: 'history' } },
   {
     path: '/orders/:id',
     name: ROUTE.orderDetail,

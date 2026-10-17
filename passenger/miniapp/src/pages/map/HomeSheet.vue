@@ -1,16 +1,22 @@
 <!--
-  Home: greeting, the big "Where to?" row, the service segmented control,
-  active orders, recent destinations and quick links. The map centres on the
-  passenger's position once it is known; Embi is only the initial map centre.
+  Home ("Тапсырыс беру" tab): the map dominates; a black pickup pin sits at
+  the map centre with a callout above it («Алып кететін жер» + the address).
+  Moving the map moves the pickup: the pin lifts, the callout shows a loading
+  bar, and once the camera settles the point is reverse geocoded (debounced;
+  a newer movement aborts the older request). Tapping the callout edits the
+  pickup. The sheet carries "Where to?", recent places and the three service
+  tiles. Embi is only the initial map centre until the device position is known.
 -->
 <script setup lang="ts">
-import { Car, ChevronRight, Clock, Headset, Languages, ListOrdered, Search } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { CarFront, ChevronRight, MapPin, Package, Search, Truck } from '@lucide/vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import type { OrderSummary } from '../../api/types'
+import { reverseGeocode } from '../../api/geo'
+import type { GeoReverse, OrderSummary } from '../../api/types'
 import CategoryIcon from '../../components/CategoryIcon.vue'
-import { JSegmented, JSheet, JSkeleton, type SegmentedOption, type SheetSnap } from '../../components/ui'
+import { JSheet } from '../../components/ui'
+import { createLatest } from '../../domain/latest'
 import type { PlaceValue } from '../../domain/route'
 import { ROUTE } from '../../router/names'
 import { useRealtime } from '../../services/realtime'
@@ -19,10 +25,20 @@ import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
 import { useOrdersStore } from '../../stores/orders'
 import { useSessionStore } from '../../stores/session'
+import { haptics } from '../../telegram'
 import { formatMoney } from '../../utils/format'
+import { haversineMeters, roundCoord, type LatLon } from '../../utils/geo'
 import { CATEGORIES, type Category } from '../../utils/status'
+import { useAddressText } from '../../i18n/core'
+
+/** Pin movements shorter than this keep the resolved address (GPS jitter, follow mode). */
+const PIN_SAME_PLACE_M = 12
+/** A pin this close to the device position counts as "pickup from GPS". */
+const PIN_IS_GPS_M = 25
+const RECENT_LIMIT = 2
 
 const { t } = useI18n()
+const addr = useAddressText()
 const router = useRouter()
 const stage = useStageScreen()
 const session = useSessionStore()
@@ -33,43 +49,124 @@ const realtime = useRealtime()
 
 stage.controls.menu = true
 stage.controls.locate = true
-stage.controls.accuracyChip = true
+stage.pin.visible = true
+stage.pin.label = t('home.pickup_caption')
+stage.pin.onCallout = editPickup
 
-const snap = ref<SheetSnap>('half')
+const SERVICE_ICON: Record<Category, Component> = { taxi: CarFront, parcel: Package, other: Truck }
 
-const categoryOptions = computed<SegmentedOption<Category>[]>(() => CATEGORIES.map((c) => ({ value: c, label: t(`category.${c}`) })))
-const category = computed({
-  get: () => booking.category,
-  set: (c: Category) => booking.setCategory(c),
-})
-
-const greeting = computed(() => {
-  const name = session.me?.first_name
-  return name ? t('home.greeting', { name }) : t('home.greeting_anonymous')
-})
 const whereTo = computed(() =>
   booking.category === 'parcel' ? t('home.where_to_parcel') : booking.category === 'other' ? t('home.where_to_other') : t('home.where_to'),
 )
+const recent = computed(() => orders.destinations.slice(0, RECENT_LIMIT))
 
-// Centre on the passenger once, unless they already moved the map themselves.
-let userMovedMap = false
-const offMove = stage.onMoveStart((user) => {
-  if (user) userMovedMap = true
+// --- Pickup pin ----------------------------------------------------------------
+
+const pinLoading = ref(true)
+let pending: LatLon | null = null
+let resolved: LatLon | null = null
+
+watchEffect(() => {
+  const place = booking.stops[0]?.place
+  stage.pin.callout = {
+    caption: t('home.pickup_caption'),
+    title: place ? addr(place.address) : '',
+    loading: pinLoading.value,
+  }
+})
+
+/** One retry, 2 s after a failed lookup (slow public geocoder). */
+const RETRY_MS = 2000
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let retried: LatLon | null = null
+
+const runner = createLatest<LatLon, GeoReverse>({
+  delayMs: 250,
+  run: (p, signal) => reverseGeocode(p, { lang: session.language, signal }),
+  onResult: (r, p) => {
+    if (p !== pending) return
+    resolved = p
+    pinLoading.value = false
+    const device = location.current
+    const fromGps = device !== null && haversineMeters(device, p) <= PIN_IS_GPS_M
+    booking.setStopPlace(0, {
+      lat: p.lat,
+      lon: p.lon,
+      address: r.title,
+      subtitle: r.title ? r.subtitle : null,
+      source: fromGps ? 'gps' : 'map',
+      inServiceArea: r.in_service_area,
+    })
+    if (fromGps) booking.pickupAccuracy = device.accuracy_m
+    if (!r.in_service_area) haptics.notification('warning')
+  },
+  onError: (_err, p) => {
+    if (p !== pending) return
+    if (retried !== p) {
+      retried = p
+      retryTimer = setTimeout(() => {
+        if (pending === p) runner.schedule(p)
+      }, RETRY_MS)
+      return
+    }
+    pinLoading.value = false
+    // Still unnamed: the pickup is the point itself ("Point on the map").
+    booking.setStopPlace(0, { lat: p.lat, lon: p.lon, address: '', subtitle: null, source: 'map', inServiceArea: null })
+  },
+})
+
+function resolvePin(center: LatLon): void {
+  if (resolved && booking.stops[0]?.place && haversineMeters(resolved, center) < PIN_SAME_PLACE_M) {
+    pinLoading.value = false
+    return
+  }
+  pending = { lat: roundCoord(center.lat), lon: roundCoord(center.lon) }
+  pinLoading.value = true
+  runner.schedule(pending)
+}
+
+const offMoveStart = stage.onMoveStart(() => runner.cancel())
+const offMoveEnd = stage.onMoveEnd((center) => resolvePin(center))
+
+// Centre once: on the chosen pickup, else on the passenger as soon as the
+// position is known; until then the pin names the initial map centre.
+let centred = false
+let userMoved = false
+const offUserMove = stage.onMoveStart((user) => {
+  if (user) userMoved = true
 })
 watch(
-  () => [location.current, stage.map.value] as const,
-  ([loc, map]) => {
-    if (!loc || !map || userMovedMap) return
-    stage.centerOn(loc, 15)
-    userMovedMap = true
+  () => [stage.map.value, location.current] as const,
+  ([map, loc]) => {
+    if (!map || centred || userMoved) return
+    const target = booking.stops[0]?.place ?? loc
+    if (target) {
+      centred = true
+      stage.centerOn(target, 16)
+    } else if (pending === null) {
+      const c = stage.center()
+      if (c) resolvePin(c)
+    }
   },
   { immediate: true },
 )
+
+// --- Actions -------------------------------------------------------------------
+
+function editPickup(): void {
+  void router.push({ name: ROUTE.bookSearch, params: { index: '0' } })
+}
 
 async function openBooking(): Promise<void> {
   await router.push({ name: ROUTE.book, query: { category: booking.category } })
   const last = booking.stops.length - 1
   if (!booking.stops[last]?.place) await router.push({ name: ROUTE.bookSearch, params: { index: String(last) } })
+}
+
+function openService(c: Category): void {
+  haptics.selection()
+  booking.setCategory(c)
+  void openBooking()
 }
 
 async function openRecent(place: PlaceValue): Promise<void> {
@@ -97,27 +194,23 @@ onMounted(() => {
   )
 })
 onBeforeUnmount(() => {
-  offMove()
+  clearTimeout(retryTimer)
+  runner.cancel()
+  offMoveStart()
+  offMoveEnd()
+  offUserMove()
   for (const off of offs.splice(0)) off()
 })
 </script>
 
 <template>
-  <JSheet
-    v-model:snap="snap"
-    :snap-points="['peek', 'half', 'full']"
-    :peek-height="196"
-    :aria-label="t('home.where_to')"
-    @height="(h) => (stage.sheetHeight.value = h)"
-  >
+  <JSheet snap="content" :snap-points="['content']" tab-bar :aria-label="t('home.where_to')" @height="(h) => (stage.sheetHeight.value = h)">
     <template #header>
       <div class="home-head">
-        <h1 class="home-head__greeting">{{ greeting }}</h1>
         <button type="button" class="home-where" @click="openBooking">
           <Search :size="22" :stroke-width="2.25" aria-hidden="true" />
           <span>{{ whereTo }}</span>
         </button>
-        <JSegmented v-model="category" :options="categoryOptions" :aria-label="t('home.category_label')" />
       </div>
     </template>
 
@@ -126,42 +219,31 @@ onBeforeUnmount(() => {
         <span class="home-active__icon"><CategoryIcon :category="o.category" /></span>
         <span class="home-active__text">
           <span class="home-active__status">{{ t(`order_status.${o.status}`) }}</span>
-          <span class="home-active__route">{{ o.pickup.address }} → {{ o.destination.address }}</span>
+          <span class="home-active__route">{{ addr(o.pickup.address) }} → {{ addr(o.destination.address) }}</span>
         </span>
         <span class="home-active__fare jt-tabular">{{ formatMoney(o.fare, session.language) }}</span>
         <ChevronRight :size="20" class="home-chevron" aria-hidden="true" />
       </button>
     </section>
 
-    <section v-if="(!orders.historyLoaded && orders.historyLoading) || orders.destinations.length > 0" class="home-section">
-      <h2 class="home-section__title">{{ t('home.recent') }}</h2>
-      <div v-if="!orders.historyLoaded && orders.historyLoading" class="home-list">
-        <div v-for="n in 2" :key="n" class="home-skeleton"><JSkeleton width="60%" /><JSkeleton width="35%" height="12px" /></div>
-      </div>
-      <div v-else-if="orders.destinations.length > 0" class="home-list">
-        <button v-for="p in orders.destinations" :key="`${p.lat},${p.lon}`" type="button" class="home-recent" @click="openRecent(p)">
-          <span class="home-recent__icon"><Clock :size="18" :stroke-width="2" aria-hidden="true" /></span>
-          <span class="home-recent__title">{{ p.address }}</span>
-        </button>
-      </div>
+    <section v-if="recent.length > 0" class="home-recent-list" :aria-label="t('home.recent')">
+      <button v-for="p in recent" :key="`${p.lat},${p.lon}`" type="button" class="home-recent" @click="openRecent(p)">
+        <MapPin :size="22" :stroke-width="1.9" class="home-recent__icon" aria-hidden="true" />
+        <span class="home-recent__title">{{ addr(p.address) }}</span>
+      </button>
     </section>
 
-    <nav class="home-links">
-      <button type="button" class="home-link" @click="router.push({ name: ROUTE.orders })">
-        <span class="home-link__icon"><ListOrdered :size="22" :stroke-width="1.75" aria-hidden="true" /></span>
-        <span>{{ t('menu.my_orders') }}</span>
-      </button>
-      <button type="button" class="home-link" @click="router.push({ name: ROUTE.support })">
-        <span class="home-link__icon"><Headset :size="22" :stroke-width="1.75" aria-hidden="true" /></span>
-        <span>{{ t('menu.support') }}</span>
-      </button>
-      <button type="button" class="home-link" @click="router.push({ name: ROUTE.becomeDriver })">
-        <span class="home-link__icon"><Car :size="22" :stroke-width="1.75" aria-hidden="true" /></span>
-        <span>{{ t('menu.become_driver') }}</span>
-      </button>
-      <button type="button" class="home-link" @click="router.push({ name: ROUTE.language })">
-        <span class="home-link__icon"><Languages :size="22" :stroke-width="1.75" aria-hidden="true" /></span>
-        <span>{{ t('menu.language') }}</span>
+    <nav class="home-services" :aria-label="t('home.services')">
+      <button
+        v-for="c in CATEGORIES"
+        :key="c"
+        type="button"
+        class="home-service"
+        :class="{ 'is-selected': booking.category === c }"
+        @click="openService(c)"
+      >
+        <span class="home-service__label">{{ t(`category.${c}`) }}</span>
+        <component :is="SERVICE_ICON[c]" :size="40" :stroke-width="1.4" class="home-service__icon" aria-hidden="true" />
       </button>
     </nav>
   </JSheet>
@@ -169,20 +251,14 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .home-head {
-  display: flex;
-  flex-direction: column;
-  gap: var(--jt-space-3);
-  padding-bottom: var(--jt-space-4);
-}
-
-.home-head__greeting {
-  font: var(--jt-font-title3);
+  padding-bottom: var(--jt-space-2);
 }
 
 .home-where {
   display: flex;
   align-items: center;
   gap: var(--jt-space-3);
+  width: 100%;
   height: 56px;
   padding: 0 var(--jt-space-5);
   border-radius: var(--jt-radius-capsule);
@@ -199,18 +275,14 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--jt-space-2);
-  margin-bottom: var(--jt-space-5);
-}
-
-.home-section__title {
-  font: var(--jt-font-headline);
+  margin: var(--jt-space-2) 0;
 }
 
 .home-active {
   display: flex;
   align-items: center;
   gap: var(--jt-space-3);
-  min-height: 64px;
+  min-height: 60px;
   padding: var(--jt-space-3) var(--jt-space-3) var(--jt-space-3) var(--jt-space-4);
   border-radius: var(--jt-radius-card);
   background: var(--jt-color-primary);
@@ -257,28 +329,18 @@ onBeforeUnmount(() => {
   opacity: 0.6;
 }
 
-.home-list {
+.home-recent-list {
   display: flex;
   flex-direction: column;
-}
-
-.home-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: var(--jt-space-3) 0;
 }
 
 .home-recent {
   display: flex;
   align-items: center;
-  gap: var(--jt-space-3);
-  min-height: 52px;
+  gap: var(--jt-space-4);
+  min-height: 50px;
+  padding: 0 var(--jt-space-1);
   text-align: left;
-}
-
-.home-recent + .home-recent {
-  box-shadow: inset 0 var(--jt-hairline) 0 var(--jt-color-separator);
 }
 
 .home-recent:active {
@@ -287,13 +349,7 @@ onBeforeUnmount(() => {
 
 .home-recent__icon {
   flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--jt-color-fill-secondary);
+  color: var(--jt-color-label-secondary);
 }
 
 .home-recent__title {
@@ -305,32 +361,42 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.home-links {
+.home-services {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--jt-space-2);
-  margin-bottom: var(--jt-space-2);
+  margin-top: var(--jt-space-3);
 }
 
-.home-link {
+.home-service {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: var(--jt-space-2);
-  min-height: 52px;
-  padding: var(--jt-space-2) var(--jt-space-3);
-  border-radius: 18px;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 92px;
+  padding: var(--jt-space-3) var(--jt-space-3) var(--jt-space-2);
+  border-radius: 20px;
   background: var(--jt-color-fill-secondary);
+  text-align: left;
+  overflow: hidden;
+  transition: transform var(--jt-duration-spring) var(--jt-ease-spring);
+}
+
+.home-service:active {
+  transform: scale(0.96);
+}
+
+.home-service.is-selected {
+  box-shadow: inset 0 0 0 1.5px var(--jt-color-label);
+}
+
+.home-service__label {
   font: var(--jt-font-subheadline);
   font-weight: 600;
-  text-align: left;
 }
 
-.home-link:active {
-  opacity: var(--jt-opacity-pressed);
-}
-
-.home-link__icon {
-  flex: none;
-  display: flex;
+.home-service__icon {
+  align-self: flex-end;
+  color: var(--jt-color-label);
 }
 </style>

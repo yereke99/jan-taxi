@@ -177,6 +177,50 @@ func DriverOnlineIdleTimeout(ctx context.Context, q db.Querier) time.Duration {
 	return time.Duration(effectiveInt(ctx, q, "driver.online_idle_hours")) * time.Hour
 }
 
+// DispatchSettings is the radius-based dispatch policy (ARCHITECTURE §7): a
+// searching order is offered to free drivers whose fresh location lies within
+// the order's effective radius of the pickup point. The radius starts at
+// RadiusBaseM and grows by RadiusStepM every RadiusStepS seconds of search, up
+// to RadiusMaxM. A location older than LocationMaxAgeS seconds does not count.
+type DispatchSettings struct {
+	RadiusBaseM     int `json:"radius_base_m"`
+	RadiusStepM     int `json:"radius_step_m"`
+	RadiusStepS     int `json:"radius_step_s"`
+	RadiusMaxM      int `json:"radius_max_m"`
+	LocationMaxAgeS int `json:"location_max_age_s"`
+}
+
+// Dispatch returns the effective dispatch settings. The maximum radius is
+// never below the base radius, whatever is stored.
+func Dispatch(ctx context.Context, q db.Querier) DispatchSettings {
+	d := DispatchSettings{
+		RadiusBaseM:     int(effectiveInt(ctx, q, "dispatch.radius_base_m")),
+		RadiusStepM:     int(effectiveInt(ctx, q, "dispatch.radius_step_m")),
+		RadiusStepS:     int(effectiveInt(ctx, q, "dispatch.radius_step_s")),
+		RadiusMaxM:      int(effectiveInt(ctx, q, "dispatch.radius_max_m")),
+		LocationMaxAgeS: int(effectiveInt(ctx, q, "dispatch.location_max_age_s")),
+	}
+	d.RadiusMaxM = max(d.RadiusMaxM, d.RadiusBaseM)
+	d.RadiusStepS = max(d.RadiusStepS, 1)
+	return d
+}
+
+// RadiusAt returns the effective dispatch radius in metres for an order that
+// has been searching for age: min(max, base + step * floor(age / step_s)).
+func (d DispatchSettings) RadiusAt(age time.Duration) int {
+	if age < 0 {
+		age = 0
+	}
+	steps := int64(age / (time.Duration(max(d.RadiusStepS, 1)) * time.Second))
+	r := int64(d.RadiusBaseM) + int64(d.RadiusStepM)*steps
+	return int(min(r, int64(max(d.RadiusMaxM, d.RadiusBaseM))))
+}
+
+// LocationMaxAge is how long a driver's location fix stays fresh.
+func (d DispatchSettings) LocationMaxAge() time.Duration {
+	return time.Duration(d.LocationMaxAgeS) * time.Second
+}
+
 // ProhibitedItems returns the delivery prohibited-item codes.
 func ProhibitedItems(ctx context.Context, q db.Querier) []string {
 	var v []string
@@ -196,4 +240,48 @@ func TwoGISBaseURL(ctx context.Context, q db.Querier) string {
 	var s string
 	_ = Effective(ctx, q, "navigation.twogis_base_url", &s)
 	return strings.TrimRight(s, "/")
+}
+
+// AutoConfirm is the policy for crediting top-ups automatically from Kaspi
+// PDF receipts (ARCHITECTURE §6.1). Limits count per driver and business day.
+type AutoConfirm struct {
+	Enabled         bool          `json:"enabled"`
+	MaxPerDay       int64         `json:"max_per_day"`
+	MaxAmountPerDay int64         `json:"max_amount_per_day"`
+	ReceiptMaxAge   time.Duration `json:"-"`
+}
+
+// ReceiptAutoConfirm returns the effective automatic crediting policy.
+func ReceiptAutoConfirm(ctx context.Context, q db.Querier) AutoConfirm {
+	var a AutoConfirm
+	_ = Effective(ctx, q, "topup.auto_confirm_enabled", &a.Enabled)
+	a.MaxPerDay = effectiveInt(ctx, q, "topup.auto_max_per_day")
+	a.MaxAmountPerDay = effectiveInt(ctx, q, "topup.auto_max_amount_per_day")
+	a.ReceiptMaxAge = time.Duration(effectiveInt(ctx, q, "topup.receipt_max_age_hours")) * time.Hour
+	return a
+}
+
+// Company is the payee whose Kaspi receipts are accepted: the Kaspi
+// recipient name and the company requisites.
+type Company struct {
+	Name    string `json:"name"`
+	BIN     string `json:"bin"`
+	IBAN    string `json:"iban"`
+	Bank    string `json:"bank"`
+	BIC     string `json:"bic"`
+	KBe     string `json:"kbe"`
+	Address string `json:"address"`
+}
+
+// CompanyDetails returns the effective payee details.
+func CompanyDetails(ctx context.Context, q db.Querier) Company {
+	var c Company
+	_ = Effective(ctx, q, "kaspi.recipient_name", &c.Name)
+	_ = Effective(ctx, q, "company.bin", &c.BIN)
+	_ = Effective(ctx, q, "company.iban", &c.IBAN)
+	_ = Effective(ctx, q, "company.bank", &c.Bank)
+	_ = Effective(ctx, q, "company.bic", &c.BIC)
+	_ = Effective(ctx, q, "company.kbe", &c.KBe)
+	_ = Effective(ctx, q, "company.address", &c.Address)
+	return c
 }

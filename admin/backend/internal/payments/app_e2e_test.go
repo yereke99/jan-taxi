@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/app"
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/payments/receipt/receipttest"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
@@ -73,7 +75,9 @@ func TestFinanceThroughApp(t *testing.T) {
 		t.Fatalf("wallet: %d %v", code, w)
 	}
 	code, top := call(http.MethodPost, "/api/v1/driver/wallet/topups", map[string]any{"amount": 2000, "idempotency_key": uuid.NewString()}, bearer)
-	if code != http.StatusCreated || top["payment"].(map[string]any)["url"] != cfg.KaspiPayPaymentURL {
+	// The payee seeded by the migrations wins over KASPI_PAY_PAYMENT_URL.
+	if pay := top["payment"].(map[string]any); code != http.StatusCreated || pay["url"] != "https://pay.kaspi.kz/pay/xbp1imhd" ||
+		pay["recipient_name"] != `ИП "JAN-TAXI"` {
 		t.Fatalf("create top-up: %d %v", code, top)
 	}
 	id := top["id"].(string)
@@ -122,5 +126,35 @@ func TestFinanceThroughApp(t *testing.T) {
 	}
 	if code, w := call(http.MethodGet, "/api/v1/driver/wallet", nil, bearer); code != http.StatusOK || w["balance"].(float64) != 2000 {
 		t.Fatalf("wallet after confirm: %d %v", code, w)
+	}
+
+	// A Kaspi PDF receipt that passes every check credits a new top-up at once.
+	code, top = call(http.MethodPost, "/api/v1/driver/wallet/topups", map[string]any{"amount": 2000, "idempotency_key": uuid.NewString()}, bearer)
+	if code != http.StatusCreated {
+		t.Fatalf("second top-up: %d %v", code, top)
+	}
+	spec := receipttest.Default()
+	spec.Amount = "2 000"
+	var mp bytes.Buffer
+	mw := multipart.NewWriter(&mp)
+	fw, _ := mw.CreateFormFile("file", "receipt_QR18149336524.pdf")
+	_, _ = fw.Write(receipttest.Build(spec))
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/driver/wallet/topups/"+top["id"].(string)+"/receipt", &mp)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", bearer["Authorization"])
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var up map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &up)
+	if rec.Code != http.StatusOK || up["status"] != "confirmed" || up["receipt"].(map[string]any)["decision"] != "auto_confirmed" {
+		t.Fatalf("receipt upload: %d %s", rec.Code, rec.Body)
+	}
+	if code, w := call(http.MethodGet, "/api/v1/driver/wallet", nil, bearer); code != http.StatusOK || w["balance"].(float64) != 4000 {
+		t.Fatalf("wallet after receipt: %d %v", code, w)
+	}
+	if code, d := call(http.MethodGet, "/api/v1/admin/topups/"+top["id"].(string), nil, session); code != http.StatusOK ||
+		d["confirmed_automatically"] != true || d["receipt"].(map[string]any)["receipt_serial"] != "QR18149336524" {
+		t.Fatalf("admin detail: %d %v", code, d)
 	}
 }

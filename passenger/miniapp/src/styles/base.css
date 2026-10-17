@@ -151,6 +151,73 @@ a {
 }
 
 /*
+ * Liquid Glass controls (iOS 26) for floating chrome at the bottom of the
+ * screen: tab bar, map buttons, floating action bars. Translucent material
+ * with a bright specular rim (top/left), a softer bottom edge, a diagonal
+ * sheen, a 1px lensing hairline and a soft drop shadow. Labels stay black:
+ * the material is light enough over the light map. Falls back to solid white
+ * like .jt-glass. Primary actions inside stay solid black capsules.
+ */
+.jt-liquid {
+  position: relative;
+  isolation: isolate;
+  background: var(--jt-liquid-bg);
+  -webkit-backdrop-filter: var(--jt-liquid-blur);
+  backdrop-filter: var(--jt-liquid-blur);
+  box-shadow: var(--jt-liquid-shadow);
+}
+
+.jt-liquid::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--jt-liquid-sheen);
+  pointer-events: none;
+}
+
+.jt-liquid-press {
+  transition:
+    transform var(--jt-duration-spring) var(--jt-ease-spring),
+    filter var(--jt-duration-spring) var(--jt-ease-spring);
+}
+
+.jt-liquid-press:active:not(:disabled) {
+  transform: scale(0.96);
+  filter: brightness(1.06);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .jt-liquid {
+    background: var(--jt-glass-fallback-bg);
+    box-shadow: var(--jt-glass-fallback-shadow);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .jt-liquid {
+    background: var(--jt-glass-fallback-bg);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: var(--jt-glass-fallback-shadow);
+  }
+}
+
+:root[data-jt-low-end] .jt-liquid {
+  background: var(--jt-glass-fallback-bg);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: var(--jt-glass-fallback-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jt-liquid-press {
+    transition: none;
+  }
+}
+
+/*
  * Non-map screens on the iOS grouped background. A secondary button with the
  * default #F2F2F7 fill would disappear on it, so it uses the tertiary fill,
  * which also stays visible inside white inset-grouped cells.

@@ -137,3 +137,35 @@ func TestClientNetworkErrorIsTransientAndSecretFree(t *testing.T) {
 		t.Fatalf("cancellation must not be transient: %v", err)
 	}
 }
+
+func TestUploadTopUpReceipt(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/internal/v1/driver/77/topup-receipt" || r.Method != http.MethodPost {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		f, h, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("multipart: %v", err)
+		}
+		data, _ := io.ReadAll(f)
+		if h.Filename != "receipt_QR1.pdf" || string(data) != "%PDF-1.7 x" {
+			t.Errorf("file %q %q", h.Filename, data)
+		}
+		if calls.Load() == 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, `{"outcome":"credited","reasons":[],"topup":{"id":"t1","reference":"EMB001-TOPUP-000001","amount":500,"verified_amount":500,"status":"confirmed"},"balance":1500}`)
+	})
+	ctx := context.Background()
+	res, err := c.UploadTopUpReceipt(ctx, 77, "receipt_QR1.pdf", []byte("%PDF-1.7 x"))
+	if err != nil || res.Outcome != ReceiptCredited || res.TopUp.Status != "confirmed" || *res.Balance != 1500 {
+		t.Fatalf("upload: %+v %v", res, err)
+	}
+	// Never retried, even on a transient failure.
+	if _, err := c.UploadTopUpReceipt(ctx, 77, "receipt_QR1.pdf", []byte("%PDF-1.7 x")); !IsTransient(err) || calls.Load() != 2 {
+		t.Fatalf("retry: %v after %d calls", err, calls.Load())
+	}
+}

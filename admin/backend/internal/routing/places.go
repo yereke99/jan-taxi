@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +22,7 @@ import (
 type PlacesConfig struct {
 	Provider     Geocoder // None{} when nil
 	ProviderName string
-	Timeout      time.Duration // per provider call; 1.2 s when zero
+	Timeout      time.Duration // per provider call; 2.5 s when zero
 	CacheTTL     time.Duration // 15 minutes when zero; negative disables
 	CacheSize    int           // 2000 when zero
 	// The breaker opens after BreakerThreshold consecutive provider failures
@@ -112,11 +113,59 @@ func (s *Places) Search(ctx context.Context, query string, near *geo.Point, lang
 			kept = append(kept, p)
 		}
 	}
-	out := dedupe(kept)
+	out := localFirst(dedupe(kept), near)
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// Local search (passenger near a position).
+const (
+	// nearRadiusM keeps results within this distance of the position.
+	nearRadiusM = 60_000.0
+	// nearFallback is how many of the nearest results are kept when none is
+	// within nearRadiusM (e.g. the passenger searches another city).
+	nearFallback = 5
+	// rankStepM: this much extra distance costs one place in the ranking, so
+	// a nearby match beats a slightly better-ranked one across town.
+	rankStepM = 5_000.0
+)
+
+// localFirst orders results by provider rank combined with the distance to
+// near and drops results farther than nearRadiusM; if that leaves nothing,
+// the nearestFallback closest results are kept. Without a position the
+// provider order is kept.
+func localFirst(in []Place, near *geo.Point) []Place {
+	if near == nil || len(in) == 0 {
+		return in
+	}
+	type scored struct {
+		p     Place
+		dist  float64
+		score float64
+	}
+	all := make([]scored, len(in))
+	for i, p := range in {
+		d := geo.DistanceMeters(*near, p.Point)
+		all[i] = scored{p: p, dist: d, score: float64(i) + d/rankStepM}
+	}
+	var kept []scored
+	for _, s := range all {
+		if s.dist <= nearRadiusM {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) == 0 {
+		sort.SliceStable(all, func(a, b int) bool { return all[a].dist < all[b].dist })
+		kept = all[:min(nearFallback, len(all))]
+	}
+	sort.SliceStable(kept, func(a, b int) bool { return kept[a].score < kept[b].score })
+	out := make([]Place, len(kept))
+	for i, s := range kept {
+		out[i] = s.p
+	}
+	return out
 }
 
 // ReverseResult is the answer of Reverse.
@@ -126,7 +175,9 @@ type ReverseResult struct {
 }
 
 // Reverse names the point p. It never fails because the provider has
-// nothing: the fallback title is the formatted coordinates.
+// nothing: the last resort is Source "coordinates" with an empty title (the
+// apps show their own "point on the map" label; coordinates stay in the
+// lat/lon fields and are never presented as an address).
 func (s *Places) Reverse(ctx context.Context, p geo.Point, lang string) (ReverseResult, error) {
 	p = p.Rounded()
 	inArea, err := geo.InServiceArea(ctx, s.q, p)
@@ -154,11 +205,9 @@ func (s *Places) Reverse(ctx context.Context, p geo.Point, lang string) (Reverse
 	return res, nil
 }
 
+// coordinatesPlace is the unnamed point: no title, a localized subtitle.
 func coordinatesPlace(p geo.Point, subtitle string) Place {
-	return Place{
-		Title:    strconv.FormatFloat(p.Lat, 'f', 6, 64) + ", " + strconv.FormatFloat(p.Lon, 'f', 6, 64),
-		Subtitle: subtitle, Point: p, Source: SourceCoordinates,
-	}
+	return Place{Subtitle: subtitle, Point: p, Source: SourceCoordinates}
 }
 
 // fromGazetteer converts curated places; the subtitle is the city name.

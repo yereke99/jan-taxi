@@ -140,6 +140,13 @@ describe('route editor rules', () => {
     expect(toStopInputs(s)![0]).toEqual({ lat: 48.826412, lon: 58.144212, address: 'A' })
   })
 
+  it('sends an unnamed point with the given label, never as coordinates', () => {
+    let s = createStops(keys())
+    s = setPlace(s, 0, place('', 48.8264, 58.1442))
+    s = setPlace(s, 1, place('43.233617, 76.955665', 43.233617, 76.955665))
+    expect(toStopInputs(s, 'Картадағы нүкте')!.map((x) => x.address)).toEqual(['Картадағы нүкте', 'Картадағы нүкте'])
+  })
+
   it('fingerprints the routable part so any edit re-quotes', () => {
     const s = fullRoute()
     const f = routeFingerprint(s)

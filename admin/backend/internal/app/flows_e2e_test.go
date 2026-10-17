@@ -81,10 +81,13 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	e.admin(http.MethodPost, "/api/v1/admin/topups/"+t2+"/reject", map[string]any{"reason": "Төлем табылмады"}, http.StatusOK)
 	e.wallet(a, 120, 0)
 
-	// A goes online and reports a location; B is an approved online driver
-	// with money; both are offered the next order.
-	e.must(http.StatusOK, e.call(e.h, http.MethodPatch, "/api/v1/driver/availability", map[string]any{"online": true}, a.auth), "A online")
+	// A reports a location and goes online (dispatch is by distance to the
+	// pickup, so going online without a fresh fix is refused); B is an
+	// approved online driver with money; both are offered the next order.
+	e.must(http.StatusUnprocessableEntity, e.call(e.h, http.MethodPatch, "/api/v1/driver/availability", map[string]any{"online": true}, a.auth), "A online without location")
 	e.must(http.StatusNoContent, e.call(e.h, http.MethodPost, "/api/v1/driver/location", map[string]any{"lat": 48.8270, "lon": 58.1450}, a.auth), "A location")
+	e.must(http.StatusOK, e.call(e.h, http.MethodPatch, "/api/v1/driver/availability", map[string]any{"online": true}, a.auth), "A online")
+	e.must(http.StatusNoContent, e.call(e.h, http.MethodPost, "/api/v1/driver/location", map[string]any{"lat": 48.8268, "lon": 58.1448}, a.auth), "A location online")
 	bFix := testutil.CreateDriver(t, e.pool, testutil.DriverOptions{Online: true, Balance: 1000})
 	b := flowDriver{userID: bFix.UserID, tgID: bFix.TelegramID, driverID: bFix.DriverID.String(),
 		auth: e.signIn("driver", config.TestDriverBotToken, bFix.TelegramID)}

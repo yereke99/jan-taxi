@@ -1,6 +1,7 @@
 // Online / offline (PATCH /driver/availability). Going online first sends a
-// fresh real location when one can be read, so dispatch sees the driver at
-// once; the API decides whether a location is mandatory in this city.
+// fresh real location: dispatch offers orders by distance, and the API
+// rejects going online without a recent fix (422 location_required). While
+// online the location store keeps reporting every few seconds.
 
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
@@ -73,7 +74,18 @@ export const useDutyStore = defineStore('duty', () => {
       apply(await setAvailability(true))
       return { ok: true, online: true, withoutLocation }
     } catch (err) {
-      return classifyAvailabilityError(err)
+      const outcome = classifyAvailabilityError(err)
+      if (outcome.ok || outcome.reason !== 'location_required') return outcome
+      // The API needs a fresh fix (dispatch is radius-based): read and send
+      // one now, then retry once. A denied or failing GPS keeps the reason,
+      // so the screen explains how to enable location.
+      try {
+        await location.sendNow(await location.locateOnce())
+        apply(await setAvailability(true))
+        return { ok: true, online: true, withoutLocation: false }
+      } catch (retryErr) {
+        return isApiError(retryErr) ? classifyAvailabilityError(retryErr) : outcome
+      }
     }
   }
 

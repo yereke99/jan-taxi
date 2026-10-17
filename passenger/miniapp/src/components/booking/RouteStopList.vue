@@ -6,7 +6,8 @@
   reordered automatically.
 -->
 <script setup lang="ts">
-import { ChevronDown, ChevronUp, GripVertical, Plus, X } from '@lucide/vue'
+import { useAddressText } from '../../i18n/core'
+import { ChevronDown, ChevronUp, Menu, Plus, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { isIntermediate, type RouteStop } from '../../domain/route'
@@ -30,6 +31,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const addr = useAddressText()
 
 const intermediateCount = computed(() => Math.max(0, props.stops.length - 2))
 const reorderable = computed(() => intermediateCount.value >= 2)
@@ -40,8 +42,16 @@ function placeholder(index: number): string {
   return t('booking.stop_placeholder')
 }
 
+/** "From" under the pickup and "To" under the destination (§ route editor design). */
+function roleLabel(index: number): string {
+  if (index === 0) return t('booking.from_label')
+  if (index === props.stops.length - 1) return t('booking.to_label')
+  return ''
+}
+
 function stopName(index: number): string {
-  return props.stops[index]?.place?.address || placeholder(index)
+  const place = props.stops[index]?.place
+  return place ? addr(place.address) : placeholder(index)
 }
 
 // --- Drag to reorder ---------------------------------------------------------
@@ -140,7 +150,7 @@ function moveBy(index: number, delta: -1 | 1): void {
           <span class="stops__text">
             <span class="stops__title" :class="{ 'is-placeholder': !stop.place }">{{ stopName(i) }}</span>
             <span v-if="errors[i]" class="stops__error" role="alert">{{ errors[i] }}</span>
-            <span v-else-if="stop.place?.subtitle" class="stops__subtitle">{{ stop.place.subtitle }}</span>
+            <span v-else-if="stop.place && roleLabel(i)" class="stops__subtitle">{{ roleLabel(i) }}</span>
           </span>
         </button>
 
@@ -170,7 +180,7 @@ function moveBy(index: number, delta: -1 | 1): void {
             @pointerup="endDrag"
             @pointercancel="endDrag"
           >
-            <GripVertical :size="20" />
+            <Menu :size="20" />
           </span>
           <button type="button" class="stops__remove" :aria-label="t('booking.remove_stop', { name: stopName(i) })" @click="emit('remove', i)">
             <X :size="16" :stroke-width="2.5" aria-hidden="true" />

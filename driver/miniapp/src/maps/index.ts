@@ -2,6 +2,7 @@
 
 export { default as MapView } from './MapView.vue'
 export { default as CenterPin } from './CenterPin.vue'
+export type { PinCallout } from './CenterPin.vue'
 export { setupMapLibre } from './setup'
 export { MAP_KEY, useMap, type MapRef, type MapPadding } from './context'
 export { useRouteLayer, type RouteLayer } from './useRouteLayer'

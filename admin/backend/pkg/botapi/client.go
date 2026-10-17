@@ -174,14 +174,25 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	return err
 }
 
+// multipartBody is a request body sent as multipart/form-data.
+type multipartBody struct {
+	data        []byte
+	contentType string
+}
+
 func (c *Client) once(ctx context.Context, method, path string, query url.Values, in, out any) error {
 	var body io.Reader
-	if in != nil {
+	contentType := ""
+	switch v := in.(type) {
+	case nil:
+	case multipartBody:
+		body, contentType = bytes.NewReader(v.data), v.contentType
+	default:
 		b, err := json.Marshal(in)
 		if err != nil {
 			return fmt.Errorf("bot api %s %s: encode: %w", method, path, err)
 		}
-		body = bytes.NewReader(b)
+		body, contentType = bytes.NewReader(b), "application/json"
 	}
 	u := strings.TrimRight(c.BaseURL, "/") + "/internal/v1" + path
 	if len(query) > 0 {
@@ -194,8 +205,8 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	req.Header.Set("Authorization", "Bearer "+c.Secret)
 	req.Header.Set("X-Jantaxi-Bot", c.Bot)
 	req.Header.Set("Accept", "application/json")
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	hc := c.HTTP
 	if hc == nil {

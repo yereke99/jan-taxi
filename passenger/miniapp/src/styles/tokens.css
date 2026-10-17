@@ -48,6 +48,16 @@
   --jt-glass-border: 0.5px solid rgba(255, 255, 255, 0.65);
   --jt-glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 8px 24px rgba(0, 0, 0, 0.1);
   --jt-glass-fallback-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  /* Liquid Glass (floating bottom controls): material, rim, sheen. */
+  --jt-liquid-bg: rgba(255, 255, 255, 0.6);
+  --jt-liquid-blur: blur(20px) saturate(190%) brightness(1.05);
+  --jt-liquid-shadow: inset 0 1px 0.5px rgba(255, 255, 255, 0.95), inset 1px 0 0.5px rgba(255, 255, 255, 0.55),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.3), inset 0 0 8px rgba(255, 255, 255, 0.28), 0 0 0 0.5px rgba(0, 0, 0, 0.07),
+    0 10px 28px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+  --jt-liquid-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 36%, rgba(255, 255, 255, 0) 64%, rgba(255, 255, 255, 0.16) 100%);
+  /* The droplet that marks the selected tab. */
+  --jt-liquid-drop-bg: rgba(0, 0, 0, 0.07);
+  --jt-liquid-drop-shadow: inset 0 1px 0.5px rgba(255, 255, 255, 0.7), inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.05);
   /* Selected item inside a glass control (tab bar pill). */
   --jt-glass-selected: rgba(0, 0, 0, 0.08);
 

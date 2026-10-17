@@ -13,6 +13,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
+	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
 
@@ -21,6 +22,14 @@ type AssignResult struct {
 	Before, After lifecycle.Core
 	// DriverOffline warns that the driver was offline when assigned.
 	DriverOffline bool
+	// LocationWarning warns that the driver could not have taken the order
+	// themselves: location_required (no location fix), location_stale (fix
+	// older than dispatch.location_max_age_s) or out_of_radius (farther from
+	// the pickup than the order's effective radius). Empty otherwise.
+	LocationWarning string
+	// DistanceToPickupM is the driver's distance from the pickup when a
+	// location fix exists.
+	DistanceToPickupM *int
 	// PreviousDriverID is set when the order was taken from another driver.
 	PreviousDriverID *uuid.UUID
 	// Released is the commission returned to the previous driver.
@@ -33,10 +42,12 @@ func invalidDriver(reason string) *httpx.Error {
 }
 
 // Assign gives an order to a driver on an operator's behalf. A searching order
-// goes through the same checks as Accept except that the driver need not be
-// online (DriverOffline reports it). An accepted or driver_arriving order is
-// re-assigned: the previous driver's reservation is released, the new driver's
-// reserved, and the order restarts at accepted. Locks are taken in the same
+// goes through the same checks as Accept (approval, active order, balance)
+// except that the driver need not be online, nor have a fresh location within
+// the order's radius: DriverOffline and LocationWarning report those, so the
+// operator sees that the driver may be far away. An accepted or
+// driver_arriving order is re-assigned: the previous driver's reservation is
+// released, the new driver's reserved, and the order restarts at accepted. Locks are taken in the same
 // order as Accept (wallet, then order) so the two never deadlock.
 func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID) (AssignResult, error) {
 	drv, err := lockDriver(ctx, tx, driverID)
@@ -54,8 +65,6 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 		return AssignResult{}, err
 	}
 	switch {
-	case peek.CityID != drv.CityID:
-		return AssignResult{}, invalidDriver("different_city")
 	case peek.PassengerID == drv.UserID:
 		return AssignResult{}, invalidDriver("own_order")
 	case peek.HasDriver(driverID) && lifecycle.OccupiesDriver(peek.Status):
@@ -80,7 +89,12 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 	if peek.Status == lifecycle.StatusSearching && before.DriverID != nil {
 		return AssignResult{}, lifecycle.ErrOrderTaken()
 	}
-	res := AssignResult{Before: before, DriverOffline: !drv.IsOnline}
+	rc, err := loadReach(ctx, tx, orderID, driverID, settings.Dispatch(ctx, tx))
+	if err != nil {
+		return AssignResult{}, lifecycle.DBError(err)
+	}
+	res := AssignResult{Before: before, DriverOffline: !drv.IsOnline, LocationWarning: rc.problem(),
+		DistanceToPickupM: rc.DistanceM}
 	switch before.Status {
 	case lifecycle.StatusSearching:
 	case lifecycle.StatusAccepted, lifecycle.StatusDriverArriving:

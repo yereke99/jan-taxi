@@ -10,8 +10,13 @@ import (
 )
 
 // ServeImage writes a stored image with headers that keep it out of shared
-// caches and stop browsers from sniffing or executing it. It closes rc.
+// caches and stop browsers from sniffing or executing it. It closes rc. A PDF
+// (top-up receipt) is served by ServePDF instead.
 func ServeImage(w http.ResponseWriter, r *http.Request, f File, rc io.ReadCloser) {
+	if f.Mime == MimePDF {
+		ServePDF(w, r, f, rc)
+		return
+	}
 	defer rc.Close()
 	size := f.SizeBytes
 	if st, ok := rc.(interface{ Stat() (fs.FileInfo, error) }); ok {

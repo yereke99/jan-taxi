@@ -37,6 +37,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	pool := testutil.NewDB(t)
+	useEnvKaspi(t, pool)
 	store, err := storage.New(t.TempDir(), storage.DefaultMaxBytes)
 	if err != nil {
 		t.Fatalf("storage: %v", err)
@@ -262,4 +263,14 @@ func newJSONRequest(method, path, body string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	return r
+}
+
+// useEnvKaspi removes the payee seeded by the migrations so the KASPI_PAY_*
+// fallbacks given to NewService apply (as on an installation configured
+// through the environment).
+func useEnvKaspi(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `DELETE FROM app_settings WHERE key IN ('kaspi.payment_url', 'kaspi.recipient_name')`); err != nil {
+		t.Fatal(err)
+	}
 }

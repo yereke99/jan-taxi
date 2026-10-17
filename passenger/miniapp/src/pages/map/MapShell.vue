@@ -3,10 +3,13 @@
   editor, the place picker, the confirmation and the live order (§14). Child
   routes render only their bottom sheet; they drive the map through the stage
   (stage/mapStage.ts). Floating Liquid Glass controls (§15.1) sit above the
-  map: the profile button at the top, locate / recenter above the sheet.
+  map: the menu (home) or back button at the top, locate / recenter above
+  the sheet. The passenger's position is watched after the first fix: the
+  blue dot follows the device, the camera follows it only after the locate
+  button until the map is panned, and the first fix fills pickup A.
 -->
 <script setup lang="ts">
-import { CircleUserRound, Crosshair, LocateFixed, TriangleAlert } from '@lucide/vue'
+import { ChevronLeft, Crosshair, Menu, Navigation, TriangleAlert } from '@lucide/vue'
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import { computed, provide, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -19,7 +22,8 @@ import { createMapStage, STAGE_KEY } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
-import { canOpenLocationSettings, LocationError, openLocationSettings } from '../../telegram'
+import { canOpenLocationSettings, isTelegram, LocationError, navigateBack, openLocationSettings } from '../../telegram'
+import { motionMs } from '../../utils/motion'
 
 /** Gap between the sheet top and the floating buttons; clears the attribution row. */
 const CONTROLS_GAP_PX = 40
@@ -32,11 +36,18 @@ const session = useSessionStore()
 const location = useLocationStore()
 const booking = useBookingStore()
 
-const { stage, attach } = createMapStage({
-  stop: (_index, letter) => t('booking.marker', { letter }),
-  car: t('map.driver_car'),
-  user: t('map.user_location'),
-})
+const { stage, attach } = createMapStage(
+  {
+    stop: (_index, letter) => t('booking.marker', { letter }),
+    car: t('map.driver_car'),
+    user: t('map.user_location'),
+  },
+  // A screen framing its content (route, trip) ends "follow my location".
+  () => (location.following = false),
+)
+// Inside Telegram the client's own back control is shown (BackButton);
+// the round in-map back button is for a plain browser only.
+const inTelegram = isTelegram()
 provide(STAGE_KEY, stage)
 
 const pageStyle = computed(() => ({ '--jt-map-attribution-offset': `${stage.sheetHeight.value}px` }))
@@ -56,15 +67,35 @@ const showAccuracyChip = computed(() => stage.controls.accuracyChip && location.
 
 watch(
   () => location.current,
-  (loc) => stage.user.set(loc),
+  (loc) => {
+    stage.user.set(loc)
+    // Follow mode: keep the camera on the dot, at the passenger's zoom.
+    if (loc && location.following) stage.map.value?.easeTo({ center: [loc.lon, loc.lat], duration: motionMs(800), easing: (t) => t })
+  },
 )
+
+// Any pan or zoom by the passenger ends follow mode.
+stage.onMoveStart((user) => {
+  if (user) location.following = false
+})
+
+/** Fills pickup A from the device position unless the passenger already chose it. */
+async function fillPickup(): Promise<void> {
+  const loc = await location.locate()
+  if (!loc || booking.stops[0]?.place) return
+  try {
+    await booking.setPickupFromLocation(loc)
+  } catch {
+    // The passenger chooses the pickup manually.
+  }
+}
 
 function onReady(m: MapLibreMap): void {
   stage.map.value = m
   attach(m)
   if (location.current) stage.user.set(location.current)
   // First, silent attempt; problems surface only when the user taps locate.
-  void location.locate()
+  void fillPickup()
 }
 
 function locationFailureToast(err: unknown): void {
@@ -90,6 +121,7 @@ async function locate(): Promise<void> {
     locationFailureToast(location.error)
     return
   }
+  location.following = true
   stage.centerOn(loc, 16)
 }
 
@@ -113,7 +145,13 @@ async function adjustPickup(): Promise<void> {
       :padding="stage.padding.value"
       @ready="onReady"
     >
-      <CenterPin v-if="stage.pin.visible" :padding="stage.padding.value" :label="stage.pin.label" />
+      <CenterPin
+        v-if="stage.pin.visible"
+        :padding="stage.padding.value"
+        :label="stage.pin.label"
+        :callout="stage.pin.callout"
+        @callout="stage.pin.onCallout?.()"
+      />
       <template #fallback>
         <JEmptyState :title="t('map.unavailable_title')" :description="t('map.unavailable_text')" />
       </template>
@@ -122,7 +160,12 @@ async function adjustPickup(): Promise<void> {
     <Transition name="jt-glass-pop">
       <div v-if="stage.controls.menu" class="shell__top" :style="topStyle">
         <JMapButton :label="t('home.menu')" @click="openProfile">
-          <CircleUserRound :size="24" :stroke-width="1.75" aria-hidden="true" />
+          <Menu :size="24" :stroke-width="2" aria-hidden="true" />
+        </JMapButton>
+      </div>
+      <div v-else-if="stage.controls.back && !inTelegram" class="shell__top" :style="topStyle">
+        <JMapButton :label="t('common.back')" @click="navigateBack(router)">
+          <ChevronLeft :size="26" :stroke-width="2" aria-hidden="true" />
         </JMapButton>
       </div>
     </Transition>
@@ -142,8 +185,8 @@ async function adjustPickup(): Promise<void> {
         </JMapButton>
       </Transition>
       <Transition name="jt-glass-pop">
-        <JMapButton v-if="stage.controls.locate" :label="t('map.locate_me')" :loading="location.locating" @click="locate">
-          <LocateFixed :size="22" :stroke-width="2" aria-hidden="true" />
+        <JMapButton v-if="stage.controls.locate" :label="t('map.locate_me')" :loading="location.locating" :active="location.following" @click="locate">
+          <Navigation :size="22" :stroke-width="2" :fill="location.following ? 'currentColor' : 'none'" aria-hidden="true" />
         </JMapButton>
       </Transition>
     </div>

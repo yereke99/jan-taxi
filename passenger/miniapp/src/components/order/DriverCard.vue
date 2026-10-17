@@ -1,21 +1,20 @@
 <!--
   Assigned driver (Uber-like): photo, name with the last-name initial, rating,
-  the car and a large plate number. Call / message actions only while the
-  API exposes them (the phone is shared only while the order is active).
+  the car and a large plate number. The call action appears only while the
+  API shares the phone (active orders).
 -->
 <script setup lang="ts">
-import { MessageCircle, Phone, Star } from '@lucide/vue'
+import { Phone, Star } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { OrderDriver, Vehicle } from '../../api/types'
-import { openTelegram } from '../../telegram'
 import { telHref } from '../../utils/phone'
 
 const props = defineProps<{
   driver: OrderDriver
   vehicle: Vehicle | null
   photoUrl: string | null
-  /** Show call/message actions (active order). */
+  /** Show the call action (active order). */
   contact?: boolean
 }>()
 
@@ -30,11 +29,6 @@ const car = computed(() => {
   return v.color ? `${model}, ${v.color}` : model
 })
 const ratingText = computed(() => (props.driver.rating !== null ? props.driver.rating.toFixed(1) : null))
-
-function message(): void {
-  const u = props.driver.telegram_username
-  if (u) openTelegram(`https://t.me/${encodeURIComponent(u.replace(/^@/, ''))}`)
-}
 </script>
 
 <template>
@@ -63,15 +57,11 @@ function message(): void {
     </div>
     <p v-if="car" class="driver__car">{{ car }}</p>
 
-    <div v-if="contact && (driver.phone || driver.telegram_username)" class="driver__actions">
-      <a v-if="driver.phone" class="driver__action" :href="telHref(driver.phone)">
+    <div v-if="contact && driver.phone" class="driver__actions">
+      <a class="driver__action" :href="telHref(driver.phone)">
         <Phone :size="18" :stroke-width="2" aria-hidden="true" />
         <span>{{ t('order.call_driver') }}</span>
       </a>
-      <button v-if="driver.telegram_username" type="button" class="driver__action" @click="message">
-        <MessageCircle :size="18" :stroke-width="2" aria-hidden="true" />
-        <span>{{ t('order.message_driver') }}</span>
-      </button>
     </div>
   </section>
 </template>

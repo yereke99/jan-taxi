@@ -1,26 +1,34 @@
 <!--
   "Choose on map": the map moves under a fixed centre pin. When the camera
-  settles the point is reverse geocoded (a newer movement aborts the older
-  request); a point outside Kazakhstan is reported at once and cannot be
-  chosen. The pin's exact position becomes the stop; the address names it.
+  settles the pin position is reverse geocoded (debounced; a newer movement
+  supersedes the older request) and the address appears in the callout above
+  the pin and in the sheet. Camera changes that do not move the centre (sheet
+  padding) never re-query. If geocoding fails the point can still be chosen
+  and is named by its coordinates; a point outside Kazakhstan cannot.
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { reverseGeocode } from '../../api/geo'
 import type { GeoReverse } from '../../api/types'
 import { JButton, JSheet, JSkeleton } from '../../components/ui'
 import { createLatest } from '../../domain/latest'
+import { useAddressText } from '../../i18n/core'
 import { ROUTE } from '../../router/names'
 import { useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
 import { haptics, navigateBack } from '../../telegram'
-import { isInKazakhstanBBox, roundCoord, type LatLon } from '../../utils/geo'
+import { haversineMeters, isInKazakhstanBBox, roundCoord, type LatLon } from '../../utils/geo'
+
+/** Centre shifts below this (padding changes, rounding) keep the current address. */
+const SAME_POINT_M = 2
+const RESOLVE_DELAY_MS = 250
 
 const { t } = useI18n()
+const addr = useAddressText()
 const route = useRoute()
 const router = useRouter()
 const stage = useStageScreen()
@@ -43,40 +51,62 @@ const resolving = ref(true)
 const failed = ref(false)
 
 const outside = computed(() => result.value?.in_service_area === false || (point.value !== null && !isInKazakhstanBBox(point.value)))
-const canConfirm = computed(() => !resolving.value && !failed.value && result.value !== null && !outside.value)
+const canConfirm = computed(() => !resolving.value && point.value !== null && !outside.value)
+const address = computed(() => (result.value || (point.value && failed.value) ? addr(result.value?.title) : ''))
+/** Subtitle under the name: the area line, unless it repeats the label. */
+const subtitle = computed(() => {
+  const sub = result.value?.subtitle ?? ''
+  return sub && sub !== address.value ? sub : ''
+})
+
+/** One retry, 2 s after a failed lookup (slow public geocoder). */
+const RETRY_MS = 2000
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let retried: LatLon | null = null
+
+watchEffect(() => {
+  stage.pin.callout = { caption: title.value, title: address.value, loading: resolving.value }
+})
 
 const runner = createLatest<LatLon, GeoReverse>({
-  delayMs: 150,
+  delayMs: RESOLVE_DELAY_MS,
   run: (p, signal) => reverseGeocode(p, { lang: session.language, signal }),
-  onResult: (r) => {
+  onResult: (r, p) => {
+    if (p !== point.value) return
     result.value = r
     resolving.value = false
     failed.value = false
     if (!r.in_service_area) haptics.notification('warning')
   },
-  onError: () => {
+  onError: (_err, p) => {
+    if (p !== point.value) return
+    if (retried !== p) {
+      retried = p
+      retryTimer = setTimeout(() => {
+        if (point.value === p) runner.schedule(p)
+      }, RETRY_MS)
+      return
+    }
     resolving.value = false
     failed.value = true
   },
 })
 
-function resolve(p: LatLon): void {
-  point.value = { lat: roundCoord(p.lat), lon: roundCoord(p.lon) }
+/** Resolves the pin position unless it is (practically) the point already shown. */
+function resolve(c: LatLon): void {
+  const current = point.value
+  if (current && haversineMeters(current, c) < SAME_POINT_M && (result.value !== null || failed.value || resolving.value)) return
+  point.value = { lat: roundCoord(c.lat), lon: roundCoord(c.lon) }
+  result.value = null
   failed.value = false
   resolving.value = true
-  result.value = null
   runner.schedule(point.value)
 }
 
-const offStart = stage.onMoveStart(() => {
-  runner.cancel()
-  resolving.value = true
-  result.value = null
-})
 const offEnd = stage.onMoveEnd((center) => resolve(center))
 
-let fallbackTimer: ReturnType<typeof setTimeout> | undefined
 let stopMapWatch: (() => void) | null = null
+let firstTimer: ReturnType<typeof setTimeout> | undefined
 
 /** Moves the map to the stop's current point (or the passenger) and resolves the pin. */
 function init(): boolean {
@@ -85,7 +115,7 @@ function init(): boolean {
   const start = existing ?? (index.value === 0 ? location.current : null)
   if (start) stage.centerOn(start, 17)
   // When the camera does not move (already there), resolve the centre directly.
-  fallbackTimer = setTimeout(() => {
+  firstTimer = setTimeout(() => {
     const c = stage.center()
     if (point.value === null && c) resolve(c)
   }, start ? 900 : 0)
@@ -105,24 +135,24 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  clearTimeout(fallbackTimer)
+  clearTimeout(firstTimer)
+  clearTimeout(retryTimer)
   stopMapWatch?.()
   runner.cancel()
-  offStart()
   offEnd()
 })
 
 function choosePoint(): void {
   const p = point.value
+  if (!p || !canConfirm.value) return
   const r = result.value
-  if (!p || !r || !canConfirm.value) return
   booking.setStopPlace(index.value, {
     lat: p.lat,
     lon: p.lon,
-    address: r.title,
-    subtitle: r.subtitle,
+    address: r?.title ?? '',
+    subtitle: r?.title ? r.subtitle : null,
     source: 'map',
-    inServiceArea: r.in_service_area,
+    inServiceArea: r ? r.in_service_area : null,
   })
   navigateBack(router)
 }
@@ -140,10 +170,13 @@ function choosePoint(): void {
         <JSkeleton width="72%" height="20px" />
         <JSkeleton width="44%" height="14px" />
       </template>
-      <p v-else-if="failed" class="pick-address__error" role="alert">{{ t('pick.failed') }}</p>
+      <template v-else-if="failed && point">
+        <p class="pick-address__title">{{ address }}</p>
+        <p class="pick-address__error" role="alert">{{ t('pick.failed') }}</p>
+      </template>
       <template v-else-if="result">
-        <p class="pick-address__title">{{ result.title }}</p>
-        <p v-if="result.subtitle" class="pick-address__subtitle">{{ result.subtitle }}</p>
+        <p class="pick-address__title">{{ address }}</p>
+        <p v-if="subtitle" class="pick-address__subtitle">{{ subtitle }}</p>
       </template>
       <p v-if="outside && !resolving" class="pick-address__error" role="alert">{{ t('pick.outside') }}</p>
       <p v-else-if="!resolving && !failed" class="pick-address__hint">{{ t('pick.hint') }}</p>
@@ -165,7 +198,9 @@ function choosePoint(): void {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-height: 64px;
+  /* Same height while resolving and resolved: a changing sheet height would
+     move the camera padding and with it the pin. */
+  min-height: 72px;
   padding-bottom: var(--jt-space-2);
 }
 

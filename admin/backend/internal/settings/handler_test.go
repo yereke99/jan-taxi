@@ -75,8 +75,11 @@ func TestAdminListSettings(t *testing.T) {
 	}{
 		{"topup.min_amount", "database", false, false, `500`},
 		{"routing.max_points", "database", true, true, `5`},
-		{"kaspi.recipient_name", "env", true, false, `"ИП Jan Taxi"`},
-		{"kaspi.payment_url", "default", true, false, `""`},
+		// Seeded with the payee (migration 00006): the database row wins over the env default.
+		{"kaspi.recipient_name", "database", true, true, `"ИП \"JAN-TAXI\""`},
+		{"kaspi.payment_url", "database", true, true, `"https://pay.kaspi.kz/pay/xbp1imhd"`},
+		{"company.bin", "database", false, false, `"000809500289"`},
+		{"topup.auto_confirm_enabled", "database", false, false, `true`},
 		{"driver.online_idle_hours", "default", true, false, `12`},
 	}
 	for _, tt := range tests {
@@ -149,6 +152,9 @@ func TestAdminPatchSettingsRejects(t *testing.T) {
 		{"bad value", `{"routing.max_points":7}`, 422, map[string]string{"routing.max_points": ReasonOutOfRange}},
 		{"min above max", `{"topup.min_amount":200000}`, 422, map[string]string{"topup.min_amount": "greater_than_max"}},
 		{"preset outside range", `{"topup.presets":[100]}`, 422, map[string]string{"topup.presets": ReasonOutOfRange}},
+		{"radius max below base", `{"dispatch.radius_max_m":4000}`, 422, map[string]string{"dispatch.radius_max_m": "less_than_base"}},
+		{"radius base above max", `{"dispatch.radius_base_m":12000}`, 422, map[string]string{"dispatch.radius_max_m": "less_than_base"}},
+		{"radius base too small", `{"dispatch.radius_base_m":100}`, 422, map[string]string{"dispatch.radius_base_m": ReasonOutOfRange}},
 		{"empty", `{}`, 400, nil},
 		{"not an object", `[1]`, 400, nil},
 	}
@@ -179,6 +185,22 @@ func TestAdminPatchSettingsRejects(t *testing.T) {
 	rec, _ := call(t, h, http.MethodPatch, "/settings", `{"topup.min_amount":2000,"topup.presets":[2000,5000]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("consistent patch: %d %s", rec.Code, rec.Body)
+	}
+	// So is raising the base and the maximum radius together.
+	rec, body := call(t, h, http.MethodPatch, "/settings", `{"dispatch.radius_base_m":12000,"dispatch.radius_max_m":20000}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("consistent radius patch: %d %s", rec.Code, rec.Body)
+	}
+	items := itemsByKey(t, body)
+	if items["dispatch.radius_base_m"]["value"] != float64(12000) || items["dispatch.radius_max_m"]["source"] != "database" {
+		t.Fatalf("radius items: %v %v", items["dispatch.radius_base_m"], items["dispatch.radius_max_m"])
+	}
+	c := items["dispatch.radius_max_m"]["constraints"].(map[string]any)
+	if c["min"] != float64(500) || c["max"] != float64(100000) {
+		t.Fatalf("radius constraints: %v", c)
+	}
+	if got := Dispatch(ctx, pool); got.RadiusBaseM != 12000 || got.RadiusMaxM != 20000 {
+		t.Fatalf("dispatch after patch: %+v", got)
 	}
 }
 

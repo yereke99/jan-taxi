@@ -81,7 +81,7 @@ interface RelativeWords {
 const RELATIVE: Record<Locale, RelativeWords> = {
   kk: {
     justNow: 'жаңа ғана',
-    past: (n, unit) => `${n}${NBSP}${{ min: 'минут', h: 'сағат', d: 'күн' }[unit]} бұрын`,
+    past: (n, unit) => `${n}${NBSP}${{ min: 'мин', h: 'сағат', d: 'күн' }[unit]} бұрын`,
     future: (n, unit) => `${n}${NBSP}${{ min: 'минуттан', h: 'сағаттан', d: 'күннен' }[unit]} кейін`,
     yesterday: 'кеше',
     tomorrow: 'ертең',

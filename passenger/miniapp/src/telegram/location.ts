@@ -4,6 +4,10 @@
 // browser Geolocation API otherwise. There is deliberately no fallback
 // coordinate: when the position is unknown the caller must say so and let the
 // user pick a point on the map.
+//
+// watchLocation() streams fixes for the live "you are here" dot: the browser's
+// watchPosition() where it works, polling the LocationManager about once a
+// second otherwise (Telegram clients whose WebView has no geolocation).
 
 import { locationManager } from '@tma.js/sdk'
 import { isValidLatLon } from '../utils/geo'
@@ -91,6 +95,22 @@ async function fromTelegram(timeoutMs: number): Promise<DeviceLocation | null> {
   }
 }
 
+function fromPosition(pos: GeolocationPosition): DeviceLocation {
+  return {
+    lat: pos.coords.latitude,
+    lon: pos.coords.longitude,
+    accuracy_m: finiteOrNull(pos.coords.accuracy, 0),
+    heading: finiteOrNull(pos.coords.heading, 0),
+    speed_mps: finiteOrNull(pos.coords.speed, 0),
+    timestamp: pos.timestamp,
+    source: 'browser',
+  }
+}
+
+function positionErrorCode(err: GeolocationPositionError): LocationErrorCode {
+  return err.code === err.PERMISSION_DENIED ? 'denied' : err.code === err.TIMEOUT ? 'timeout' : 'unavailable'
+}
+
 function fromBrowser(timeoutMs: number, maxAgeMs: number): Promise<DeviceLocation> {
   return new Promise((resolve, reject) => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
@@ -98,21 +118,8 @@ function fromBrowser(timeoutMs: number, maxAgeMs: number): Promise<DeviceLocatio
       return
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) =>
-        resolve({
-          lat: pos.coords.latitude,
-          lon: pos.coords.longitude,
-          accuracy_m: finiteOrNull(pos.coords.accuracy, 0),
-          heading: finiteOrNull(pos.coords.heading, 0),
-          speed_mps: finiteOrNull(pos.coords.speed, 0),
-          timestamp: pos.timestamp,
-          source: 'browser',
-        }),
-      (err) => {
-        const code: LocationErrorCode =
-          err.code === err.PERMISSION_DENIED ? 'denied' : err.code === err.TIMEOUT ? 'timeout' : 'unavailable'
-        reject(new LocationError(code, err.message))
-      },
+      (pos) => resolve(fromPosition(pos)),
+      (err) => reject(new LocationError(positionErrorCode(err), err.message)),
       { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: maxAgeMs },
     )
   })
@@ -131,6 +138,84 @@ export async function getLocation(options: GetLocationOptions = {}): Promise<Dev
   }
   const loc = await fromBrowser(timeoutMs, maxAgeMs)
   return validateLocation(loc, Date.now(), maxAgeMs)
+}
+
+export interface WatchLocationOptions {
+  /** Provider that produced the first fix; 'telegram' polls the LocationManager. */
+  prefer?: LocationSource
+  /** Polling interval for the LocationManager, ms (default 1 000). */
+  intervalMs?: number
+}
+
+const WATCH_INTERVAL_MS = 1_000
+
+/**
+ * Streams device positions (about one per second) until the returned function
+ * is called. Invalid or outdated fixes are skipped; provider failures go to
+ * onError, and a failing watchPosition() falls back to LocationManager polling
+ * inside Telegram. Never throws.
+ */
+export function watchLocation(
+  onFix: (loc: DeviceLocation) => void,
+  onError: (err: LocationError) => void = () => undefined,
+  options: WatchLocationOptions = {},
+): () => void {
+  const intervalMs = options.intervalMs ?? WATCH_INTERVAL_MS
+  const inTelegram = useTelegramFullscreen().state.isTelegram
+  const hasBrowser = typeof navigator !== 'undefined' && !!navigator.geolocation
+  let stopped = false
+  let watchId: number | null = null
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  function emit(loc: DeviceLocation): void {
+    if (stopped) return
+    try {
+      onFix(validateLocation(loc, Date.now(), DEFAULT_MAX_AGE_MS))
+    } catch {
+      // An impossible or stale sample: wait for the next one.
+    }
+  }
+
+  async function poll(): Promise<void> {
+    if (stopped) return
+    try {
+      const loc = await fromTelegram(DEFAULT_TIMEOUT_MS)
+      if (loc) emit(loc)
+      else onError(new LocationError('unavailable'))
+    } catch (err) {
+      if (!stopped) onError(err instanceof LocationError ? err : new LocationError('unavailable'))
+    }
+    if (!stopped) timer = setTimeout(() => void poll(), intervalMs)
+  }
+
+  function startBrowser(): void {
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => emit(fromPosition(pos)),
+      (err) => {
+        if (stopped) return
+        const code = positionErrorCode(err)
+        if (code !== 'timeout' && inTelegram && watchId !== null) {
+          navigator.geolocation.clearWatch(watchId)
+          watchId = null
+          void poll()
+          return
+        }
+        onError(new LocationError(code, err.message))
+      },
+      { enableHighAccuracy: true, timeout: DEFAULT_TIMEOUT_MS, maximumAge: intervalMs },
+    )
+  }
+
+  if (hasBrowser && !(inTelegram && options.prefer === 'telegram')) startBrowser()
+  else if (inTelegram) void poll()
+  else onError(new LocationError('unsupported'))
+
+  return () => {
+    stopped = true
+    clearTimeout(timer)
+    if (watchId !== null && hasBrowser) navigator.geolocation.clearWatch(watchId)
+    watchId = null
+  }
 }
 
 /** True when openLocationSettings() can work (Telegram 8.0+ after access was requested). */

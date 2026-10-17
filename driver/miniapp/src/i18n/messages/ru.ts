@@ -4,7 +4,7 @@ export const ru: DriverMessages = {
   nav: {
     home: 'Главная',
     orders: 'Заказы',
-    wallet: 'Кошелёк',
+    wallet: 'Баланс',
     profile: 'Профиль',
     main: 'Основные разделы',
   },
@@ -56,6 +56,12 @@ export const ru: DriverMessages = {
   },
   orders: {
     title: 'Заказы',
+    nearby: 'Заказы рядом с вами (радиус {km} км)',
+    ago: '{time} назад',
+    from_you: 'От вас {distance}',
+    balance: 'Баланс',
+    online: 'На линии',
+    offline: 'Не на линии',
     empty_title: 'Нет доступных заказов',
     empty_text: 'Новый заказ сразу появится здесь.',
     refresh_hint: 'Потяните вниз, чтобы обновить',
@@ -77,6 +83,8 @@ export const ru: DriverMessages = {
   },
   order: {
     title: 'Заказ №{number}',
+    location_toast: 'Чтобы принять заказ, включите геолокацию.',
+    location_ready: 'Геолокация отправлена. Попробуйте принять ещё раз.',
     loading: 'Загрузка заказа',
     accept: 'Принять заказ',
     taken: 'Заказ принял другой водитель',
@@ -133,7 +141,6 @@ export const ru: DriverMessages = {
     map_unavailable: 'Устройство не может показать карту. Список точек и кнопка 2GIS работают.',
     passenger: 'Клиент',
     call_passenger: 'Позвонить клиенту',
-    write_passenger: 'Написать в Telegram',
     recipient: 'Получатель',
     call_recipient: 'Позвонить получателю',
     no_contact: 'Номер телефона не указан',
@@ -203,6 +210,8 @@ export const ru: DriverMessages = {
     topup_confirmed_toast: 'Платёж подтверждён, баланс пополнен',
   },
   topup: {
+    details_title: 'Платёжные данные',
+    reserved_short: 'В резерве {amount}',
     title: 'Пополнение баланса',
     amount_title: 'Выберите сумму',
     custom: 'Другая сумма',

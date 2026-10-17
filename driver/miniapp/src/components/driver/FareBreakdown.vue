@@ -16,8 +16,10 @@ const props = withDefaults(
     commissionBps?: number | null
     paymentMethod?: PaymentMethod | null
     header?: string
+    /** Only the commission and the net earning (order preview before accepting). */
+    compact?: boolean
   }>(),
-  { commissionBps: null, paymentMethod: null, header: '' },
+  { commissionBps: null, paymentMethod: null, header: '', compact: false },
 )
 
 const { t } = useI18n()
@@ -29,13 +31,13 @@ const commissionLabel = computed(() =>
 </script>
 
 <template>
-  <JListGroup :header="header" :footer="t('order.commission_note')">
-    <JListRow :title="t('order.fare')">
+  <JListGroup :header="header" :footer="compact ? undefined : t('order.commission_note')">
+    <JListRow v-if="!compact" :title="t('order.fare')">
       <template #accessory><span class="fare__value jt-tabular">{{ fmt.money(fare) }}</span></template>
     </JListRow>
-    <JListRow v-if="paymentMethod" :title="t('order.payment')" :value="t(`payment_method.${paymentMethod}`)" />
+    <JListRow v-if="paymentMethod && !compact" :title="t('order.payment')" :value="t(`payment_method.${paymentMethod}`)" />
     <JListRow :title="commissionLabel">
-      <template #accessory><span class="fare__minus jt-tabular">−{{ fmt.money(commission) }}</span></template>
+      <template #accessory><span class="fare__minus jt-tabular">{{ compact ? '' : '−' }}{{ fmt.money(commission) }}</span></template>
     </JListRow>
     <JListRow :title="t('order.net')">
       <template #accessory><span class="fare__net jt-tabular">{{ fmt.money(fare - commission) }}</span></template>

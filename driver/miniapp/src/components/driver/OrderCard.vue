@@ -1,20 +1,24 @@
 <!--
-  Available order card: category, A → final destination (+N stops), the
-  fare, trip distance/duration, distance to the pickup, comment preview and
-  how long ago it was placed. No passenger data (the API withholds it).
+  Available order card: category with how long ago it was placed and the
+  distance from the driver, the fare, then A → final destination with
+  +N stops, trip distance and duration, and the comment or cargo preview.
+  No passenger data (the API withholds it).
 -->
 <script setup lang="ts">
+import { MessageSquareText, Package } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DriverOrderCard } from '../../api/types'
 import { useFormat } from '../../composables/useFormat'
-import { sortedStops, stopLetter } from '../../features/trip/sequence'
+import { sortedStops } from '../../features/trip/sequence'
 import CategoryIcon from './CategoryIcon.vue'
+import { useAddressText } from '../../i18n/core'
 
 const props = defineProps<{ order: DriverOrderCard; now: number }>()
 const emit = defineEmits<{ open: [id: string] }>()
 
 const { t } = useI18n()
+const addr = useAddressText()
 const fmt = useFormat()
 
 const stops = computed(() => sortedStops(props.order.stops))
@@ -22,49 +26,47 @@ const pickup = computed(() => stops.value[0] ?? null)
 const destination = computed(() => (stops.value.length > 1 ? stops.value[stops.value.length - 1]! : null))
 const extraStops = computed(() => Math.max(0, props.order.stop_count - 2))
 const preview = computed(() => props.order.cargo_description || props.order.comment || '')
-const ago = computed(() => {
+const meta = computed(() => {
   // `now` re-evaluates the relative time every tick of the list's clock.
   void props.now
-  return fmt.relative(props.order.created_at)
+  const parts = [fmt.relative(props.order.created_at)]
+  if (props.order.distance_to_pickup_m !== null) parts.push(t('orders.from_you', { distance: fmt.distance(props.order.distance_to_pickup_m) }))
+  return parts.join(' · ')
+})
+const summary = computed(() => {
+  const parts = [fmt.distance(props.order.distance_m), fmt.duration(props.order.duration_s)]
+  if (extraStops.value > 0) parts.unshift(t('orders.more_stops', { n: extraStops.value }))
+  return parts.join(' · ')
 })
 </script>
 
 <template>
   <button type="button" class="ocard" @click="emit('open', order.id)">
     <div class="ocard__top">
-      <span class="ocard__cat">
-        <CategoryIcon :category="order.category" :size="18" />
-        {{ t(`category.${order.category}`) }}
+      <span class="ocard__icon"><CategoryIcon :category="order.category" :size="22" /></span>
+      <span class="ocard__head">
+        <span class="ocard__cat">{{ t(`category.${order.category}`) }}</span>
+        <span class="ocard__meta jt-tabular">{{ meta }}</span>
       </span>
-      <span class="ocard__ago">{{ ago }}</span>
+      <span class="ocard__amount jt-tabular">{{ fmt.money(order.fare) }}</span>
     </div>
 
     <div class="ocard__body">
-      <ol class="ocard__route">
-        <li v-if="pickup" class="ocard__stop">
-          <span class="ocard__letter">A</span>
-          <span class="ocard__addr">{{ pickup.address }}</span>
-        </li>
-        <li v-if="destination" class="ocard__stop">
-          <span class="ocard__letter">{{ stopLetter(destination.seq) }}</span>
-          <span class="ocard__addr">{{ destination.address }}</span>
-        </li>
-        <li v-if="extraStops > 0" class="ocard__more">{{ t('orders.more_stops', { n: extraStops }) }}</li>
-      </ol>
-      <div class="ocard__fare">
-        <span class="ocard__amount jt-tabular">{{ fmt.money(order.fare) }}</span>
-        <span class="ocard__pay">{{ t(`payment_method.${order.payment_method}`) }}</span>
-      </div>
+      <p class="ocard__route">
+        <span>{{ addr(pickup?.address) }}</span>
+        <template v-if="destination">
+          <span class="ocard__arrow" aria-hidden="true"> → </span>
+          <span>{{ addr(destination.address) }}</span>
+        </template>
+      </p>
+      <p class="ocard__summary jt-tabular">{{ summary }}</p>
     </div>
 
-    <p class="ocard__meta jt-tabular">
-      <span>{{ fmt.distance(order.distance_m) }} · {{ fmt.duration(order.duration_s) }}</span>
-      <span v-if="order.distance_to_pickup_m !== null" class="ocard__pickup">
-        {{ t('orders.to_pickup', { distance: fmt.distance(order.distance_to_pickup_m) }) }}
-      </span>
+    <p v-if="preview" class="ocard__comment">
+      <Package v-if="order.cargo_description" :size="18" :stroke-width="1.8" aria-hidden="true" />
+      <MessageSquareText v-else :size="18" :stroke-width="1.8" aria-hidden="true" />
+      <span>{{ preview }}</span>
     </p>
-
-    <p v-if="preview" class="ocard__comment">{{ preview }}</p>
   </button>
 </template>
 
@@ -72,125 +74,100 @@ const ago = computed(() => {
 .ocard {
   display: flex;
   flex-direction: column;
-  gap: var(--jt-space-3);
   width: calc(100% - 2 * var(--jt-side-margin));
   margin: 0 var(--jt-side-margin) var(--jt-space-3);
   padding: var(--jt-space-4);
   border-radius: var(--jt-radius-card);
   background: var(--jt-color-bg);
   text-align: left;
-  transition: transform var(--jt-duration-fast) var(--jt-ease);
+  transition: transform var(--jt-duration-spring) var(--jt-ease-spring);
 }
 
 .ocard:active {
-  transform: scale(0.985);
-  background: var(--jt-color-fill-secondary);
+  transform: scale(0.98);
 }
 
 .ocard__top {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: var(--jt-space-2);
-  font: var(--jt-font-subheadline);
-  color: var(--jt-color-label-secondary);
-}
-
-.ocard__cat {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  color: var(--jt-color-label);
-}
-
-.ocard__body {
-  display: flex;
   gap: var(--jt-space-3);
+  padding-bottom: var(--jt-space-3);
+  border-bottom: var(--jt-hairline) solid var(--jt-color-separator);
 }
 
-.ocard__route {
+.ocard__icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--jt-color-fill-secondary);
+}
+
+.ocard__head {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--jt-space-2);
 }
 
-.ocard__stop {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--jt-space-2);
-}
-
-.ocard__letter {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--jt-color-primary);
-  color: var(--jt-color-on-primary);
-  font: var(--jt-font-caption);
-  font-weight: 700;
-}
-
-.ocard__addr {
-  font: var(--jt-font-body);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
-
-.ocard__more {
-  padding-left: 30px;
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
-}
-
-.ocard__fare {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.ocard__amount {
-  font: var(--jt-font-title2);
-}
-
-.ocard__pay {
-  font: var(--jt-font-footnote);
-  color: var(--jt-color-label-secondary);
+.ocard__cat {
+  font: var(--jt-font-headline);
 }
 
 .ocard__meta {
+  font: var(--jt-font-subheadline);
+  font-size: 14px;
+  color: var(--jt-color-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ocard__amount {
+  flex: none;
+  font: 700 28px/34px var(--jt-font-family);
+  letter-spacing: -0.4px;
+}
+
+.ocard__body {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: var(--jt-space-1) var(--jt-space-3);
+  flex-direction: column;
+  gap: 2px;
+  padding-top: var(--jt-space-3);
+}
+
+.ocard__route {
+  font: var(--jt-font-headline);
+  overflow-wrap: anywhere;
+}
+
+.ocard__summary {
   font: var(--jt-font-subheadline);
   color: var(--jt-color-label-secondary);
 }
 
-.ocard__pickup {
-  color: var(--jt-color-label);
-  font-weight: 600;
-}
-
 .ocard__comment {
-  padding: var(--jt-space-2) var(--jt-space-3);
-  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-2);
+  margin-top: var(--jt-space-3);
+  padding: 10px var(--jt-space-3);
+  border-radius: 14px;
   background: var(--jt-color-fill-secondary);
   font: var(--jt-font-subheadline);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+}
+
+.ocard__comment svg {
+  flex: none;
+  color: var(--jt-color-label-secondary);
+}
+
+.ocard__comment span {
   overflow: hidden;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

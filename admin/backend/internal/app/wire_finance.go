@@ -20,6 +20,7 @@ func (a *App) wireFinance() error {
 		MaxUploadBytes:     a.Cfg.MaxUploadBytes,
 		Log:                a.Log.With(slog.String("component", "payments")),
 	})
+	a.Payments = pay
 	// /api/v1/driver/wallet*, /api/v1/driver/wallet/topups*
 	pay.MountDriver(a.Driver)
 	// /api/v1/admin/{topups*,ledger,drivers/{id}/ledger,drivers/{id}/wallet/adjustments,wallets/reconciliation}

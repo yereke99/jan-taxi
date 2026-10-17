@@ -7,6 +7,7 @@ export const ROUTE = {
   bookPick: 'book-pick',
   confirm: 'confirm',
   order: 'order',
+  trip: 'trip',
   orders: 'orders',
   orderDetail: 'order-detail',
   support: 'support',

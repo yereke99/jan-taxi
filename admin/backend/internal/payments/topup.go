@@ -51,6 +51,8 @@ const (
 	NoteCancelledByDriver = "cancelled_by_driver"
 	NoteExpired           = "expired"
 	NoteReceiptUploaded   = "receipt_uploaded"
+	NoteAutoConfirmed     = "auto_confirmed_from_receipt"
+	NoteDuplicateReceipt  = "duplicate_receipt"
 )
 
 // TopUp is a top_up_requests row plus the owning driver's user id and code.
@@ -75,6 +77,7 @@ type TopUp struct {
 	ProviderTransactionID  *string
 	PaidAt                 *time.Time
 	ConfirmedBy            *uuid.UUID
+	ConfirmedBySystem      bool // credited automatically from a Kaspi PDF receipt
 	ConfirmedAt            *time.Time
 	RejectedBy             *uuid.UUID
 	RejectedAt             *time.Time
@@ -83,6 +86,7 @@ type TopUp struct {
 	RefundedAt             *time.Time
 	RefundReason           *string
 	IdempotencyKey         string
+	PaymentReceiptID       *uuid.UUID // latest PDF receipt (payment_receipts)
 	ExpiresAt              time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
@@ -96,9 +100,9 @@ func (t TopUp) Open() bool {
 const topUpColumns = `t.id, t.number, t.reference, t.driver_id, t.wallet_id, d.user_id, d.code,
 	t.requested_amount, t.currency, t.provider, t.status, t.payment_url, t.driver_payment_reference,
 	t.driver_note, t.receipt_file_id, t.driver_reported_paid_at, t.verified_amount,
-	t.provider_transaction_id, t.paid_at, t.confirmed_by, t.confirmed_at, t.rejected_by, t.rejected_at,
-	t.reject_reason, t.refunded_by, t.refunded_at, t.refund_reason, t.idempotency_key, t.expires_at,
-	t.created_at, t.updated_at`
+	t.provider_transaction_id, t.paid_at, t.confirmed_by, t.confirmed_by_system, t.confirmed_at, t.rejected_by,
+	t.rejected_at, t.reject_reason, t.refunded_by, t.refunded_at, t.refund_reason, t.idempotency_key,
+	t.payment_receipt_id, t.expires_at, t.created_at, t.updated_at`
 
 const topUpFrom = ` FROM top_up_requests t JOIN driver_profiles d ON d.id = t.driver_id`
 
@@ -106,9 +110,9 @@ func (t *TopUp) dests() []any {
 	return []any{&t.ID, &t.Number, &t.Reference, &t.DriverID, &t.WalletID, &t.DriverUserID, &t.DriverCode,
 		&t.RequestedAmount, &t.Currency, &t.Provider, &t.Status, &t.PaymentURL, &t.DriverPaymentReference,
 		&t.DriverNote, &t.ReceiptFileID, &t.DriverReportedPaidAt, &t.VerifiedAmount,
-		&t.ProviderTransactionID, &t.PaidAt, &t.ConfirmedBy, &t.ConfirmedAt, &t.RejectedBy, &t.RejectedAt,
-		&t.RejectReason, &t.RefundedBy, &t.RefundedAt, &t.RefundReason, &t.IdempotencyKey, &t.ExpiresAt,
-		&t.CreatedAt, &t.UpdatedAt}
+		&t.ProviderTransactionID, &t.PaidAt, &t.ConfirmedBy, &t.ConfirmedBySystem, &t.ConfirmedAt, &t.RejectedBy,
+		&t.RejectedAt, &t.RejectReason, &t.RefundedBy, &t.RefundedAt, &t.RefundReason, &t.IdempotencyKey,
+		&t.PaymentReceiptID, &t.ExpiresAt, &t.CreatedAt, &t.UpdatedAt}
 }
 
 // GetTopUp loads a top-up by id; with lock it is locked FOR UPDATE (q must then

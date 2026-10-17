@@ -100,7 +100,7 @@ function onClick(e: MouseEvent): void {
 }
 
 .jt-button--secondary {
-  background: var(--jt-color-fill-secondary);
+  background: var(--jt-button-secondary-bg);
   color: var(--jt-color-label);
 }
 
@@ -111,7 +111,7 @@ function onClick(e: MouseEvent): void {
 }
 
 .jt-button--destructive {
-  background: var(--jt-color-fill-secondary);
+  background: var(--jt-button-secondary-bg);
   color: var(--jt-color-red);
 }
 

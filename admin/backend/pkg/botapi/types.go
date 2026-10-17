@@ -220,3 +220,28 @@ type Config struct {
 	Support              Support `json:"support"`
 	DefaultLanguage      string  `json:"default_language"`
 }
+
+// Receipt outcomes (TopUpReceiptResult.Outcome).
+const (
+	ReceiptCredited  = "credited"
+	ReceiptPending   = "pending_verification"
+	ReceiptDuplicate = "duplicate_rejected"
+)
+
+// ReceiptTopUp is the top-up a receipt was attached to.
+type ReceiptTopUp struct {
+	ID             string `json:"id"`
+	Reference      string `json:"reference"`
+	Amount         int64  `json:"amount"`
+	VerifiedAmount *int64 `json:"verified_amount"`
+	Status         string `json:"status"`
+}
+
+// TopUpReceiptResult is the outcome of a receipt sent to the driver bot.
+// Reasons explain a manual review (e.g. "amount_mismatch").
+type TopUpReceiptResult struct {
+	Outcome string       `json:"outcome"`
+	Reasons []string     `json:"reasons"`
+	TopUp   ReceiptTopUp `json:"topup"`
+	Balance *int64       `json:"balance"`
+}

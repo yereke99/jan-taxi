@@ -35,16 +35,46 @@ type Location struct {
 	Heading            int     `json:"heading,omitempty"`
 }
 
+// Document is a general file sent to the bot (e.g. a PDF receipt).
+type Document struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileName     string `json:"file_name,omitempty"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+// PhotoSize is one size of a photo sent to the bot.
+type PhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+// File is a file ready for download (getFile). FilePath is valid for at
+// least one hour.
+type File struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	FilePath     string `json:"file_path,omitempty"`
+}
+
 // Message is the subset of the Bot API Message object the bots use.
 type Message struct {
-	MessageID int64     `json:"message_id"`
-	From      *User     `json:"from,omitempty"`
-	Chat      Chat      `json:"chat"`
-	Date      int64     `json:"date"`
-	Text      string    `json:"text,omitempty"`
-	Contact   *Contact  `json:"contact,omitempty"`
-	Location  *Location `json:"location,omitempty"`
-	EditDate  int64     `json:"edit_date,omitempty"`
+	MessageID int64       `json:"message_id"`
+	From      *User       `json:"from,omitempty"`
+	Chat      Chat        `json:"chat"`
+	Date      int64       `json:"date"`
+	Text      string      `json:"text,omitempty"`
+	Caption   string      `json:"caption,omitempty"`
+	Contact   *Contact    `json:"contact,omitempty"`
+	Location  *Location   `json:"location,omitempty"`
+	Document  *Document   `json:"document,omitempty"`
+	Photo     []PhotoSize `json:"photo,omitempty"`
+	EditDate  int64       `json:"edit_date,omitempty"`
 	// ForwardOrigin is set when the message was forwarded (MessageOrigin);
 	// only its presence matters here, so it is kept raw.
 	ForwardOrigin json.RawMessage `json:"forward_origin,omitempty"`

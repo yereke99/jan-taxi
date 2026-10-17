@@ -3,6 +3,7 @@
 // safe value instead of crashing a screen. Required identity fields (ids,
 // status) are validated and a payload without them is rejected.
 
+import { isUnnamedPlace } from '../utils/text'
 import type { LineStringGeometry, Position } from '../maps'
 import { localizedOrNull } from '../services/config'
 import { ApiError } from '../services/http'
@@ -132,11 +133,19 @@ export function parseGeoPlaces(v: unknown): GeoPlace[] {
     .filter((p): p is GeoPlace => p !== null)
 }
 
+/**
+ * Reverse geocoding result. The API's last resort (source "coordinates") has
+ * no title: the UI names it "Point on the map"; coordinates text never
+ * becomes the title.
+ */
 export function parseGeoReverse(v: unknown): GeoReverse {
   const r = rec(v)
-  const place = parseGeoPlace(v)
+  const named = parseGeoPlace(v)
+  const lat = numOrNull(r.lat)
+  const lon = numOrNull(r.lon)
+  const place = named ?? (lat !== null && lon !== null ? { title: '', subtitle: strOrNull(r.subtitle), lat, lon, source: str(r.source, 'coordinates') } : null)
   if (!place) throw bad('reverse geocoding')
-  return { ...place, in_service_area: r.in_service_area !== false }
+  return { ...place, title: isUnnamedPlace(place.title) ? '' : place.title, in_service_area: r.in_service_area !== false }
 }
 
 function parseFare(v: unknown): FareOptions {
@@ -225,7 +234,6 @@ function parseDriver(v: unknown): OrderDriver | null {
     first_name: str(r.first_name),
     last_name: str(r.last_name),
     phone: strOrNull(r.phone),
-    telegram_username: strOrNull(r.telegram_username) ?? strOrNull(r.username),
     rating: rating !== null && rating >= 1 && rating <= 5 ? rating : null,
     rating_count: num(r.rating_count),
     completed_trips: num(r.completed_trips),

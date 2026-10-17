@@ -159,10 +159,21 @@ export function buildUrl(baseUrl: string, path: string, query?: Query): string {
   return qs ? `${base}${p}?${qs}` : base + p
 }
 
+/**
+ * Process-wide replacement for fetch() used by every client created without an
+ * explicit fetchImpl. Only the presentation build (VITE_DEMO) sets it, to serve
+ * the API from in-memory fixtures; production never calls setHttpTransport.
+ */
+let transport: typeof fetch | null = null
+
+export function setHttpTransport(impl: typeof fetch | null): void {
+  transport = impl
+}
+
 export function createHttpClient(options: HttpClientOptions = {}): HttpClient {
   const baseUrl = options.baseUrl ?? API_BASE
   const auth = options.auth ?? null
-  const fetchImpl = options.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init))
+  const fetchImpl = options.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => (transport ?? fetch)(input, init))
   let reauthInFlight: Promise<boolean> | null = null
 
   function reauthOnce(): Promise<boolean> {

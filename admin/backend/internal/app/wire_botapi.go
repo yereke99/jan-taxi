@@ -8,8 +8,14 @@ import (
 )
 
 // wireBotAPI constructs the internal bot API services and mounts their routes.
+// It runs after wireFinance: receipts sent to the driver bot go to payments.
 func (a *App) wireBotAPI() error {
+	var receipts botapi.ReceiptIntake
+	if a.Payments != nil {
+		receipts = a.Payments
+	}
 	h, err := botapi.New(botapi.Options{
+		Receipts:             receipts,
 		Pool:                 a.Pool,
 		Log:                  a.Log,
 		PassengerMiniAppURL:  a.Cfg.PassengerMiniAppURL,
@@ -17,6 +23,7 @@ func (a *App) wireBotAPI() error {
 		PassengerBotUsername: a.Cfg.PassengerBotUsername,
 		DriverBotUsername:    a.Cfg.DriverBotUsername,
 		DefaultLanguage:      a.Cfg.DefaultLanguage,
+		MaxReceiptBytes:      a.Cfg.MaxUploadBytes,
 	})
 	if err != nil {
 		return err

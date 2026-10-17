@@ -1,6 +1,7 @@
 // Package driverbot is the Jan Taxi driver Telegram bot: registration entry,
 // going online and offline, available orders, the current trip, balance and
-// top-ups, Telegram-verified phone numbers and live location. All state lives
+// top-ups (including Kaspi receipt PDFs sent to the chat), Telegram-verified
+// phone numbers and live location. All state lives
 // in the API (internal bot API); the Mini App does the detailed work.
 package driverbot
 

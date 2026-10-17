@@ -8,8 +8,9 @@
   and code moves it through the exposed map (fitToPoints, easeTo).
 -->
 <script setup lang="ts">
-import { AttributionControl, GPUInitializationError, Map as MapLibreMap } from 'maplibre-gl'
+import { AttributionControl, GPUInitializationError, Map as MapLibreMap, type ExpressionSpecification } from 'maplibre-gl'
 import { markRaw, onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useTelegramFullscreen } from '../telegram'
 import { KZ_MAX_BOUNDS, type LatLon } from '../utils/geo'
 import { motionMs } from '../utils/motion'
@@ -46,6 +47,7 @@ const unavailable = ref(false)
 provide(MAP_KEY, map)
 
 const tg = useTelegramFullscreen()
+const { locale } = useI18n()
 let resizeObserver: ResizeObserver | null = null
 let resizeTimer: ReturnType<typeof setTimeout> | undefined
 const RESIZE_DEBOUNCE_MS = 120
@@ -56,6 +58,21 @@ function scheduleResize(): void {
     // resize() keeps the current centre and zoom; only the canvas size changes.
     map.value?.resize()
   }, RESIZE_DEBOUNCE_MS)
+}
+
+/**
+ * Place and street labels in the app language where OpenStreetMap has it
+ * (name:kk / name:ru / name:en), else the local name — instead of the style's
+ * default two-line "Latin + local" labels.
+ */
+function localizeLabels(m: MapLibreMap): void {
+  const field: ExpressionSpecification = ['coalesce', ['get', `name:${locale.value}`], ['get', 'name']]
+  for (const layer of m.getStyle().layers) {
+    if (layer.type !== 'symbol') continue
+    const text = m.getLayoutProperty(layer.id, 'text-field') as unknown
+    if (text === undefined || !JSON.stringify(text).includes('name')) continue
+    m.setLayoutProperty(layer.id, 'text-field', field)
+  }
 }
 
 function centerOf(m: MapLibreMap): LatLon {
@@ -99,13 +116,21 @@ function create(el: HTMLDivElement): void {
   m.keyboard.disableRotation()
   if (props.padding) m.setPadding(props.padding)
 
-  m.on('load', () => emit('ready', m))
+  m.on('style.load', () => localizeLabels(m))
+  m.on('load', () => {
+    // Start with the attribution collapsed to its (i) button, as on iOS maps.
+    el.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show')
+    emit('ready', m)
+  })
   m.on('movestart', (e) => emit('movestart', e.originalEvent !== undefined))
   m.on('move', () => emit('move', centerOf(m), m.getZoom()))
   m.on('moveend', (e) => emit('moveend', centerOf(m), m.getZoom(), e.originalEvent !== undefined))
   m.on('click', (e) => emit('click', { lat: e.lngLat.lat, lon: e.lngLat.lng }))
   m.on('error', (e) => emit('error', e.error))
   map.value = markRaw(m)
+  // Presentation build only (constant-folded away otherwise): lets the
+  // screenshot script wait until tiles are loaded and the camera is at rest.
+  if (import.meta.env.VITE_DEMO === '1') (window as unknown as { __jtMap?: unknown }).__jtMap = m
 }
 
 onMounted(() => {
@@ -132,12 +157,20 @@ watch(
   { deep: true },
 )
 
+watch(locale, () => {
+  if (map.value?.isStyleLoaded()) localizeLabels(map.value)
+})
+
 watch(
   () => props.styleUrl,
   (url) => map.value?.setStyle(url),
 )
 
 onBeforeUnmount(() => {
+  if (import.meta.env.VITE_DEMO === '1') {
+    const w = window as unknown as { __jtMap?: unknown }
+    if (w.__jtMap === map.value) w.__jtMap = undefined
+  }
   clearTimeout(resizeTimer)
   resizeObserver?.disconnect()
   resizeObserver = null

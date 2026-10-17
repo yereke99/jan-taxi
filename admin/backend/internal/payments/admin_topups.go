@@ -56,6 +56,7 @@ func scanAdminTopUp(row pgx.Row) (AdminTopUpView, TopUp, error) {
 		ProviderTransactionID:  t.ProviderTransactionID,
 		PaidAt:                 utc(t.PaidAt),
 		ConfirmedBy:            adminRef(t.ConfirmedBy, caEmail, caName),
+		ConfirmedAutomatically: t.ConfirmedBySystem,
 		ConfirmedAt:            utc(t.ConfirmedAt),
 		RejectedBy:             adminRef(t.RejectedBy, raEmail, raName),
 		RejectedAt:             utc(t.RejectedAt),
@@ -206,6 +207,22 @@ func loadAdminTopUpDetail(ctx context.Context, q db.Querier, id uuid.UUID) (Admi
 	if out.DuplicateWarnings, err = duplicateWarnings(ctx, q, t); err != nil {
 		return AdminTopUpDetail{}, err
 	}
+	receipts, err := receiptsForTopUp(ctx, q, id)
+	if err != nil {
+		return AdminTopUpDetail{}, err
+	}
+	out.Receipts = make([]AdminReceiptView, 0, len(receipts))
+	for _, r := range receipts {
+		out.Receipts = append(out.Receipts, adminReceiptView(r))
+	}
+	for i, r := range receipts {
+		if t.PaymentReceiptID != nil && r.id == *t.PaymentReceiptID {
+			v := out.Receipts[i]
+			out.Receipt = &v
+			out.ConfirmPrefill = &ConfirmPrefill{VerifiedAmount: r.amount, ProviderTransactionID: r.serial,
+				PaidAt: utc(r.paidAt), PayerInfo: r.payerMasked}
+		}
+	}
 	return out, nil
 }
 
@@ -250,6 +267,11 @@ func duplicateWarnings(ctx context.Context, q db.Querier, t TopUp) ([]DuplicateW
 			ids = append(ids, id)
 		}
 	}
+	if rc, err := linkedReceipt(ctx, q, t); err != nil {
+		return nil, err
+	} else if rc != nil && rc.serial != nil && !slices.Contains(ids, *rc.serial) {
+		ids = append(ids, *rc.serial)
+	}
 	if len(ids) == 0 {
 		return out, nil
 	}
@@ -275,6 +297,33 @@ func duplicateWarnings(ctx context.Context, q db.Querier, t TopUp) ([]DuplicateW
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("payments: duplicate references: %w", err)
+	}
+
+	rows, err = q.Query(ctx, `
+		SELECT r.receipt_serial, t2.id, t2.reference, t2.status, d2.code
+		FROM payment_receipts r
+		JOIN top_up_requests t2 ON t2.id = r.topup_id
+		JOIN driver_profiles d2 ON d2.id = t2.driver_id
+		WHERE r.receipt_serial = ANY($1::text[]) AND r.topup_id <> $2
+		ORDER BY r.created_at LIMIT 20`, ids, t.ID)
+	if err != nil {
+		return nil, fmt.Errorf("payments: duplicate receipts: %w", err)
+	}
+	for rows.Next() {
+		var (
+			serial, reference, st, code string
+			id                          uuid.UUID
+		)
+		if err := rows.Scan(&serial, &id, &reference, &st, &code); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("payments: scan duplicate receipt: %w", err)
+		}
+		out = append(out, DuplicateWarning{Kind: WarnReceiptSerialUsed, TopUpID: &id, Reference: &reference, Status: &st,
+			DriverCode: &code, ProviderTransaction: &serial})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("payments: duplicate receipts: %w", err)
 	}
 
 	rows, err = q.Query(ctx, `
@@ -327,6 +376,6 @@ func (s *Service) adminGetReceipt(w http.ResponseWriter, r *http.Request) error 
 		_ = rc.Close()
 		return httpx.NotFound()
 	}
-	storage.ServeImage(w, r, f, rc)
+	storage.ServeFile(w, r, f, rc)
 	return nil
 }

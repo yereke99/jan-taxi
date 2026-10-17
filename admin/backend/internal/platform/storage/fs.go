@@ -18,9 +18,10 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 )
 
-// keyRe is the only storage key shape SaveImage produces. Keys read back from
-// the database are checked against it before touching the filesystem.
-var keyRe = regexp.MustCompile(`^[0-9]{4}/[0-9]{2}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$`)
+// keyRe is the only storage key shape SaveImage and SavePDF produce. Keys
+// read back from the database are checked against it before touching the
+// filesystem.
+var keyRe = regexp.MustCompile(`^[0-9]{4}/[0-9]{2}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|pdf)$`)
 
 var errBadKey = errors.New("invalid storage key")
 

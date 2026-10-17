@@ -86,6 +86,9 @@ func TestPhoton(t *testing.T) {
 		q.Get("limit") != "7" || q.Get("lat") != "48.826400" || q.Get("lon") != "58.144200" || hdr.Get("User-Agent") == "" {
 		t.Fatalf("request %s %v", path, q)
 	}
+	if q.Get("zoom") != "12" || q.Get("location_bias_scale") != "0.1" || q.Get("bbox") != "57.5442,48.2264,58.7442,49.4264" {
+		t.Fatalf("local search must be biased and boxed around the position: %v", q)
+	}
 	want := []Place{
 		{Title: "Ембі темір жол вокзалы", Subtitle: "Темір жол көшесі, 1, Ембі, Ақтөбе облысы", Point: embiStation, Source: "photon", CountryCode: "KZ"},
 		{Title: "Жиенқали Тілепбергенов көшесі, 12", Subtitle: "Ембі, Ақтөбе облысы", Point: embi, Source: "photon", CountryCode: "KZ"},
@@ -122,12 +125,55 @@ func TestPhoton(t *testing.T) {
 	if p, err := g.Reverse(ctx, geo.Point{Lat: 48, Lon: 58}, "kk"); err != nil || p != nil {
 		t.Fatalf("empty reverse = %+v %v", p, err)
 	}
+	if _, q, _ := rec.last(); q.Get("radius") != "1" {
+		t.Fatalf("an empty reverse must retry with the wider radius: %v", q)
+	}
 
 	bad, _ := NewPhoton(rec.srv.URL+"/broken", http.DefaultClient)
 	_, err = bad.Search(ctx, "x", nil, "kk", 5)
 	var pe *providerError
 	if !errors.As(err, &pe) {
 		t.Fatalf("HTTP 500 = %v", err)
+	}
+}
+
+func TestPhotonLocalSearchFallsBackToCountry(t *testing.T) {
+	rec := newRecorder(t, func(path string, q url.Values) (int, string) {
+		if q.Has("bbox") {
+			return 200, `{"type":"FeatureCollection","features":[]}`
+		}
+		return 200, photonSearchBody
+	})
+	g, err := NewPhoton(rec.srv.URL, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	places, err := g.Search(context.Background(), "вокзал", &embi, "kk", 5)
+	if err != nil || len(places) != 3 {
+		t.Fatalf("places = %+v, %v", places, err)
+	}
+	if len(rec.queries) != 2 || !rec.queries[0].Has("bbox") || rec.queries[1].Has("bbox") || rec.queries[1].Get("lat") == "" {
+		t.Fatalf("queries = %v", rec.queries)
+	}
+}
+
+func TestLocalFirst(t *testing.T) {
+	almaty := geo.Point{Lat: 43.2389, Lon: 76.8897}
+	far := Place{Title: "Петропавл", Point: geo.Point{Lat: 54.8728, Lon: 69.143}}
+	across := Place{Title: "Across town", Point: geo.Point{Lat: 43.33, Lon: 76.95}}
+	near := Place{Title: "Nearby", Point: geo.Point{Lat: 43.241, Lon: 76.89}}
+	got := localFirst([]Place{far, across, near}, &almaty)
+	if len(got) != 2 || got[0].Title != "Nearby" || got[1].Title != "Across town" {
+		t.Fatalf("local results = %+v", got)
+	}
+	// Nothing within 60 km: the nearest ones are kept.
+	astana := Place{Title: "Астана", Point: geo.Point{Lat: 51.128, Lon: 71.43}}
+	got = localFirst([]Place{far, astana}, &almaty)
+	if len(got) != 2 || got[0].Title != "Астана" {
+		t.Fatalf("fallback = %+v", got)
+	}
+	if got := localFirst([]Place{far, near}, nil); got[0].Title != "Петропавл" {
+		t.Fatalf("no position must keep the provider order: %+v", got)
 	}
 }
 
@@ -360,7 +406,14 @@ func TestDedupeAndLabels(t *testing.T) {
 	if got := joinParts([]string{"Ембі"}, "", "Ембі", "Ақтөбе облысы", "ақтөбе облысы", " "); got != "Ақтөбе облысы" {
 		t.Fatalf("joinParts = %q", got)
 	}
-	if got := coordinatesPlace(geo.Point{Lat: 48.8264, Lon: 58.1442}, "x").Title; got != "48.826400, 58.144200" {
-		t.Fatalf("coordinates title = %q", got)
+	if got := coordinatesPlace(geo.Point{Lat: 48.8264, Lon: 58.1442}, "x"); got.Title != "" || got.Subtitle != "x" || got.Source != SourceCoordinates {
+		t.Fatalf("coordinates place = %+v", got)
+	}
+	// No object and no street: district and town.
+	if title, _ := photonLabel(photonProps{District: "Медеу ауданы", City: "Алматы", State: "Алматы"}); title != "Медеу ауданы, Алматы" {
+		t.Fatalf("district title = %q", title)
+	}
+	if title, _ := photonLabel(photonProps{Street: "Жолдасбеков көшесі", City: "Алматы"}); title != "Жолдасбеков көшесі" {
+		t.Fatalf("street title = %q", title)
 	}
 }

@@ -7,10 +7,12 @@ import { formatDateTime, formatMoney, type Locale } from '../../utils/format'
 import { orderStatusTone } from '../../utils/status'
 import CategoryIcon from '../CategoryIcon.vue'
 import { JBadge } from '../ui'
+import { useAddressText } from '../../i18n/core'
 
 defineProps<{ order: OrderSummary; locale: Locale }>()
 const emit = defineEmits<{ open: [order: OrderSummary] }>()
 const { t } = useI18n()
+const addr = useAddressText()
 </script>
 
 <template>
@@ -18,9 +20,9 @@ const { t } = useI18n()
     <span class="summary__icon"><CategoryIcon :category="order.category" /></span>
     <span class="summary__main">
       <span class="summary__route">
-        <span class="summary__address">{{ order.pickup.address }}</span>
+        <span class="summary__address">{{ addr(order.pickup.address) }}</span>
         <span class="summary__arrow" aria-hidden="true">↓</span>
-        <span class="summary__address">{{ order.destination.address }}</span>
+        <span class="summary__address">{{ addr(order.destination.address) }}</span>
       </span>
       <span class="summary__meta">
         {{ formatDateTime(order.created_at, locale) }}<template v-if="order.stop_count > 2">

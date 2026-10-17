@@ -24,7 +24,7 @@ export interface ActionSheetAction {
  * Named sheet positions ('content' = natural content height); a number is an
  * absolute height in px measured from the viewport bottom.
  */
-export type SheetSnap = 'peek' | 'half' | 'full' | 'content' | number
+export type SheetSnap = 'peek' | 'half' | 'full' | 'content' | 'header' | number
 
 /** Item of the floating glass tab bar (JTabBar). */
 export interface TabBarItem<V extends string = string> {

@@ -426,7 +426,7 @@ func TestGeoEndpoints(t *testing.T) {
 
 	// Reverse.
 	status, out := env.do(http.MethodGet, "/api/v1/geo/reverse?lat=48.8264&lon=58.1442&lang=kk", passenger, "")
-	if status != 200 || out["title"] != "48.826400, 58.144200" || out["subtitle"] != "Картадағы нүкте" || out["in_service_area"] != true ||
+	if status != 200 || out["title"] != "" || out["subtitle"] != "Картадағы нүкте" || out["in_service_area"] != true ||
 		out["source"] != "coordinates" || out["lat"] != 48.8264 || out["lon"] != 58.1442 {
 		t.Fatalf("reverse fallback: %d %v", status, out)
 	}

@@ -6,23 +6,29 @@
 
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import { computed, inject, onBeforeUnmount, reactive, ref, shallowRef, watch, type ComputedRef, type InjectionKey, type Ref, type ShallowRef } from 'vue'
-import type { MapPadding, RouteLayer, StopMarkers } from '../maps'
+import type { MapPadding, PinCallout, RouteLayer, StopMarkers } from '../maps'
 import { useCarMarker, useRouteLayer, useStopMarkers, useUserLocationMarker, type CarPosition, type UserLocation } from '../maps'
 import { effectiveSafeInsets, useTelegramFullscreen, type Insets } from '../telegram'
 import { boundsOf, type LatLon } from '../utils/geo'
 import { motionMs } from '../utils/motion'
 
-/** Height of the floating control row under the top safe area (48px buttons + gaps). */
-export const TOP_CONTROLS_PX = 64
-/** The map attribution row sits on top of the sheet; keep content above it. */
-const ATTRIBUTION_ROW_PX = 28
-const FIT_EDGE_PX = 40
+/**
+ * Free map area: the camera keeps this margin below the top safe area (which
+ * includes Telegram's fullscreen header) and above the sheet (which includes
+ * the floating tab bar), and FIT_SIDE_PX from the screen sides when framing.
+ */
+const MAP_MARGIN_PX = 16
+const FIT_SIDE_PX = 32
 const FIT_MAX_ZOOM = 16
 const FOCUS_ZOOM = 16
+/** Smallest free area a fit is attempted in; below it the sheet margin gives way. */
+const MIN_FIT_AREA_PX = 96
 
 export interface StageControls {
   /** Profile/menu button (home only). */
   menu: boolean
+  /** Glass back button in the same place (booking steps). */
+  back: boolean
   /** Locate button (centres on the passenger; in picker mode moves the pin there). */
   locate: boolean
   /** Re-frames the screen's content (live order). */
@@ -41,8 +47,8 @@ export interface MapStage {
   route: RouteLayer
   car: { set(pos: CarPosition | null): void }
   user: { set(loc: UserLocation | null): void }
-  /** Centre pin ("move the map under the pin"). */
-  pin: { visible: boolean; label: string }
+  /** Centre pin ("move the map under the pin") with its optional address callout. */
+  pin: { visible: boolean; label: string; callout: PinCallout | null; onCallout: (() => void) | null }
   controls: StageControls
   /** Handler for dragged stop markers (route editor). */
   setStopDrag(handler: ((index: number, point: LatLon) => void) | null): void
@@ -63,11 +69,18 @@ export interface MapStage {
 export const STAGE_KEY: InjectionKey<MapStage> = Symbol('jt-map-stage')
 
 function defaultControls(): StageControls {
-  return { menu: false, locate: false, recenter: null, accuracyChip: false }
+  return { menu: false, back: false, locate: false, recenter: null, accuracyChip: false }
 }
 
-/** Builds the stage; MapShell calls it once, provides it and calls attach() when the map loads. */
-export function createMapStage(labels: { stop: (index: number, letter: string) => string; car: string; user: string }): {
+/**
+ * Builds the stage; MapShell calls it once, provides it and calls attach() when
+ * the map loads. `onCameraTaken` runs whenever a screen takes over the camera
+ * (a fit or a new screen), e.g. to end "follow my location".
+ */
+export function createMapStage(
+  labels: { stop: (index: number, letter: string) => string; car: string; user: string },
+  onCameraTaken: () => void = () => undefined,
+): {
   stage: MapStage
   attach: (m: MapLibreMap) => void
 } {
@@ -76,11 +89,21 @@ export function createMapStage(labels: { stop: (index: number, letter: string) =
   const sheetHeight = ref(0)
   const safe = computed(() => effectiveSafeInsets(tg.state))
   const padding = computed<MapPadding>(() => ({
-    top: safe.value.top + TOP_CONTROLS_PX,
+    top: safe.value.top + MAP_MARGIN_PX,
     right: safe.value.right,
-    bottom: Math.max(sheetHeight.value, safe.value.bottom) + ATTRIBUTION_ROW_PX,
+    bottom: Math.max(sheetHeight.value, safe.value.bottom) + MAP_MARGIN_PX,
     left: safe.value.left,
   }))
+
+  /** Screen padding for framing: the free map area, never smaller than MIN_FIT_AREA_PX. */
+  function fitPadding(m: MapLibreMap): MapPadding {
+    const c = m.getContainer()
+    const p = padding.value
+    const side = Math.min(FIT_SIDE_PX, Math.max(0, (c.clientWidth - MIN_FIT_AREA_PX) / 2))
+    const top = Math.min(p.top, Math.max(0, c.clientHeight - MIN_FIT_AREA_PX))
+    const bottom = Math.max(0, Math.min(p.bottom, c.clientHeight - top - MIN_FIT_AREA_PX))
+    return { top, bottom, left: p.left + side, right: p.right + side }
+  }
 
   let dragHandler: ((index: number, point: LatLon) => void) | null = null
   const stops = useStopMarkers(map, {
@@ -90,7 +113,7 @@ export function createMapStage(labels: { stop: (index: number, letter: string) =
   const route = useRouteLayer(map)
   const car = useCarMarker(map, labels.car)
   const user = useUserLocationMarker(map, labels.user)
-  const pin = reactive({ visible: false, label: '' })
+  const pin = reactive<MapStage['pin']>({ visible: false, label: '', callout: null, onCallout: null })
   const controls = reactive<StageControls>(defaultControls())
 
   let owner: symbol | null = null
@@ -103,6 +126,8 @@ export function createMapStage(labels: { stop: (index: number, letter: string) =
     car.set(null)
     pin.visible = false
     pin.label = ''
+    pin.callout = null
+    pin.onCallout = null
     Object.assign(controls, defaultControls())
   }
 
@@ -143,21 +168,21 @@ export function createMapStage(labels: { stop: (index: number, letter: string) =
       const m = map.value
       const bounds = boundsOf(points)
       if (!m || !bounds) return
+      onCameraTaken()
       const duration = opts.animate === false ? 0 : motionMs(500)
+      const pad = fitPadding(m)
       const [[w, s], [e, n]] = bounds
       if (Math.abs(e - w) < 1e-6 && Math.abs(n - s) < 1e-6) {
-        m.easeTo({ center: [w, s], zoom: Math.max(m.getZoom(), FOCUS_ZOOM - 1), duration })
+        m.easeTo({ center: [w, s], zoom: Math.max(m.getZoom(), FOCUS_ZOOM - 1), padding: pad, duration })
         return
       }
-      // The camera padding (safe area, controls, sheet) is applied by MapLibre
-      // on top of this edge padding, so markers never sit under the chrome.
-      const c = m.getContainer()
-      const free = Math.min(c.clientWidth, c.clientHeight - padding.value.top - padding.value.bottom)
-      const edge = Math.max(8, Math.min(FIT_EDGE_PX, Math.floor(free / 6)))
+      // Absolute padding: the free area is computed here from the current
+      // safe areas and sheet height, not added to a padding that may still be
+      // animating; the map keeps this padding afterwards.
       try {
-        m.fitBounds(bounds, { padding: edge, maxZoom: opts.maxZoom ?? FIT_MAX_ZOOM, duration, linear: false })
+        m.fitBounds(bounds, { padding: pad, absolutePadding: true, maxZoom: opts.maxZoom ?? FIT_MAX_ZOOM, duration, linear: false })
       } catch {
-        // Too little visible map to fit (sheet fully expanded): keep the camera.
+        // No room at all (sheet fully expanded): keep the camera.
       }
     },
     centerOn(point, zoom) {
@@ -175,6 +200,7 @@ export function createMapStage(labels: { stop: (index: number, letter: string) =
       return () => moveEnd.delete(cb)
     },
     claim() {
+      onCameraTaken()
       clear()
       owner = Symbol('screen')
       return owner

@@ -1,7 +1,9 @@
 package botapi
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -112,5 +114,27 @@ func (c *Client) ReportLocation(ctx context.Context, tgID int64, in LocationRepo
 func (c *Client) Config(ctx context.Context) (Config, error) {
 	var out Config
 	err := c.do(ctx, http.MethodGet, "/config", nil, nil, &out, true)
+	return out, err
+}
+
+// UploadTopUpReceipt forwards a receipt PDF the driver sent to the bot; the
+// API attaches it to the driver's most recent open top-up. It is not
+// retried: a second upload of the same receipt could reach another top-up.
+func (c *Client) UploadTopUpReceipt(ctx context.Context, tgID int64, fileName string, data []byte) (TopUpReceiptResult, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", fileName)
+	if err != nil {
+		return TopUpReceiptResult{}, err
+	}
+	if _, err := fw.Write(data); err != nil {
+		return TopUpReceiptResult{}, err
+	}
+	if err := mw.Close(); err != nil {
+		return TopUpReceiptResult{}, err
+	}
+	var out TopUpReceiptResult
+	body := multipartBody{data: buf.Bytes(), contentType: mw.FormDataContentType()}
+	err = c.do(ctx, http.MethodPost, tgPath("/driver", tgID, "/topup-receipt"), nil, body, &out, false)
 	return out, err
 }

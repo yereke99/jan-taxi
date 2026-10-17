@@ -78,6 +78,9 @@ var (
 	codeRe     = regexp.MustCompile(`^[a-z][a-z0-9_]{1,39}$`)
 	tgUserRe   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{3,31}$`)
 	digitsOnly = regexp.MustCompile(`^[0-9]+$`)
+	kzIBANRe   = regexp.MustCompile(`^KZ[0-9]{2}[0-9A-Z]{16}$`)
+	bicRe      = regexp.MustCompile(`^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$`)
+	kbeRe      = regexp.MustCompile(`^[0-9]{2}$`)
 )
 
 var registry = []Def{
@@ -168,6 +171,46 @@ var registry = []Def{
 		},
 	},
 	{
+		Key: "dispatch.radius_base_m", Kind: KindInt, Min: 500, Max: 50_000, Default: int64(5000),
+		Description: Localized{
+			KK: "Жүргізушілерді A нүктесінің айналасынан іздеудің бастапқы радиусы, м",
+			RU: "Начальный радиус поиска водителей вокруг точки A, м",
+			EN: "Initial driver search radius around pickup point A, m",
+		},
+	},
+	{
+		Key: "dispatch.radius_step_m", Kind: KindInt, Min: 0, Max: 20_000, Default: int64(2500),
+		Description: Localized{
+			KK: "Жүргізуші табылмаса, іздеу радиусы әр қадам сайын қаншаға ұлғаяды, м",
+			RU: "На сколько расширяется радиус поиска за один шаг, если водитель не найден, м",
+			EN: "Search radius growth per step while no driver is found, m",
+		},
+	},
+	{
+		Key: "dispatch.radius_step_s", Kind: KindInt, Min: 10, Max: 600, Default: int64(60),
+		Description: Localized{
+			KK: "Іздеу радиусын ұлғайту қадамының ұзақтығы, секунд",
+			RU: "Интервал между шагами расширения радиуса поиска, секунд",
+			EN: "Seconds between search radius steps",
+		},
+	},
+	{
+		Key: "dispatch.radius_max_m", Kind: KindInt, Min: 500, Max: 100_000, Default: int64(10_000),
+		Description: Localized{
+			KK: "Іздеу радиусының ең үлкен мәні, м (бастапқы радиустан кем болмауы керек)",
+			RU: "Максимальный радиус поиска, м (не меньше начального)",
+			EN: "Maximum search radius, m (not less than the initial radius)",
+		},
+	},
+	{
+		Key: "dispatch.location_max_age_s", Kind: KindInt, Min: 30, Max: 3600, Default: int64(300),
+		Description: Localized{
+			KK: "Жүргізуші геолокациясы қанша уақыт жарамды саналады, секунд",
+			RU: "Сколько секунд геопозиция водителя считается актуальной",
+			EN: "How long a driver's location stays fresh, seconds",
+		},
+	},
+	{
 		Key: "topup.min_amount", Kind: KindInt, Min: 1, Max: 10_000_000, Default: int64(500),
 		Description: Localized{
 			KK: "Балансты толтырудың ең аз сомасы, ₸",
@@ -198,6 +241,38 @@ var registry = []Def{
 			KK: "Толтыруға арналған жылдам сомалар, ₸",
 			RU: "Быстрые суммы пополнения, ₸",
 			EN: "Top-up quick amounts, ₸",
+		},
+	},
+	{
+		Key: "topup.auto_confirm_enabled", Kind: KindBool, Default: true,
+		Description: Localized{
+			KK: "Kaspi PDF чегі барлық тексеруден өтсе, балансты автоматты түрде толтыру",
+			RU: "Автоматически зачислять пополнение, если Kaspi PDF-чек прошёл все проверки",
+			EN: "Credit top-ups automatically when a Kaspi PDF receipt passes every check",
+		},
+	},
+	{
+		Key: "topup.auto_max_per_day", Kind: KindInt, Min: 0, Max: 100, Default: int64(3),
+		Description: Localized{
+			KK: "Бір жүргізушіге тәулігіне автоматты толтырудың ең көп саны (0 = өшірулі)",
+			RU: "Максимум автоматических зачислений на водителя в сутки (0 = выключено)",
+			EN: "Maximum automatic credits per driver per day (0 = off)",
+		},
+	},
+	{
+		Key: "topup.auto_max_amount_per_day", Kind: KindInt, Min: 0, Max: 10_000_000, Default: int64(50_000),
+		Description: Localized{
+			KK: "Бір жүргізушіге тәулігіне автоматты түрде түсетін ең көп сома, ₸",
+			RU: "Максимальная сумма автоматических зачислений на водителя в сутки, ₸",
+			EN: "Maximum automatically credited amount per driver per day, ₸",
+		},
+	},
+	{
+		Key: "topup.receipt_max_age_hours", Kind: KindInt, Min: 1, Max: 720, Default: int64(48),
+		Description: Localized{
+			KK: "Автоматты толтыру үшін чектің ең үлкен жасы, сағат",
+			RU: "Максимальный возраст чека для автоматического зачисления, часов",
+			EN: "Maximum receipt age for automatic crediting, hours",
 		},
 	},
 	{
@@ -256,6 +331,58 @@ var registry = []Def{
 			EN: "Kaspi payment instructions",
 		},
 		env: func(e Env) (any, bool) { return envInstructions(e.KaspiInstructions) },
+	},
+	{
+		Key: "company.bin", Kind: KindString, Default: "000809500289",
+		Description: Localized{
+			KK: "Төлем алушының ЖСН/БСН (Kaspi чегі осы нөмірмен тексеріледі)",
+			RU: "ИИН/БИН получателя (по нему проверяются чеки Kaspi)",
+			EN: "Payee IIN/BIN (Kaspi receipts are checked against it)",
+		},
+		check: checkIIN,
+	},
+	{
+		Key: "company.iban", Kind: KindString, Default: "KZ05722S000057176693",
+		Description: Localized{
+			KK: "Төлем алушының IBAN шоты",
+			RU: "IBAN счёта получателя",
+			EN: "Payee IBAN",
+		},
+		check: checkKZIBAN,
+	},
+	{
+		Key: "company.bank", Kind: KindString, MaxLen: 120, Default: `АО "Kaspi Bank"`,
+		Description: Localized{
+			KK: "Төлем алушының банкі",
+			RU: "Банк получателя",
+			EN: "Payee bank",
+		},
+	},
+	{
+		Key: "company.bic", Kind: KindString, Default: "CASPKZKA",
+		Description: Localized{
+			KK: "Банктің БСК (BIC/SWIFT)",
+			RU: "БИК банка (BIC/SWIFT)",
+			EN: "Bank BIC (SWIFT)",
+		},
+		check: checkBIC,
+	},
+	{
+		Key: "company.kbe", Kind: KindString, Default: "19",
+		Description: Localized{
+			KK: "Бенефициар коды (КБе)",
+			RU: "Код бенефициара (КБе)",
+			EN: "Beneficiary code (KBe)",
+		},
+		check: checkKBe,
+	},
+	{
+		Key: "company.address", Kind: KindString, MaxLen: 300, Default: "Жалагашский район, с. Жалагаш, ул. Нығмет Мырзалиев, 94",
+		Description: Localized{
+			KK: "Төлем алушының заңды мекенжайы",
+			RU: "Юридический адрес получателя",
+			EN: "Payee legal address",
+		},
 	},
 	{
 		Key: "navigation.twogis_base_url", Kind: KindURL, Required: true, Default: "https://2gis.ru",
@@ -551,4 +678,62 @@ func httpsURLCheck(baseOnly bool, domains ...string) func(string) (string, bool)
 		}
 		return u.String(), true
 	}
+}
+
+// checkIIN accepts a 12-digit Kazakhstan IIN/BIN with a valid check digit.
+func checkIIN(s string) (string, bool) {
+	s = strings.ReplaceAll(s, " ", "")
+	if len(s) != 12 || !digitsOnly.MatchString(s) {
+		return "", false
+	}
+	d := make([]int, 12)
+	for i := range d {
+		d[i] = int(s[i] - '0')
+	}
+	sum := 0
+	for i := 0; i < 11; i++ {
+		sum += d[i] * (i + 1)
+	}
+	check := sum % 11
+	if check == 10 {
+		sum = 0
+		for i := 0; i < 11; i++ {
+			sum += d[i] * ((i+2)%11 + 1)
+		}
+		check = sum % 11
+	}
+	return s, check != 10 && check == d[11]
+}
+
+// checkKZIBAN accepts a Kazakhstan IBAN (KZ, 20 characters) with valid
+// ISO 13616 check digits; spaces are removed and letters upper-cased.
+func checkKZIBAN(s string) (string, bool) {
+	s = strings.ToUpper(strings.ReplaceAll(s, " ", ""))
+	if !kzIBANRe.MatchString(s) {
+		return "", false
+	}
+	rearranged := s[4:] + s[:4]
+	rem := 0
+	for _, c := range rearranged {
+		v := int(c - '0')
+		if c >= 'A' && c <= 'Z' {
+			v = int(c-'A') + 10
+		}
+		if v >= 10 {
+			rem = (rem*100 + v) % 97
+		} else {
+			rem = (rem*10 + v) % 97
+		}
+	}
+	return s, rem == 1
+}
+
+func checkBIC(s string) (string, bool) {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	return s, bicRe.MatchString(s)
+}
+
+func checkKBe(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	return s, kbeRe.MatchString(s)
 }

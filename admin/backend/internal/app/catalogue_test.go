@@ -144,6 +144,7 @@ var endpointCatalogue = []string{
 	"GET /internal/v1/driver/{}/orders",
 	"POST /internal/v1/driver/{}/contact",
 	"POST /internal/v1/driver/{}/location",
+	"POST /internal/v1/driver/{}/topup-receipt",
 	"GET /internal/v1/config",
 }
 
@@ -252,8 +253,8 @@ func TestInternalRoutesRequireServiceSecret(t *testing.T) {
 			t.Errorf("%s %s on the public listener: %d", method, path, res.status)
 		}
 	}
-	if n != 12 {
-		t.Fatalf("catalogue lists %d internal routes, want 12", n)
+	if n != 13 {
+		t.Fatalf("catalogue lists %d internal routes, want 13", n)
 	}
 
 	// With valid credentials the same listener answers normally.
@@ -275,6 +276,7 @@ func TestBackgroundJobsRegistered(t *testing.T) {
 
 	want := map[string]time.Duration{
 		"search_expiry":              15 * time.Second,
+		"dispatch_expand":            15 * time.Second,
 		"topup_expiry":               5 * time.Minute,
 		"quote_cleanup":              time.Hour,
 		"stale_driver_offline":       5 * time.Minute,

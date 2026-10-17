@@ -139,10 +139,10 @@ func TestPlacesReverse(t *testing.T) {
 	prov := &fakeGeocoder{}
 	s := NewPlaces(pool, PlacesConfig{Provider: prov, ProviderName: "photon", Log: quietLog})
 
-	// Nothing found: formatted coordinates and a localized subtitle.
+	// Nothing found: no title (never coordinates), a localized subtitle.
 	for lang, sub := range map[string]string{"kk": "Картадағы нүкте", "ru": "Точка на карте", "en": "Point on the map"} {
 		r, err := s.Reverse(ctx, embi, lang)
-		if err != nil || !r.InServiceArea || r.Title != "48.826400, 58.144200" || r.Subtitle != sub || r.Source != "coordinates" || r.Point != embi {
+		if err != nil || !r.InServiceArea || r.Title != "" || r.Subtitle != sub || r.Source != "coordinates" || r.Point != embi {
 			t.Fatalf("%s fallback = %+v %v", lang, r, err)
 		}
 	}

@@ -1,27 +1,29 @@
 <!--
-  Live order. Searching: pulsing pickup, elapsed time, summary, cancel.
-  Accepted / driver arriving / in progress: the driver card with a large
-  plate, the live car marker, the route with completed stops greyed, call
-  and cancel (only when the API allows it). Completed: summary, rating and
+  Live order ("Сапарым" tab). Searching: pulsing pickup, elapsed time, the
+  route summary, cancel. Accepted / driver arriving / in progress: the trip
+  screen — driver, car and plate over the live map, safety / share / call,
+  the parcel protection note for deliveries, the order card (price, date,
+  category, stops, comment) and cancel + "more" at the bottom. Completed: summary, rating and
   "report a problem". Cancelled: the reason and "order again". State follows
   realtime events with REST re-sync and a polling fallback (useLiveOrder).
 -->
 <script setup lang="ts">
+import { Banknote, ChevronRight, Ellipsis, ShieldCheck } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { cancelOrder } from '../../api/orders'
 import type { Order } from '../../api/types'
 import DisputeForm from '../../components/order/DisputeForm.vue'
-import DriverCard from '../../components/order/DriverCard.vue'
 import OrderStopList from '../../components/order/OrderStopList.vue'
 import RatingForm from '../../components/order/RatingForm.vue'
-import { confirmDestructive, JButton, JEmptyState, JSheet, JSkeleton, JSpinner, toast } from '../../components/ui'
+import TripDriverCard from '../../components/order/TripDriverCard.vue'
+import { confirmDestructive, JButton, JEmptyState, JSheet, JSkeleton, JSpinner, showActionSheet, toast, type SheetSnap } from '../../components/ui'
 import { useDriverPhoto } from '../../composables/useDriverPhoto'
 import { useLiveOrder } from '../../composables/useLiveOrder'
 import { cancelInfo, framingPoints, hasActiveDriver, headlineKey, isDeliveryOrder, orderMarkers } from '../../domain/orderView'
 import { placesOfStops } from '../../domain/places'
-import { useErrorText } from '../../i18n/core'
+import { useAddressText, useErrorText } from '../../i18n/core'
 import { straightLine } from '../../maps'
 import { ROUTE } from '../../router/names'
 import { isApiError } from '../../services/http'
@@ -29,11 +31,13 @@ import { useAutoFit, useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useOrdersStore } from '../../stores/orders'
 import { useSessionStore } from '../../stores/session'
-import { haptics } from '../../telegram'
-import { formatMoney } from '../../utils/format'
+import { haptics, openExternal, openTelegram } from '../../telegram'
+import { formatDateTime, formatMoney } from '../../utils/format'
+import { haversineMeters } from '../../utils/geo'
 import { formatKzPhone, telHref } from '../../utils/phone'
 
 const { t } = useI18n()
+const addr = useAddressText()
 const errorText = useErrorText()
 const route = useRoute()
 const router = useRouter()
@@ -55,6 +59,41 @@ const notFound = computed(() => isApiError(live.error.value) && (live.error.valu
 const delivery = computed(() => (order.value ? isDeliveryOrder(order.value) : false))
 const activeDriver = computed(() => (order.value ? hasActiveDriver(order.value) : false))
 const cancel = computed(() => (order.value ? cancelInfo(order.value) : null))
+/** The trip screen layout: a driver is assigned and the trip is not over. */
+const liveTrip = computed(() => Boolean(order.value?.driver) && activeDriver.value)
+
+// The live trip opens with the driver card and actions above the map; the
+// order card is one swipe up. Other states size the sheet to their content.
+const snap = ref<SheetSnap>('content')
+const snapPoints = computed<SheetSnap[]>(() => (liveTrip.value ? ['header', 'content'] : ['content']))
+watch(liveTrip, (on) => (snap.value = on ? 'header' : 'content'), { immediate: true })
+const firstStop = computed(() => order.value?.stops[0] ?? null)
+const lastStop = computed(() => {
+  const stops = order.value?.stops ?? []
+  return stops.length > 1 ? stops[stops.length - 1]! : null
+})
+const extraStops = computed(() => Math.max(0, (order.value?.stops.length ?? 0) - 2))
+const createdAt = computed(() => (order.value ? formatDateTime(order.value.accepted_at ?? order.value.created_at, lang.value) : ''))
+const categoryChip = computed(() => {
+  const c = order.value?.category
+  return c === 'parcel' ? t('order.chip_parcel') : c === 'other' ? t('order.chip_other') : t('order.chip_taxi')
+})
+
+/** Average town speed for the arrival estimate, m/s (~25 km/h along streets). */
+const TOWN_SPEED_MPS = 7
+const ROAD_FACTOR = 1.3
+const headline = computed(() => {
+  const o = order.value
+  if (!o) return ''
+  const loc = o.driver_location
+  const pickup = o.stops[0]
+  if (o.status === 'accepted' && loc && pickup) {
+    const minutes = Math.max(1, Math.round((haversineMeters(loc, pickup) * ROAD_FACTOR) / TOWN_SPEED_MPS / 60))
+    return t('order.arrives_in', { n: minutes })
+  }
+  return t(headlineKey(o))
+})
+
 const farePayment = computed(() =>
   order.value
     ? t('order.fare_payment', { fare: formatMoney(order.value.fare, lang.value), payment: t(`payment_method.${order.value.payment_method}`) })
@@ -161,30 +200,84 @@ function orderAgain(): void {
   void router.replace({ name: ROUTE.book, query: { category: o.category } })
 }
 
+function protection(): void {
+  toast.show({ message: t('order.parcel_protection_text'), duration: 6000 })
+}
+
+function shareTrip(): void {
+  const o = order.value
+  if (!o || !o.driver) return
+  const text = t('order.share_text', {
+    from: firstStop.value?.address ?? '',
+    to: lastStop.value?.address ?? '',
+    driver: o.driver.first_name,
+    vehicle: [o.vehicle?.make, o.vehicle?.model].filter(Boolean).join(' '),
+    plate: o.vehicle?.plate ?? '',
+  })
+  openTelegram(`https://t.me/share/url?url=${encodeURIComponent('https://t.me')}&text=${encodeURIComponent(text)}`)
+}
+
+async function safety(): Promise<void> {
+  const support = session.config.support
+  const choice = await showActionSheet({
+    title: t('order.safety'),
+    actions: [
+      { id: 'call', label: t('order.safety_call') },
+      ...(support.telegram_link ? [{ id: 'support', label: t('order.safety_support') }] : []),
+    ],
+  })
+  if (choice === 'call') openExternal('tel:112')
+  else if (choice === 'support' && support.telegram_link) openTelegram(support.telegram_link)
+}
+
+async function more(): Promise<void> {
+  const choice = await showActionSheet({
+    actions: [
+      { id: 'share', label: t('order.share') },
+      { id: 'support', label: t('menu.support') },
+    ],
+  })
+  if (choice === 'share') shareTrip()
+  else if (choice === 'support') void router.push({ name: ROUTE.support })
+}
+
 function toHome(): void {
   void router.replace({ name: ROUTE.home })
 }
 </script>
 
 <template>
-  <JSheet :snap="'content'" :snap-points="['content']" :aria-label="order ? t(headlineKey(order)) : t('common.loading')" @height="(h) => (stage.sheetHeight.value = h)">
+  <JSheet
+    v-model:snap="snap"
+    :snap-points="snapPoints"
+    tab-bar
+    :aria-label="order ? headline : t('common.loading')"
+    @height="(h) => (stage.sheetHeight.value = h)"
+  >
     <template #header>
       <div v-if="order" class="trip-head" aria-live="polite">
         <div class="trip-head__row">
-          <h1 class="trip-head__title">{{ t(headlineKey(order)) }}</h1>
           <JSpinner v-if="order.status === 'searching'" size="small" />
+          <h1 class="trip-head__title">{{ headline }}</h1>
         </div>
         <p class="trip-head__meta">
-          <span>{{ t('order.number', { n: order.number }) }}</span>
-          <template v-if="order.status === 'searching' && elapsed">
+          <template v-if="order.status === 'searching'">
+            <span class="jt-tabular">{{ t('order.searching_sent', { time: elapsed }) }}</span>
+          </template>
+          <template v-else>
+            <span class="jt-tabular">{{ createdAt }}</span>
             <span aria-hidden="true">·</span>
-            <span class="jt-tabular">{{ t('order.searching_elapsed', { time: elapsed }) }}</span>
+            <span>{{ t('order.number', { n: order.number }) }}</span>
           </template>
         </p>
       </div>
       <div v-else-if="live.loading.value" class="trip-head">
         <JSkeleton width="60%" height="24px" />
         <JSkeleton width="30%" height="14px" />
+      </div>
+      <div v-if="order && liveTrip && order.driver" class="trip-driver">
+        <p v-if="order.status === 'driver_arriving'" class="trip-text">{{ t('order.arriving_text') }}</p>
+        <TripDriverCard :driver="order.driver" :vehicle="order.vehicle" :photo-url="photoUrl" @safety="safety" @share="shareTrip" />
       </div>
     </template>
 
@@ -205,15 +298,55 @@ function toHome(): void {
       <JSkeleton :lines="3" />
     </div>
 
-    <div v-else class="trip-body">
-      <!-- Searching -->
-      <p v-if="order.status === 'searching'" class="trip-text">{{ t('order.searching_text') }}</p>
+    <!-- Live trip: driver, actions, order card -->
+    <div v-else-if="liveTrip && order.driver" class="trip-body">
 
-      <!-- Assigned driver -->
-      <template v-if="order.driver && order.status !== 'searching' && order.status !== 'cancelled'">
-        <p v-if="order.status === 'driver_arriving'" class="trip-text">{{ t('order.arriving_text') }}</p>
-        <DriverCard :driver="order.driver" :vehicle="order.vehicle" :photo-url="photoUrl" :contact="activeDriver" />
-      </template>
+      <button v-if="delivery" type="button" class="trip-note" @click="protection">
+        <ShieldCheck :size="24" :stroke-width="1.8" aria-hidden="true" />
+        <span>{{ t('order.parcel_protection') }}</span>
+        <ChevronRight :size="20" :stroke-width="2.25" aria-hidden="true" />
+      </button>
+
+      <section class="trip-order">
+        <p class="trip-order__fare jt-tabular">{{ formatMoney(order.fare, lang) }} · {{ t(`payment_method.${order.payment_method}`) }}</p>
+        <span class="trip-order__chip">{{ categoryChip }}</span>
+        <ol class="trip-route">
+          <li v-if="firstStop" class="trip-route__row">
+            <span class="trip-route__dot is-start" aria-hidden="true" />
+            <span class="trip-route__address">{{ addr(firstStop.address) }}</span>
+          </li>
+          <li v-if="lastStop" class="trip-route__row">
+            <span class="trip-route__dot is-end" aria-hidden="true" />
+            <span class="trip-route__address">{{ addr(lastStop.address) }}</span>
+            <span v-if="extraStops > 0" class="trip-route__extra">{{ t('order.extra_stops', { n: extraStops }) }}</span>
+          </li>
+        </ol>
+        <p v-if="order.comment" class="trip-order__comment">{{ order.comment }}</p>
+        <p v-if="delivery && order.cargo_description" class="trip-order__comment">{{ order.cargo_description }}</p>
+        <p v-if="order.recipient_phone" class="trip-order__comment">
+          <span class="trip-card__label">{{ t('order.recipient') }}</span>
+          <a class="jt-tabular" :href="telHref(order.recipient_phone)">{{ formatKzPhone(order.recipient_phone) }}</a>
+        </p>
+      </section>
+    </div>
+
+    <div v-else class="trip-body">
+      <!-- Searching: compact route, fare and payment -->
+      <section v-if="order.status === 'searching'" class="trip-list">
+        <div v-if="firstStop" class="trip-list__row">
+          <span class="trip-list__badge" aria-hidden="true">A</span>
+          <span class="trip-list__text">{{ addr(firstStop.address) }}</span>
+        </div>
+        <div v-if="lastStop" class="trip-list__row">
+          <span class="trip-list__badge" aria-hidden="true">{{ String.fromCharCode(64 + order.stops.length) }}</span>
+          <span class="trip-list__text">{{ addr(lastStop.address) }}</span>
+          <span v-if="extraStops > 0" class="trip-list__meta">{{ t('order.extra_stops', { n: extraStops }) }}</span>
+        </div>
+        <div class="trip-list__row">
+          <Banknote :size="24" :stroke-width="1.8" class="trip-list__icon" aria-hidden="true" />
+          <span class="trip-list__text jt-tabular"><strong>{{ formatMoney(order.fare, lang) }}</strong> · {{ t(`payment_method.${order.payment_method}`) }}</span>
+        </div>
+      </section>
 
       <!-- Cancelled -->
       <div v-if="order.status === 'cancelled' && cancel" class="trip-cancel">
@@ -229,16 +362,12 @@ function toHome(): void {
         <p v-if="order.dispute.resolution" class="trip-text is-secondary">{{ t('dispute.resolution', { text: order.dispute.resolution }) }}</p>
       </div>
 
-      <!-- Route and order facts -->
-      <section class="trip-card">
+      <!-- Finished orders: route and facts -->
+      <section v-if="order.status !== 'searching'" class="trip-card">
         <OrderStopList :stops="order.stops" :show-done="order.status === 'in_progress'" />
         <p class="trip-card__fare jt-tabular">{{ farePayment }}</p>
         <p v-if="delivery && order.cargo_description" class="trip-card__line">
           <span class="trip-card__label">{{ t('confirm.description') }}</span> {{ order.cargo_description }}
-        </p>
-        <p v-if="order.recipient_phone" class="trip-card__line">
-          <span class="trip-card__label">{{ t('order.recipient') }}</span>
-          <a class="jt-tabular" :href="telHref(order.recipient_phone)">{{ formatKzPhone(order.recipient_phone) }}</a>
         </p>
         <p v-if="order.comment" class="trip-card__line">
           <span class="trip-card__label">{{ t('detail.comment') }}</span> {{ order.comment }}
@@ -260,7 +389,7 @@ function toHome(): void {
         <JButton v-if="order.can_dispute && !disputeOpen" block variant="secondary" @click="disputeOpen = true">
           {{ t('dispute.action') }}
         </JButton>
-        <JButton v-if="order.can_cancel" block variant="destructive" :loading="cancelling" @click="cancelTrip">
+        <JButton v-if="order.can_cancel" block variant="secondary" :loading="cancelling" @click="cancelTrip">
           {{ t('order.cancel') }}
         </JButton>
         <JButton v-if="order.status === 'completed' || order.status === 'cancelled' || order.status === 'disputed'" block variant="plain" @click="toHome">
@@ -268,6 +397,17 @@ function toHome(): void {
         </JButton>
       </div>
     </div>
+
+    <template v-if="liveTrip && order" #footer>
+      <div class="trip-footer">
+        <JButton v-if="order.can_cancel" class="trip-footer__main" variant="secondary" :loading="cancelling" @click="cancelTrip">
+          {{ t('order.cancel_trip') }}
+        </JButton>
+        <button type="button" class="trip-footer__more" :aria-label="t('order.more')" @click="more">
+          <Ellipsis :size="24" :stroke-width="2.25" aria-hidden="true" />
+        </button>
+      </div>
+    </template>
   </JSheet>
 </template>
 
@@ -287,6 +427,195 @@ function toHome(): void {
 
 .trip-head__title {
   font: var(--jt-font-title2);
+}
+
+.trip-driver {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-2);
+  padding-bottom: var(--jt-space-4);
+}
+
+.trip-note {
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-3);
+  min-height: 56px;
+  padding: 0 var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-fill-secondary);
+  font: var(--jt-font-headline);
+  font-weight: 500;
+  text-align: left;
+}
+
+.trip-note span {
+  flex: 1;
+}
+
+.trip-note:active {
+  opacity: var(--jt-opacity-pressed);
+}
+
+.trip-order {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--jt-space-2);
+  padding: var(--jt-space-4);
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-fill-secondary);
+}
+
+.trip-order__fare {
+  font: var(--jt-font-headline);
+  font-size: 19px;
+}
+
+.trip-order__chip {
+  padding: 4px 12px;
+  border-radius: var(--jt-radius-capsule);
+  background: var(--jt-color-fill-tertiary);
+  font: var(--jt-font-subheadline);
+}
+
+.trip-order__comment {
+  font: var(--jt-font-subheadline);
+  color: var(--jt-color-label-secondary);
+  overflow-wrap: anywhere;
+}
+
+.trip-order__comment a {
+  color: var(--jt-color-label);
+  font-weight: 600;
+}
+
+.trip-route {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-2);
+  width: 100%;
+  margin-top: 2px;
+}
+
+.trip-route__row {
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-3);
+  min-height: 26px;
+}
+
+.trip-route__dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin: 0 3px;
+  border-radius: 50%;
+  background: var(--jt-color-gray);
+}
+
+.trip-route__dot.is-start {
+  background: var(--jt-color-blue);
+  box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.18);
+}
+
+.trip-route__dot.is-end {
+  background: var(--jt-color-green);
+  box-shadow: 0 0 0 4px rgba(52, 199, 89, 0.18);
+}
+
+.trip-route__address {
+  flex: 1;
+  min-width: 0;
+  font: var(--jt-font-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trip-route__extra,
+.trip-list__meta {
+  flex: none;
+  font: var(--jt-font-subheadline);
+  color: var(--jt-color-label-secondary);
+}
+
+.trip-list {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--jt-radius-card);
+  background: var(--jt-color-fill-secondary);
+  overflow: hidden;
+}
+
+.trip-list__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-3);
+  min-height: 52px;
+  padding: 0 var(--jt-space-4);
+}
+
+.trip-list__row + .trip-list__row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 52px;
+  right: 0;
+  border-top: var(--jt-hairline) solid var(--jt-color-separator);
+}
+
+.trip-list__badge {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--jt-color-primary);
+  color: var(--jt-color-on-primary);
+  font: 600 13px/1 var(--jt-font-family);
+}
+
+.trip-list__icon {
+  flex: none;
+}
+
+.trip-list__text {
+  flex: 1;
+  min-width: 0;
+  font: var(--jt-font-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trip-footer {
+  display: flex;
+  gap: var(--jt-space-2);
+}
+
+.trip-footer__main {
+  flex: 1;
+}
+
+.trip-footer__more {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 52px;
+  border-radius: var(--jt-radius-capsule);
+  background: var(--jt-color-fill-secondary);
+  transition: transform var(--jt-duration-spring) var(--jt-ease-spring);
+}
+
+.trip-footer__more:active {
+  transform: scale(0.96);
 }
 
 .trip-head__meta {

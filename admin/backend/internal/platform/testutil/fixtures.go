@@ -66,12 +66,24 @@ type DriverFixture struct {
 	Plate      string
 }
 
+// LatLon is a WGS 84 point for fixtures.
+type LatLon struct{ Lat, Lon float64 }
+
 // DriverOptions customise CreateDriver.
 type DriverOptions struct {
 	Status  string // default "approved"
 	Online  bool
 	Balance int64  // initial wallet balance (credited through a ledger entry)
-	City    string // default "EMB"
+	City    string // default "EMB"; the registered city only shapes the driver code
+
+	// Location is the driver's last GPS fix, recorded LocationAge ago.
+	// Dispatch is by distance from this fix to the pickup and going online
+	// requires a fresh one, so an Online driver without an explicit Location
+	// gets a fix at the centre of their city recorded now, unless NoLocation
+	// is set.
+	Location    *LatLon
+	LocationAge time.Duration
+	NoLocation  bool
 }
 
 // CreateDriver inserts a complete driver: user, profile, claimed vehicle and a wallet
@@ -131,7 +143,31 @@ func CreateDriver(t testing.TB, pool *pgxpool.Pool, opt DriverOptions) DriverFix
 			t.Fatalf("seed ledger: %v", err)
 		}
 	}
+	switch {
+	case opt.Location != nil:
+		SetDriverLocation(t, pool, f.DriverID, *opt.Location, opt.LocationAge)
+	case opt.Online && !opt.NoLocation:
+		var centre LatLon
+		if err := pool.QueryRow(ctx, `SELECT center_lat, center_lon FROM cities WHERE id = $1`, cityID).Scan(&centre.Lat, &centre.Lon); err != nil {
+			t.Fatalf("city centre: %v", err)
+		}
+		SetDriverLocation(t, pool, f.DriverID, centre, opt.LocationAge)
+	}
 	return f
+}
+
+// SetDriverLocation stores the driver's last GPS fix as recorded age ago
+// (by the database clock), replacing any previous fix.
+func SetDriverLocation(t testing.TB, pool *pgxpool.Pool, driverID uuid.UUID, at LatLon, age time.Duration) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO driver_locations (driver_id, lat, lon, source, recorded_at)
+		VALUES ($1, $2, $3, 'miniapp', now() - $4::float8 * interval '1 second')
+		ON CONFLICT (driver_id) DO UPDATE SET lat = EXCLUDED.lat, lon = EXCLUDED.lon, source = EXCLUDED.source,
+		       recorded_at = EXCLUDED.recorded_at, received_at = now()`,
+		driverID, at.Lat, at.Lon, age.Seconds()); err != nil {
+		t.Fatalf("driver location: %v", err)
+	}
 }
 
 func letters(n int64) string {

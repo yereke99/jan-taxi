@@ -132,3 +132,12 @@ func (c *Client) SetMyShortDescription(ctx context.Context, short, languageCode 
 	}{short, languageCode}
 	return c.call(ctx, "setMyShortDescription", body, nil, 0)
 }
+
+// GetFile prepares a file for download and returns its path.
+func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
+	var f File
+	if err := c.call(ctx, "getFile", map[string]string{"file_id": fileID}, &f, 0); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}

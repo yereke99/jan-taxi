@@ -25,7 +25,7 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>()
 <template>
   <button
     type="button"
-    class="jt-map-button jt-glass"
+    class="jt-map-button jt-liquid jt-liquid-press"
     :class="{ 'is-active': active }"
     :aria-label="label"
     :aria-busy="loading || undefined"
@@ -47,18 +47,10 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>()
   height: var(--jt-fab-size);
   border-radius: 50%;
   color: var(--jt-color-label);
-  transition:
-    opacity 120ms linear,
-    transform var(--jt-duration-fast) var(--jt-ease-spring);
 }
 
 .jt-map-button.is-active {
   color: var(--jt-color-blue);
-}
-
-.jt-map-button:active:not(:disabled) {
-  opacity: var(--jt-opacity-pressed);
-  transform: scale(0.94);
 }
 
 .jt-map-button:disabled {

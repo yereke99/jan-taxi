@@ -14,7 +14,9 @@ import (
 // confirmation API and its payment link is fixed per sales point: the payer
 // types the amount and may leave a message. The instructions therefore ask the
 // driver to enter the exact amount and paste the top-up reference into the
-// message, and a finance admin reconciles the payment in Kaspi Pay → History.
+// message, then to send the Kaspi receipt PDF, which credits the top-up
+// automatically when it passes every check (receipt.go); otherwise a finance
+// admin reconciles the payment in Kaspi Pay → History.
 type KaspiManual struct {
 	q                 db.Querier
 	fallbackURL       string
@@ -106,14 +108,14 @@ func isBuiltinInstructions(l settings.Localized) bool {
 // Built-in instruction texts. Placeholders: {amount}, {reference}, {recipient}.
 var (
 	kaspiLinkText = map[string]string{
-		"kk": "Kaspi сілтемесі соманы да, төлем кодын да өзі толтырмайды. Сілтемені ашып, {amount} сомасын қолмен дәл енгізіңіз және хабарлама жолына {reference} кодын қойыңыз. Төлегеннен кейін осы жерде төлемді растаңыз. Әкімші төлемді тексерген соң сома балансыңызға түседі.",
-		"ru": "Ссылка Kaspi не заполняет ни сумму, ни код платежа. Откройте ссылку, введите вручную точную сумму {amount} и вставьте код {reference} в поле сообщения. После оплаты подтвердите её здесь. Сумма поступит на баланс после проверки платежа администратором.",
-		"en": "The Kaspi link fills in neither the amount nor the payment code. Open the link, enter the exact amount {amount} manually and paste the code {reference} into the message field. After paying, confirm it here. The amount reaches your balance once an administrator has verified the payment.",
+		"kk": "Kaspi сілтемесі соманы да, төлем кодын да өзі толтырмайды. Сілтемені ашып, {amount} сомасын қолмен дәл енгізіңіз және хабарлама жолына {reference} кодын қойыңыз. Төлегеннен кейін Kaspi чегін (PDF) осы жерге немесе ботқа жіберіңіз: чек сәйкес келсе, сома балансыңызға бірден түседі, әйтпесе әкімші тексереді.",
+		"ru": "Ссылка Kaspi не заполняет ни сумму, ни код платежа. Откройте ссылку, введите вручную точную сумму {amount} и вставьте код {reference} в поле сообщения. После оплаты отправьте чек Kaspi (PDF) сюда или боту: если чек совпадает, сумма сразу поступит на баланс, иначе платёж проверит администратор.",
+		"en": "The Kaspi link fills in neither the amount nor the payment code. Open the link, enter the exact amount {amount} manually and paste the code {reference} into the message field. After paying, send the Kaspi receipt (PDF) here or to the bot: if it matches, the amount reaches your balance at once, otherwise an administrator checks the payment.",
 	}
 	kaspiRecipientText = map[string]string{
-		"kk": "Kaspi.kz қосымшасында «{recipient}» алушысын тауып, {amount} сомасын қолмен дәл енгізіңіз және хабарлама жолына {reference} кодын қойыңыз. Төлегеннен кейін осы жерде төлемді растаңыз. Әкімші төлемді тексерген соң сома балансыңызға түседі.",
-		"ru": "В приложении Kaspi.kz найдите получателя «{recipient}», введите вручную точную сумму {amount} и вставьте код {reference} в поле сообщения. После оплаты подтвердите её здесь. Сумма поступит на баланс после проверки платежа администратором.",
-		"en": "In the Kaspi.kz app, find the recipient “{recipient}”, enter the exact amount {amount} manually and paste the code {reference} into the message field. After paying, confirm it here. The amount reaches your balance once an administrator has verified the payment.",
+		"kk": "Kaspi.kz қосымшасында «{recipient}» алушысын тауып, {amount} сомасын қолмен дәл енгізіңіз және хабарлама жолына {reference} кодын қойыңыз. Төлегеннен кейін Kaspi чегін (PDF) осы жерге немесе ботқа жіберіңіз: чек сәйкес келсе, сома балансыңызға бірден түседі, әйтпесе әкімші тексереді.",
+		"ru": "В приложении Kaspi.kz найдите получателя «{recipient}», введите вручную точную сумму {amount} и вставьте код {reference} в поле сообщения. После оплаты отправьте чек Kaspi (PDF) сюда или боту: если чек совпадает, сумма сразу поступит на баланс, иначе платёж проверит администратор.",
+		"en": "In the Kaspi.kz app, find the recipient “{recipient}”, enter the exact amount {amount} manually and paste the code {reference} into the message field. After paying, send the Kaspi receipt (PDF) here or to the bot: if it matches, the amount reaches your balance at once, otherwise an administrator checks the payment.",
 	}
 	// kaspiSummaryText precedes custom (admin or env) instructions so the amount
 	// and the reference are always stated.
