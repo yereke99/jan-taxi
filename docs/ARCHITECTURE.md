@@ -961,8 +961,11 @@ offers) where they conflict.
 - The full commission is charged in the **same transaction** as the atomic accept (ledger
   `commission_charge`, key `charge:<order_id>`); no reservation for new orders.
   Insufficient available balance → `402 insufficient_balance` and the order stays open for others.
-- **Not refunded** when the passenger cancels. Refund only through an admin action
-  (admin cancel/dispute with `refund_commission=true`, ledger `commission_refund`).
+- **Not refunded** when the passenger cancels — never automatically, at any moment after acceptance
+  (owner decision 2026-10-19: prevents a driver and a passenger from colluding to cancel and get the
+  commission back). Refund only through an explicit admin action with the refund option ticked
+  (admin cancel, admin reassign `refund_previous`, dispute resolution with `refund_commission=true`;
+  ledger `commission_refund`, audited). Do not add grace-period or automatic refunds.
 - A driver whose available balance is below the commission stops receiving offers automatically
   and gets one `wallet_low_balance` notification with a top-up button.
 
