@@ -201,6 +201,32 @@ func activePassengerOrder(ctx context.Context, q db.Querier, passengerID uuid.UU
 	return id, nil
 }
 
+// checkCancelsAfterAccept refuses a new order from a passenger who cancelled
+// too many orders after a driver had accepted them within the last 24 hours
+// (setting orders.passenger_cancels_after_accept_per_day, 0 = no limit): each
+// such cancellation costs the driver the commission (§22.2), so creating and
+// cancelling orders over and over would drain nearby drivers' wallets. The
+// answer is 409 conflict {reason: too_many_cancellations, limit}.
+func checkCancelsAfterAccept(ctx context.Context, q db.Querier, passengerID uuid.UUID) error {
+	limit := settings.PassengerCancelsAfterAcceptPerDay(ctx, q)
+	if limit <= 0 {
+		return nil
+	}
+	var n int64
+	if err := q.QueryRow(ctx, `
+		SELECT count(*) FROM orders
+		WHERE passenger_id = $1 AND status = 'cancelled' AND cancelled_by = 'passenger'
+		  AND accepted_at IS NOT NULL AND cancelled_at > now() - interval '24 hours'`,
+		passengerID).Scan(&n); err != nil {
+		return fmt.Errorf("orders: cancellations after acceptance: %w", err)
+	}
+	if n >= limit {
+		return lifecycle.ConflictReason("too_many_cancellations", "too many orders cancelled after a driver accepted them").
+			WithDetails(map[string]any{"reason": "too_many_cancellations", "limit": limit})
+	}
+	return nil
+}
+
 // quoteError tells a consumed quote apart from an expired one: both are 422
 // quote_expired, a consumed one with details {reason: quote_used}. The quote
 // already belongs to the caller when pricing reports it expired.
@@ -280,6 +306,9 @@ func (s *Service) createOrder(w http.ResponseWriter, r *http.Request) error {
 		} else if active != uuid.Nil {
 			return lifecycle.ActiveOrderExists(active)
 		}
+		if err := checkCancelsAfterAccept(ctx, tx, p.UserID); err != nil {
+			return err
+		}
 		orderID, err = insertOrder(ctx, tx, p.UserID, quote, n)
 		return err
 	})
@@ -323,7 +352,10 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 	if len(q.Stops) < stops.MinPoints || len(q.Stops) > stops.MaxPoints {
 		return uuid.Nil, httpx.Validation(map[string]string{"quote_id": "invalid"})
 	}
-	commission := pricing.Commission(n.Fare, q.CommissionBps)
+	// The commission is snapshotted now and charged when a driver takes the
+	// order (§22.2).
+	policy := settings.Commission(ctx, tx)
+	commission := pricing.OrderCommission(policy.Mode, policy.FixedAmount, n.Fare, q.CommissionBps)
 	pickup := q.Stops[0]
 	var id uuid.UUID
 	var number int64
@@ -331,15 +363,17 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 		INSERT INTO orders (passenger_id, city_id, category, service_type, cargo_type, cargo_description,
 		                    recipient_phone, prohibited_items_ack, comment, status, fare, commission_bps,
 		                    commission_amount, payment_method, tariff_id, quote_id, distance_m, duration_s,
-		                    stop_count, pickup_lat, pickup_lon, idempotency_key, search_expires_at)
+		                    stop_count, pickup_lat, pickup_lon, idempotency_key, search_expires_at,
+		                    vehicle_class, passenger_count, cargo_size, cargo_volume_l, commission_mode, locality)
 		SELECT $1, c.id, $3, $4, $5, $6, $7, $8, $9, 'searching', $10, $11, $12, $13, $14, $15, $16, $17,
-		       $18, $19, $20, $21, now() + make_interval(secs => c.search_timeout_s)
+		       $18, $19, $20, $21, now() + make_interval(secs => c.search_timeout_s), $22, $23, $24, $25, $26, $27
 		FROM cities c WHERE c.id = $2
 		RETURNING id, number`,
 		passengerID, q.CityID, q.Category, lifecycle.ServiceType(q.Category), lifecycle.CargoType(q.Category),
 		n.CargoDescription, n.RecipientPhone, n.Ack && q.Category != lifecycle.CategoryTaxi, n.Comment, n.Fare,
 		q.CommissionBps, commission, n.PaymentMethod, q.TariffID, q.ID, q.DistanceM, q.DurationS,
-		len(q.Stops), pickup.Lat, pickup.Lon, n.IdempotencyKey).Scan(&id, &number)
+		len(q.Stops), pickup.Lat, pickup.Lon, n.IdempotencyKey,
+		q.VehicleClass, q.PassengerCount, q.CargoSize, q.CargoVolumeL, policy.Mode, q.Locality).Scan(&id, &number)
 	switch {
 	case db.IsUniqueViolation(err, lifecycle.IdxOneActivePerPassenger):
 		return uuid.Nil, errActiveRace
@@ -378,7 +412,7 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 		return uuid.Nil, err
 	}
 	data := map[string]any{"order_id": id.String(), "order_number": number, "status": lifecycle.StatusSearching,
-		"category": q.Category}
+		"category": q.Category, "vehicle_class": q.VehicleClass}
 	if err := lifecycle.Publish(ctx, tx, realtime.OrderCreated, data,
 		realtime.UserScope(passengerID), realtime.AdminScope); err != nil {
 		return uuid.Nil, err

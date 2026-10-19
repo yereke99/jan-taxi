@@ -65,6 +65,17 @@ export const useSessionStore = defineStore('session', () => {
     return bootstrapping
   }
 
+  /** Re-reads /me (e.g. after the bot verified a shared phone); errors keep the current user. */
+  async function refreshMe(signal?: AbortSignal): Promise<Me | null> {
+    if (status.value !== 'ready') return me.value
+    try {
+      applyMe(await getMe(signal))
+    } catch (err) {
+      if (!signal?.aborted) console.warn('[session] /me refresh failed', err)
+    }
+    return me.value
+  }
+
   /** Re-reads the public config (support contacts, links) when it failed at start. */
   async function ensureConfig(): Promise<void> {
     if (!configLoaded.value) await loadConfig()
@@ -92,6 +103,7 @@ export const useSessionStore = defineStore('session', () => {
     isReady,
     maxRoutePoints,
     bootstrap,
+    refreshMe,
     ensureConfig,
     setLanguage,
   }

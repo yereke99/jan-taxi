@@ -50,6 +50,9 @@ const (
 	ModerationApproved        = "moderation.approved"
 	ModerationRejected        = "moderation.rejected"
 	DriverPhoneVerified       = "driver.phone_verified"
+	// UserPhoneVerified tells the passenger app that the phone shared with
+	// the passenger bot was stored (§22.5).
+	UserPhoneVerified = "user.phone_verified"
 )
 
 // UserScope addresses a user (passenger app, and the driver app's user).

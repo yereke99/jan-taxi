@@ -12,7 +12,7 @@ import type {
   PlateCheck,
   UploadKind,
 } from './types'
-import { normalizeRegistration } from './normalize'
+import { normalizeRegistration, normalizeVehicleClassFields, rec } from './normalize'
 import { uploadWithProgress, type UploadProgress } from './upload'
 
 /** A new application: nothing saved yet, everything editable and missing. */
@@ -69,8 +69,12 @@ export function deleteRegistrationFile(fileId: string): Promise<void> {
   return http.delete<void>(`/driver/registration/files/${encodeURIComponent(fileId)}`)
 }
 
-export function getProfile(opts?: RequestOptions): Promise<DriverProfile> {
-  return http.get<DriverProfile>('/driver/profile', opts)
+/** The profile with the vehicle's class fields (§21) always present (null until chosen). */
+export async function getProfile(opts?: RequestOptions): Promise<DriverProfile> {
+  const p = await http.get<DriverProfile>('/driver/profile', opts)
+  if (!p?.vehicle) return p
+  const v = rec(p.vehicle) as unknown as NonNullable<DriverProfile['vehicle']>
+  return { ...p, vehicle: { ...v, ...normalizeVehicleClassFields(v) } }
 }
 
 export function setAvailability(online: boolean): Promise<Availability> {

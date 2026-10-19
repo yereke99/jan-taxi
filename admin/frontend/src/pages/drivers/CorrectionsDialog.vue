@@ -176,6 +176,7 @@ async function submit(): Promise<void> {
 }
 
 .corr__check input {
+  flex: none;
   width: 16px;
   height: 16px;
   accent-color: #000;

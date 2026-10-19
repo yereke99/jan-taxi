@@ -625,14 +625,31 @@ paths:
       description: |
         Validates 2..N stops (N = the smaller of `MAX_ROUTE_POINTS` and the setting
         `routing.max_points`, at most 5; pickup first, destination last), checks every point is
-        inside Kazakhstan, resolves the city (active zone covering the pickup, otherwise the
-        nearest active city centre), routes the stops in the given order with OSRM and prices the
-        trip with that city's active tariff for the category. Coordinates are rounded to 6
-        decimals. Returns a quote, valid for 10 minutes, that `POST /orders` must reference.
+        inside Kazakhstan, resolves the tariff region of the pickup (the city owning the smallest
+        active zone that covers it, so a configured city wins inside its zone; otherwise the
+        nationwide default region `KAZ`; never the nearest city), names the settlement of the
+        pickup once by reverse geocoding (`locality`: the settlement whose outline covers the
+        pickup by its own name, else the town or district of the nearest address; at most 1.5 s,
+        `null` on failure), routes the
+        stops in the given order with OSRM once and prices
+        the trip for every active vehicle class (ARCHITECTURE §21) that can carry the request —
+        taxi: passenger-capable and `seats_max ≥ passenger_count`; parcel/other: cargo-capable and
+        default cargo volume ≥ the `cargo_size` volume — and has an active tariff for the
+        category: the tariff of that region, or, for a class or category the region has no active
+        tariff for, the nationwide `KAZ` tariff (so a city zone never switches a service off).
+        Each option's `tariff_region` (and the region of its quote, which the order inherits)
+        names the region whose tariff priced it. Coordinates are rounded to 6 decimals. Returns
+        one quote per class in `options[]` (valid for 10 minutes); `POST /orders` references the
+        chosen option's `quote_id`. The top-level quote fields (`city` and `tariff_region`
+        included) repeat the first option for older clients.
         Rate limited per user (30/min, burst 10, `Retry-After: 10`).
 
         422 cases: `validation_failed` (`fields.category` = `required | invalid | not_allowed`
-        — `not_allowed` when the city has no active tariff for the category;
+        — `not_allowed` when no class that could carry the request is priced in the region or
+        nationwide;
+        `fields.passenger_count` = `too_small | too_large | not_allowed` — `too_large` also when no
+        active class seats that many; `fields.cargo_size` = `invalid | not_allowed | too_large` —
+        `too_large` when no active class has that much cargo space;
         `fields.stops` = `required | too_few | too_many` with `details.max`;
         `fields["stops.N.lat"|"stops.N.lon"]` = `required | invalid`;
         `fields["stops.N.address"]` = `required | too_long | invalid`;
@@ -687,6 +704,10 @@ paths:
         Idempotent by `idempotency_key`: a replay with the same quote, fare and payment method
         returns the original order with `200`; the same key with a different payload is
         `409 conflict` with `details.reason = idempotency_key_reused`.
+        A passenger who cancelled `orders.passenger_cancels_after_accept_per_day` (default 3,
+        0 = no limit) orders after a driver had accepted them — each costs that driver the
+        commission — within the last 24 hours gets `409 conflict` with
+        `details {reason: too_many_cancellations, limit}`.
 
         `fields`: `quote_id` = `required | invalid`, `idempotency_key` = `required | invalid`,
         `fare` = `required | invalid`, `payment_method` = `required | invalid`,
@@ -720,7 +741,7 @@ paths:
         '403': {$ref: '#/components/responses/AppForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409':
-          description: '`conflict` with `details.reason` = `active_order_exists` (+ `active_order_id`) or `idempotency_key_reused`.'
+          description: '`conflict` with `details.reason` = `active_order_exists` (+ `active_order_id`), `idempotency_key_reused` or `too_many_cancellations` (+ `limit`).'
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -801,14 +822,26 @@ paths:
       tags: [orders]
       summary: Cancel my order
       description: |
-        Allowed while `searching`, `accepted` or `driver_arriving` (`409 invalid_transition` with
-        `details {from, action: cancel}` otherwise). Releases the driver's commission
-        reservation and notifies the driver. The body is optional (empty body allowed);
-        `fields.reason` = `too_long | invalid`.
+        Only passengers cancel (ARCHITECTURE §22.3). Allowed while `searching`, `accepted` or
+        `driver_arriving` (`409 invalid_transition` with `details {from, action: cancel}`
+        otherwise). The reason is required: `reason_code` is one of `long_wait | driver_issue |
+        vehicle_issue | changed_plans | other` and `comment` (free text, ≤ 120 code points) is
+        required with `other`. `fields`: `reason_code` = `required | invalid`, `comment` =
+        `required | too_long | invalid`. Stored as `cancel_reason_code` + `cancel_reason` (the
+        comment). The commission the driver paid when taking the order is **not** refunded
+        (§22.2; only an operator refunds it). The assigned driver is told the order was cancelled
+        (without the passenger's reason); other drivers' offer messages are marked cancelled.
+
+        `expected_status` is the status the passenger saw when confirming. When the order has
+        moved on since (typically a driver accepted it while the passenger was cancelling a
+        search), nothing changes and the answer is `409 conflict` with
+        `details {reason: order_changed, status}`: the app shows the new state and the passenger
+        decides again. `fields.expected_status` = `invalid` for an unknown status. Orders
+        cancelled after acceptance count towards the passenger's daily limit (see `POST /orders`).
       x-jantaxi-app: [passenger]
       security: [{appToken: []}]
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/OrderCancelRequest'}
@@ -822,7 +855,24 @@ paths:
         '401': {$ref: '#/components/responses/AppUnauthorized'}
         '403': {$ref: '#/components/responses/AppForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
-        '409': {$ref: '#/components/responses/InvalidTransition'}
+        '409':
+          description: '`invalid_transition` with `details {from, action: cancel}`, or `conflict` with `details {reason: order_changed, status}` when `expected_status` no longer holds.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              examples:
+                invalidTransition:
+                  value:
+                    error:
+                      code: invalid_transition
+                      message: transition not allowed
+                      details: {from: completed, action: cancel}
+                orderChanged:
+                  value:
+                    error:
+                      code: conflict
+                      message: the order changed meanwhile
+                      details: {reason: order_changed, status: accepted}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
@@ -961,9 +1011,12 @@ paths:
       tags: [driver-registration]
       summary: Save registration data
       description: |
-        Saves the text fields of the application. The first call creates the driver profile in
-        the default city (`DEFAULT_CITY`, else the oldest active city; `422 no_active_city` when
-        none), assigns the driver code (`EMB001`), an empty vehicle and the wallet. Allowed while
+        Saves the text fields of the application. The first call creates the driver profile, an
+        empty vehicle and the wallet, and assigns the driver code of the driver's city: with
+        `location` (the device position) inside Kazakhstan, the city owning the smallest active
+        zone that covers it, else the nationwide region `KAZ` (codes `KAZ001`…); without a
+        location (or outside Kazakhstan) the default city (`DEFAULT_CITY`, else the oldest active
+        city; `422 no_active_city` when none). Later saves never change the city or the code. Allowed while
         `draft` or `changes_requested`; otherwise `409 conflict` with
         `details {reason: registration_locked, status}`. In `changes_requested` only the flagged
         fields may change: other changes are `422 validation_failed` with
@@ -975,7 +1028,7 @@ paths:
         `fields`: `first_name` / `last_name` = `required | too_long | invalid` (letters, spaces,
         `-`, `'`, `.` only), `vehicle` = `required`, `vehicle.make` / `vehicle.model` /
         `vehicle.color` = `required | too_long | invalid`, `vehicle.plate` =
-        `required | too_long | invalid`.
+        `required | too_long | invalid`, `location` = `invalid`.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       requestBody:
@@ -1390,11 +1443,23 @@ paths:
         wallet's available balance must cover the commission (`402 insufficient_balance` with
         `details {required, available, currency, topup_min_amount}`); the order must still be
         `searching` with no driver (`409 order_already_taken` once any driver holds it,
-        `409 invalid_transition` when it was cancelled without a driver). Orders of another city
-        and the driver's own passenger orders are `404`. Accepting an order the driver already
-        holds returns `200` unchanged. On success the commission is reserved, the winner's offer
-        is accepted and the others lost, the other offered drivers get `order.taken`, and the
-        passenger is notified. The city's location policy is not re-checked here.
+        `409 invalid_transition` when it was cancelled without a driver). The driver needs a fresh
+        location (`422 location_required`, `details.reason` = `location_required | location_stale`)
+        within the order's effective radius of the pickup; orders outside the radius, orders the
+        driver's vehicle cannot take (its class does not serve `order.vehicle_class`, fewer seats
+        than `passenger_count` or less cargo space than `cargo_volume_l`, ARCHITECTURE §21.4) and
+        the driver's own passenger orders are `404`. Accepting an order the driver already
+        holds returns `200` unchanged. On success the order's commission (`commission_amount`,
+        snapshotted at creation: `commission.fixed_amount` in `fixed` mode) is **charged** in the
+        same transaction (ledger `commission_charge`, key `charge:<order_id>`; no reservation;
+        never refunded when the passenger cancels, §22.2); the winner's offer is accepted and the
+        others lost, the other offered drivers get `order.taken` and their bot offer messages are
+        edited to "taken"; the passenger gets the "driver found" push with the driver's photo and
+        arrival estimate (`driver_eta_s`, refined from OSRM right after the commit, §22.6). When
+        the charge leaves the available balance below the next commission the driver gets one
+        `wallet_low_balance` message per day (with a top-up button); drivers in range whose
+        available balance is below an order's commission are not offered it and get the same
+        message, at most once per day. The city's location policy is not re-checked here.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       responses:
@@ -1408,6 +1473,11 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '402': {$ref: '#/components/responses/InsufficientBalance'}
         '409': {$ref: '#/components/responses/AcceptConflict'}
+        '422':
+          description: '`location_required` with `details {reason: location_required | location_stale, max_age_s}`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
   /driver/orders/{id}/arriving:
     parameters:
@@ -1493,10 +1563,11 @@ paths:
       description: |
         `in_progress` → `completed` once every intermediate stop is completed
         (`409 invalid_transition` with `details {from, action: complete, pending_stop_ids}`
-        otherwise). Marks the remaining stops completed, charges the reserved commission exactly
-        once (`charge:<order_id>`), increments the driver's trip count and notifies both sides
-        (plus a low-balance notice when the available balance falls below
-        `driver.min_online_balance`).
+        otherwise). Marks the remaining stops completed, increments the driver's trip count and
+        notifies both sides. The commission was charged when the driver took the order (§22.2),
+        so completion charges nothing; only an order accepted before business rules v2 still holds
+        a reservation, which is charged here exactly once (`charge:<order_id>`). Drivers cannot
+        cancel (§22.3): there is no driver cancel endpoint; they contact support.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       responses:
@@ -1510,41 +1581,6 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/InvalidTransition'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
-  /driver/orders/{id}/cancel:
-    parameters:
-      - $ref: '#/components/parameters/IdPath'
-    post:
-      operationId: cancelOrderByDriver
-      tags: [driver-orders]
-      summary: Cancel before the trip starts
-      description: |
-        `accepted` or `driver_arriving` → `cancelled` (not re-dispatched). Releases the commission
-        reservation and notifies the passenger, who may re-order. The reason is required
-        (`fields.reason` = `required | too_long | invalid`, 1..120 code points). The body is
-        validated before the driver's approval is checked.
-      x-jantaxi-app: [driver]
-      security: [{appToken: []}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/DriverOrderCancelRequest'}
-      responses:
-        '200':
-          description: Updated order.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/DriverOrderDetail'}
-        '400': {$ref: '#/components/responses/BadRequest'}
-        '401': {$ref: '#/components/responses/AppUnauthorized'}
-        '403': {$ref: '#/components/responses/DriverActionForbidden'}
-        '404': {$ref: '#/components/responses/NotFound'}
-        '409': {$ref: '#/components/responses/InvalidTransition'}
-        '413': {$ref: '#/components/responses/PayloadTooLarge'}
-        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
-        '422': {$ref: '#/components/responses/ValidationFailed'}
-        '429': {$ref: '#/components/responses/TooManyRequests'}
-
   # ------------------------------------------------------------------ wallet
   /driver/wallet:
     get:
@@ -2120,9 +2156,10 @@ paths:
       summary: Export orders as CSV
       description: |
         One row per non-draft order created in `[from, to)`. Columns: `number, id, created_at,
-        city, category, status, fare, commission, currency, payment_method, distance_m,
+        city, locality, category, status, fare, commission, currency, payment_method, distance_m,
         duration_s, stops, pickup_address, destination_address, driver_code, accepted_at,
-        started_at, completed_at, cancelled_at, cancelled_by, cancel_reason`.
+        started_at, completed_at, cancelled_at, cancelled_by, cancel_reason` (`city` is the
+        tariff region code, `locality` the settlement of the pickup, empty when unknown).
         Defaults to the last 30 local days; at most 366 days (`fields.to = too_large` with
         `details.max_days`). UTF-8 with BOM, CRLF line ends (RFC 4180), streamed; text cells
         starting with `=`, `+`, `-`, `@`, tab or CR are prefixed with `'` against formula
@@ -2235,7 +2272,8 @@ paths:
       summary: Search orders
       description: |
         Newest first. `q` (≤100 characters) matches the order number (`1042` or `#1042`), the order
-        id, a passenger, recipient or driver phone in any Kazakhstan spelling, or a driver code.
+        id, a passenger, recipient or driver phone in any Kazakhstan spelling, a driver code, or
+        part of the pickup `locality` (case-insensitive, e.g. `алма` finds Алматы).
         `from`/`to` filter `created_at` (RFC 3339 only; `to` exclusive).
         `fields`: `status` / `category` / `city_id` / `driver_id` / `from` / `to` / `page` /
         `page_size` = `invalid`, `q` = `too_long`.
@@ -2300,9 +2338,12 @@ paths:
       summary: Cancel an order
       description: |
         Allowed from `searching`, `accepted`, `driver_arriving` and `in_progress`
-        (`cancelled_by: admin`; `409 invalid_transition` otherwise). Releases the commission
-        reservation; both sides are notified. `fields.reason` = `required | too_long | invalid`
-        (1..200 code points). Audit-logged.
+        (`cancelled_by: admin`; `409 invalid_transition` otherwise); both sides are notified.
+        The commission the driver paid at acceptance is refunded only with
+        `refund_commission: true` (ledger `commission_refund`, once; the driver's message then
+        mentions the refund); a reservation left by an acceptance before business rules v2 is
+        released. `fields.reason` = `required | too_long | invalid` (1..200 code points).
+        Audit-logged (`refund_commission`, `refunded_commission`).
       x-jantaxi-permission: orders.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -2335,16 +2376,19 @@ paths:
       description: |
         A `searching` order goes through the same checks as `POST /driver/orders/{id}/accept`
         except that the driver need not be online (the response then carries
-        `warnings: ["offline"]`). An `accepted` or `driver_arriving` order is re-assigned: the
-        previous driver's reservation is released, the new driver's commission reserved and the
-        order restarts at `accepted`. Errors: `402 insufficient_balance`,
+        `warnings: ["offline"]`). An `accepted` or `driver_arriving` order is re-assigned and
+        restarts at `accepted`: the new driver is charged the order's commission (§22.2); the
+        previous driver's charge is refunded only with `refund_commission: true` (a legacy
+        reservation is released). Errors: `402 insufficient_balance`,
         `403 driver_not_approved` (not approved or blocked), `404` (unknown order),
         `409 driver_has_active_order`, `409 order_already_taken` (a driver accepted the
         searching order meanwhile), `409 invalid_transition` (from `in_progress` or a final
         status), `409 conflict` with `details.reason = already_assigned`, and `422
         validation_failed` with `fields.driver_id` = `required | invalid` (`invalid` also for an
         unknown driver), or
-        `fields.driver_id = not_allowed` with `details.reason` = `different_city | own_order`.
+        `fields.driver_id = not_allowed` with `details.reason` = `own_order`, or `vehicle_mismatch`
+        when the driver's vehicle cannot take the order (class, seats or cargo space; §21.4 — unlike
+        location, this cannot be overridden).
         Audit-logged (`order.assign` / `order.reassign`).
       x-jantaxi-permission: orders.manage
       security: [{adminSession: [], csrfHeader: []}]
@@ -2464,11 +2508,12 @@ paths:
       tags: [admin-disputes]
       summary: Resolve a dispute
       description: |
-        Moves the order to `completed` or `cancelled`. Commission effects:
-        disputed while `in_progress` and resolved `completed` → the reservation is settled;
-        resolved `cancelled` before settlement → the reservation is released; resolved `cancelled`
-        after the commission was charged with `refund_commission: true` → the commission is
-        refunded once (`commission_refund:<order_id>`) and the driver's trip count is reduced.
+        Moves the order to `completed` or `cancelled`. The commission was charged when the driver
+        took the order (§22.2); resolved `cancelled` with `refund_commission: true` → it is
+        refunded once (`commission_refund:<order_id>`) and the driver's trip count is reduced
+        when the order had been completed. Orders accepted before business rules v2: disputed
+        while `in_progress` and resolved `completed` → the reservation is settled; resolved
+        `cancelled` → it is released.
         Open disputes only (`409 invalid_transition` with `details {from: resolved, action:
         resolve}`). `fields`: `outcome` = `required | invalid`, `resolution` =
         `required | too_long | invalid` (1..1000 code points), `refund_commission = not_allowed`
@@ -2856,6 +2901,58 @@ paths:
         '409': {$ref: '#/components/responses/InvalidTransition'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/drivers/{id}/bonus:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminGrantDriverBonus
+      tags: [admin-ledger]
+      summary: Credit a bonus to a driver
+      description: |
+        The company credits a driver a bonus (ARCHITECTURE §22.7; find the driver with
+        `GET /admin/drivers?q=` by code such as `EMB001` or by phone in any format). Ledger
+        `bonus_credit` with key `bonus:<idempotency_key>`; audited (`wallet.bonus`); realtime
+        `wallet.updated` to the driver and admins; the driver bot sends `driver_bonus_granted`
+        (kk «Jan Taxi компаниясынан сізге {amount} бонус есептелді», ru «Компания Jan Taxi
+        начислила вам бонус {amount}», en «Jan Taxi has credited you a bonus of {amount}», plus the
+        comment when given and a wallet button). Idempotent: a replay with the same key and amount
+        returns `200` with the stored entry and sends nothing; the same key with another amount or
+        driver is `409 conflict`. `fields`: `amount` = `required | too_small | too_large`
+        (1..1000000, `details.max`), `comment` = `too_long | invalid` (≤ 200 code points),
+        `idempotency_key` = `required | invalid` (a UUID, optionally prefixed `bonus:`). `404` for
+        an unknown driver. The history is on the driver detail (`bonuses`) and in the ledger
+        (`type=bonus_credit`).
+      x-jantaxi-permission: finance.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DriverBonusRequest'}
+      responses:
+        '201':
+          description: Bonus credited.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DriverBonusResult'}
+        '200':
+          description: Idempotent replay.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DriverBonusResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: '`conflict`: the idempotency key was already used with different parameters.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
   /admin/drivers/{id}/wallet/adjustments:
     parameters:
@@ -3247,7 +3344,9 @@ paths:
       description: |
         Partial update; the same rules as creation. `code` is immutable: sending a different code
         is `422` with `fields.code = immutable` (the same code is accepted), because driver codes
-        derive from it. Audit-logged.
+        derive from it. The nationwide default region (`is_default_region`) cannot be switched
+        off: `is_active: false` is `409 default_region_locked`; its other fields stay editable.
+        Audit-logged.
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -3265,6 +3364,7 @@ paths:
         '401': {$ref: '#/components/responses/AdminUnauthorized'}
         '403': {$ref: '#/components/responses/AdminForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/DefaultRegionLocked'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
@@ -3299,7 +3399,8 @@ paths:
         `required | invalid` (malformed, unknown members such as `crs`) `| unsupported_type |
         empty | out_of_range` (coordinates outside ±180/±90) `| too_complex` (more than 20000
         points) `| invalid_geometry` (self-intersecting etc.) `| outside_service_area` (does not
-        intersect Kazakhstan). `404` for an unknown city. Audit-logged.
+        intersect Kazakhstan). `404` for an unknown city; `409 default_region_locked` for the
+        nationwide default region. Audit-logged.
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -3317,6 +3418,7 @@ paths:
         '401': {$ref: '#/components/responses/AdminUnauthorized'}
         '403': {$ref: '#/components/responses/AdminForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/DefaultRegionLocked'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
@@ -3328,7 +3430,9 @@ paths:
       operationId: adminUpdateZone
       tags: [admin-cities]
       summary: Update a service zone
-      description: Partial update with the same name and geometry rules as creation. Audit-logged.
+      description: |
+        Partial update with the same name and geometry rules as creation. The zone of the
+        nationwide default region cannot be changed (`409 default_region_locked`). Audit-logged.
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -3346,6 +3450,7 @@ paths:
         '401': {$ref: '#/components/responses/AdminUnauthorized'}
         '403': {$ref: '#/components/responses/AdminForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/DefaultRegionLocked'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
@@ -3354,7 +3459,9 @@ paths:
       operationId: adminDeleteZone
       tags: [admin-cities]
       summary: Delete a service zone
-      description: Existing orders keep their city. Audit-logged.
+      description: |
+        Existing orders keep their city. The zone of the nationwide default region cannot be
+        deleted (`409 default_region_locked`). Audit-logged.
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       responses:
@@ -3363,6 +3470,7 @@ paths:
         '401': {$ref: '#/components/responses/AdminUnauthorized'}
         '403': {$ref: '#/components/responses/AdminForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/DefaultRegionLocked'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
   /admin/places:
     get:
@@ -3474,8 +3582,8 @@ paths:
       summary: List tariffs
       description: |
         Active tariffs by default; `include_inactive=true` adds earlier versions. Ordered by city,
-        category (`taxi`, `parcel`, `other`) and version (newest first). Not paged.
-        `fields`: `city_id` / `category` / `include_inactive` = `invalid`.
+        category (`taxi`, `parcel`, `other`), vehicle class (class display order) and version (newest
+        first). Not paged. `fields`: `city_id` / `category` / `vehicle_class` / `include_inactive` = `invalid`.
       x-jantaxi-permission: dashboard.view
       security: [{adminSession: []}]
       parameters:
@@ -3483,6 +3591,9 @@ paths:
         - name: category
           in: query
           schema: {$ref: '#/components/schemas/OrderCategory'}
+        - name: vehicle_class
+          in: query
+          schema: {$ref: '#/components/schemas/VehicleClassCode'}
         - name: include_inactive
           in: query
           description: Any value accepted by Go `strconv.ParseBool`.
@@ -3502,8 +3613,9 @@ paths:
       tags: [admin-tariffs]
       summary: Publish a new tariff version
       description: |
-        Tariffs are immutable: publishing creates version N+1 for the city and category and
-        deactivates the previous version in the same transaction (concurrent publishes are
+        Tariffs are immutable: publishing creates version N+1 for the city, category and vehicle
+        class (`vehicle_class`, default `sedan`) and deactivates that class's previous version in the
+        same transaction (concurrent publishes are
         serialised; a lost race is `409 conflict`). Existing quotes and orders keep the version
         they were priced with. `404` for an unknown city. `commission_bps` defaults to the
         setting `commission.default_bps`. `fields`: `city_id` / `category` = `required |
@@ -3515,8 +3627,9 @@ paths:
         (0..5000); `extra_fees = too_many` (more than 10); `extra_fees.N.code` = `required |
         invalid | duplicate`; `extra_fees.N.name` = `required`;
         `extra_fees.N.name.<lang>` = `required | too_long | invalid` (≤60);
-        `extra_fees.N.amount` = `required | too_small | too_large`. Audit-logged
-        (`tariff.create` with before/after).
+        `extra_fees.N.amount` = `required | too_small | too_large`; `vehicle_class` = `required |
+        invalid | not_found | not_allowed` (a taxi tariff needs a passenger-capable class, a
+        parcel/other tariff a cargo-capable one). Audit-logged (`tariff.create` with before/after).
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -3565,6 +3678,99 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /admin/vehicle-classes:
+    get:
+      operationId: adminListVehicleClasses
+      tags: [admin-tariffs]
+      summary: List vehicle classes
+      description: Every class, active or not, in display order (`sort`, then `code`). Not paged.
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Vehicle classes.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VehicleClassList'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      operationId: adminCreateVehicleClass
+      tags: [admin-tariffs]
+      summary: Create a vehicle class
+      description: |
+        Adds a class (ARCHITECTURE §21). Price it with `POST /admin/tariffs` (`vehicle_class`) before
+        passengers are offered it. `409 vehicle_class_exists` for a taken code. `fields`: `code` =
+        `required | invalid`; `name` = `required`; `name.<lang>` = `required | too_long` (≤40);
+        `examples` = `too_long` (≤80); `seats_max` / `seats_default` = `required | too_small | too_large`
+        (1..60, `seats_default` ≤ `seats_max`); `cargo_volume_l_default` = `required | too_small | too_large`
+        (0..100000); `passenger_capable` / `cargo_capable` = `required`, both `one_required` when neither
+        is true; `icon` = `required | invalid`; `serves` = `too_many`; `serves.N` = `invalid | not_found`;
+        `sort` = `out_of_range` (0..1000). Audit-logged (`vehicle_class.create`).
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/VehicleClassCreateRequest'}
+      responses:
+        '201':
+          description: Created class.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VehicleClass'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '409':
+          description: '`vehicle_class_exists`: the code is taken.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              example: {error: {code: vehicle_class_exists, message: a vehicle class with this code already exists}}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/vehicle-classes/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/VehicleClassCode'}
+    patch:
+      operationId: adminUpdateVehicleClass
+      tags: [admin-tariffs]
+      summary: Update a vehicle class
+      description: |
+        Partial update with the create rules (`code` = `immutable`). Deactivating a class
+        (`is_active=false`) stops offering it to passengers and at registration; vehicles that already
+        have it keep it and keep receiving the orders their class serves. `404` for an unknown code.
+        Audit-logged (`vehicle_class.update` with before/after).
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/VehicleClassUpdateRequest'}
+      responses:
+        '200':
+          description: Updated class.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VehicleClass'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   # ---------------------------------------------------------- admin-settings
   /admin/settings:
     get:
@@ -3596,8 +3802,13 @@ paths:
         `invalid_type`, `invalid`, `out_of_range`, `required`, `too_short`, `too_long`,
         `too_many`, `duplicate` or `incomplete` (localized text filled for only some
         languages). Top-up limits are checked together: `fields["topup.min_amount"] =
-        greater_than_max`, `fields["topup.presets"] = out_of_range`. All changes are written and
-        audited (`settings.update` / `settings.reset`) in one transaction. Returns the full list.
+        greater_than_max`, `fields["topup.presets"] = out_of_range`. Read-only keys
+        (`read_only: true`, e.g. `commission.fixed_min` / `commission.fixed_max`) answer
+        `fields.<key> = read_only`. `commission.fixed_amount` must stay within
+        `commission.fixed_min..commission.fixed_max` (50..100 KZT): `fields["commission.fixed_amount"]
+        = out_of_range` with `details {min, max}` (§22.7). `driver.welcome_bonus` is any amount
+        0..100000 (0 switches the welcome bonus off). All changes are written and audited
+        (`settings.update` / `settings.reset`) in one transaction. Returns the full list.
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -3996,6 +4207,44 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
+  /internal/v1/passenger/{tg_id}/contact:
+    servers:
+      - url: http://api:8081
+        description: Internal bot API listener (compose network only; never published or proxied).
+    parameters:
+      - $ref: '#/components/parameters/TgIdPath'
+      - $ref: '#/components/parameters/BotHeader'
+    post:
+      operationId: botVerifyPassengerContact
+      tags: [internal]
+      summary: Store the passenger's Telegram-verified phone
+      description: |
+        Called when the passenger bot receives a shared contact (after the passenger Mini App's
+        `WebApp.requestContact()`, ARCHITECTURE §22.5). The API requires `contact_user_id ==
+        tg_id` (`403 forbidden` with `details.reason = contact_mismatch` otherwise), normalises
+        the number to a Kazakhstan mobile in E.164 (`422`, `fields.phone = invalid`) and stores it
+        on the user (`users.phone_e164`, `phone_verified_at`; `GET /me` then reports
+        `phone_verified: true`). A blocked user is `403` with `details.reason = user_blocked`;
+        an unknown user `404`. Emits `user.phone_verified` to the user. The driver who takes the
+        passenger's orders sees the phone (`DriverOrderDetail.passenger.phone`). Requires
+        `X-Jantaxi-Bot: passenger`.
+      security: [{serviceSecret: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BotContactRequest'}
+      responses:
+        '200':
+          description: Phone stored and verified.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BotPassengerContactResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
   /internal/v1/driver/{tg_id}/summary:
     servers:
       - url: http://api:8081
@@ -4073,6 +4322,48 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
+  /internal/v1/driver/{tg_id}/orders/{id}/accept:
+    servers:
+      - url: http://api:8081
+        description: Internal bot API listener (compose network only; never published or proxied).
+    parameters:
+      - $ref: '#/components/parameters/TgIdPath'
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/BotHeader'
+    post:
+      operationId: botAcceptOrder
+      tags: [internal]
+      summary: Take an order from a bot offer («✅ Алу»)
+      description: |
+        The driver tapped «✅ Алу» (callback `take:<order_id>`) on an offer in the driver bot
+        (ARCHITECTURE §22.4). Runs the same atomic acceptance as `POST /driver/orders/{id}/accept`
+        (first tap wins; the commission is charged in the same transaction) with the same errors:
+        `409 order_already_taken`, `402 insufficient_balance` (`details {required, available,
+        currency, topup_min_amount}`), `409 driver_offline`, `422 location_required`
+        (`details.reason = location_required | location_stale`), `409 driver_has_active_order`,
+        `403 driver_not_approved`, `404` (not registered, outside the radius, vehicle does not fit,
+        own order) and `409 invalid_transition` (cancelled or expired). A repeated tap by the
+        winner is `200` with `replayed: true`. The bot itself edits the tapped message to
+        «✅ Сіз алдыңыз» and sends the trip card with the passenger's contact, so the outbox sends
+        neither; the other drivers' offers are edited to "taken" through the outbox (kind `edit`).
+        Requires `X-Jantaxi-Bot: driver`.
+      security: [{serviceSecret: []}]
+      responses:
+        '200':
+          description: The order is the driver's.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BotAcceptResult'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '402': {$ref: '#/components/responses/InsufficientBalance'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/AcceptConflict'}
+        '422':
+          description: '`location_required` with `details {reason: location_required | location_stale, max_age_s}`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /internal/v1/driver/{tg_id}/contact:
     servers:
       - url: http://api:8081
@@ -4358,6 +4649,124 @@ components:
       schema: {type: integer, minimum: 1}
 
   responses:
+    AdminForbidden:
+      description: 'The admin''s role lacks the permission (`forbidden`), or the CSRF token is missing or wrong on a non-GET request (`csrf_failed`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            forbidden:
+              value: {error: {code: forbidden, message: not allowed}}
+            csrf:
+              value: {error: {code: csrf_failed, message: missing or invalid CSRF token}}
+    AdminUnauthorized:
+      description: 'No admin session, or the session expired or was revoked (`unauthorized`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example: {error: {code: unauthorized, message: authentication required}}
+    AppForbidden:
+      description: 'App token of the other Mini App, or the user is blocked (`forbidden` / `user_blocked`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            forbidden:
+              value: {error: {code: forbidden, message: not allowed}}
+            blocked:
+              value: {error: {code: user_blocked, message: user is blocked}}
+    AppUnauthorized:
+      description: 'Missing, invalid or expired app token (`unauthorized`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example: {error: {code: unauthorized, message: authentication required}}
+    ConfirmConflict:
+      description: 'The top-up cannot be confirmed: `invalid_transition` (not awaiting confirmation), `payment_reference_used` (the Kaspi transaction is already recorded) or `conflict` (see `details`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            transition:
+              value: {error: {code: invalid_transition, message: transition not allowed}}
+            reference:
+              value: {error: {code: payment_reference_used, message: provider transaction already recorded}}
+    CsrfFailed:
+      description: 'Missing or wrong `X-CSRF-Token` header (`csrf_failed`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example: {error: {code: csrf_failed, message: missing or invalid CSRF token}}
+    DriverActionForbidden:
+      description: 'Driver app route needing a profile and approval: `forbidden` (wrong app, blocked), `driver_not_registered` or `driver_not_approved`.'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            notRegistered:
+              value: {error: {code: driver_not_registered, message: driver profile required}}
+            notApproved:
+              value: {error: {code: driver_not_approved, message: driver is not approved}}
+    DriverForbidden:
+      description: 'Driver app route needing a profile: `forbidden` (wrong app, blocked) or `driver_not_registered`.'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            forbidden:
+              value: {error: {code: forbidden, message: not allowed}}
+            notRegistered:
+              value: {error: {code: driver_not_registered, message: driver profile required}}
+    InitDataRejected:
+      description: 'Telegram `initData` failed validation (`invalid_init_data`) or is too old (`init_data_expired`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            invalid:
+              value: {error: {code: invalid_init_data, message: invalid Telegram init data}}
+            expired:
+              value: {error: {code: init_data_expired, message: Telegram init data expired}}
+    RegistrationConflict:
+      description: 'Registration not editable in its status (`conflict`, `details.reason = registration_locked`), or the phone/plate belongs to another live driver (`phone_taken` / `plate_taken`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            locked:
+              value: {error: {code: conflict, message: registration is not editable in its current status, details: {reason: registration_locked, status: pending}}}
+            plate:
+              value: {error: {code: plate_taken, message: plate is registered to another driver}}
+    SignInBlocked:
+      description: 'The Telegram user is blocked by an administrator (`user_blocked`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example: {error: {code: user_blocked, message: user is blocked}}
+    UnprocessableAvailability:
+      description: '`location_required` (no fresh location; `details.max_age_s`) or `validation_failed`.'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            location:
+              value: {error: {code: location_required, message: a fresh location is required to go online, details: {max_age_s: 300}}}
+    UnprocessableLocation:
+      description: '`validation_failed` (coordinates, accuracy, heading, speed, recorded_at) or `outside_service_area` (the point is outside Kazakhstan).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            outside:
+              value: {error: {code: outside_service_area, message: point is outside the service area}}
+    WalletForbidden:
+      description: 'Wallet routes need a driver profile: `forbidden` (wrong app, blocked) or `driver_not_registered`.'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            notRegistered:
+              value: {error: {code: driver_not_registered, message: driver profile required}}
     AcceptConflict:
       description: |
         The order cannot be accepted: `order_already_taken`, `driver_has_active_order`,
@@ -4397,6 +4806,12 @@ components:
               value: {error: {code: plate_taken, message: plate is registered to another driver}}
             referenceUsed:
               value: {error: {code: payment_reference_used, message: provider transaction already recorded}}
+    DefaultRegionLocked:
+      description: The nationwide default region cannot be deactivated and its zone cannot be changed (`default_region_locked`).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          example: {error: {code: default_region_locked, message: the nationwide default region cannot be deactivated or deleted}}
     CsvFile:
       description: CSV export (UTF-8 with BOM, CRLF line ends, header row), streamed.
       headers:
@@ -4627,7 +5042,7 @@ components:
         email: {type: string, format: email, maxLength: 254, example: operator@jantaxi.kz}
         full_name: {type: string, minLength: 1, maxLength: 120, example: Динара Әлібекова}
         role: {$ref: '#/components/schemas/AdminRole'}
-        password: {type: string, minLength: 12, maxLength: 256, writeOnly: true, description: 12..256 characters, at most 1024 bytes.}
+        password: {type: string, minLength: 12, maxLength: 256, writeOnly: true, description: '12..256 characters, at most 1024 bytes.'}
     AdminDisputeOpenRequest:
       type: object
       additionalProperties: false
@@ -4637,7 +5052,7 @@ components:
     AdminDriverDetail:
       type: object
       description: Full driver record for moderators and operators. File URLs point to `/api/v1/admin/files/{id}`.
-      required: [id, code, status, first_name, last_name, phone, phone_verified, phone_verified_at, city, is_online, online_since, last_heartbeat_at, user, avatar, documents, vehicle, corrections, applications, moderation_events, wallet, stats, last_location, active_order, rating, rating_count, completed_trips, submitted_at, approved_at, suspended_at, suspended_reason, pd_consent_at, pd_consent_version, created_at, updated_at]
+      required: [id, code, status, first_name, last_name, phone, phone_verified, phone_verified_at, city, is_online, online_since, last_heartbeat_at, user, avatar, documents, vehicle, corrections, applications, moderation_events, wallet, welcome_bonus, bonuses, stats, last_location, active_order, rating, rating_count, completed_trips, submitted_at, approved_at, suspended_at, suspended_reason, pd_consent_at, pd_consent_version, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         code: {type: string, example: EMB001}
@@ -4702,6 +5117,15 @@ components:
           oneOf:
             - $ref: '#/components/schemas/Wallet'
             - type: 'null'
+        welcome_bonus:
+          description: The welcome balance granted on the first approval (§22.1), or `null`.
+          oneOf:
+            - $ref: '#/components/schemas/WelcomeBonus'
+            - type: 'null'
+        bonuses:
+          type: array
+          description: Bonus history (welcome and operator bonuses), newest first, at most 50; the full history is the ledger with `type=bonus_credit`.
+          items: {$ref: '#/components/schemas/DriverBonus'}
         stats: {$ref: '#/components/schemas/DriverStats'}
         last_location:
           oneOf:
@@ -4799,12 +5223,23 @@ components:
     AdminOrder:
       type: object
       description: Complete order for operators, including commission and money trail.
-      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, prohibited_items_ack, comment, fare, currency, commission_bps, commission_amount, payment_method, tariff_id, quote_id, distance_m, duration_s, stop_count, city, stops, route, passenger, driver, vehicle, driver_location, offers, events, reservation, ledger, dispute, rating, cancel_reason, cancelled_by, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at]
+      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, prohibited_items_ack, comment, fare, currency, commission_bps, commission_amount, commission_mode, payment_method, tariff_id, quote_id, distance_m, duration_s, stop_count, city, stops, route, passenger, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, offers, events, reservation, ledger, dispute, rating, cancel_reason, cancel_reason_code, cancelled_by, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 1042}
         status: {$ref: '#/components/schemas/OrderStatus'}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15, description: Passengers of a taxi order; `null` for parcel/other.}
+        cargo_size:
+          description: Cargo size of a parcel/other order; `null` for taxi.
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        cargo_volume_l: {type: integer, minimum: 0, description: 'Cargo volume derived from `cargo_size` (s=10, m=60, l=400, xl=1500 L); 0 for taxi.'}
         service_type: {$ref: '#/components/schemas/ServiceType'}
         cargo_type: {$ref: '#/components/schemas/CargoType'}
         cargo_description: {type: [string, 'null']}
@@ -4814,7 +5249,11 @@ components:
         fare: {type: integer, format: int64}
         currency: {$ref: '#/components/schemas/Currency'}
         commission_bps: {type: integer, minimum: 0, maximum: 5000}
-        commission_amount: {type: integer, format: int64}
+        commission_amount: {type: integer, format: int64, description: 'Commission snapshotted at creation, charged when a driver takes the order (§22.2).'}
+        commission_mode:
+          type: string
+          enum: [fixed, percent]
+          description: '`fixed` (`commission.fixed_amount`, default) or `percent` (`commission_bps` of the fare) at creation; orders before v2 are `percent`.'
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
         tariff_id: {type: string, format: uuid}
         quote_id: {type: [string, 'null'], format: uuid}
@@ -4866,6 +5305,12 @@ components:
             - $ref: '#/components/schemas/OrderRating'
             - type: 'null'
         cancel_reason: {type: [string, 'null']}
+        cancel_reason_code:
+          oneOf:
+            - $ref: '#/components/schemas/CancelReasonCode'
+            - type: 'null'
+        driver_eta_s: {type: [integer, 'null'], minimum: 0, description: Driver's estimated seconds to pickup A (§22.6).}
+        driver_eta_at: {type: [string, 'null'], format: date-time}
         cancelled_by:
           oneOf:
             - $ref: '#/components/schemas/ActorType'
@@ -4889,12 +5334,20 @@ components:
       required: [driver_id]
       properties:
         driver_id: {type: string, format: uuid, description: Driver profile id.}
+        refund_commission:
+          type: [boolean, 'null']
+          default: false
+          description: On a re-assignment, refund the commission the previous driver paid (§22.2).
     AdminOrderCancelRequest:
       type: object
       additionalProperties: false
       required: [reason]
       properties:
         reason: {type: string, minLength: 1, maxLength: 200}
+        refund_commission:
+          type: [boolean, 'null']
+          default: false
+          description: Refund the commission the assigned driver paid when taking the order (§22.2; never automatic).
     AdminOrderEvent:
       allOf:
         - $ref: '#/components/schemas/OrderEvent'
@@ -4908,12 +5361,23 @@ components:
               additionalProperties: true
     AdminOrderListItem:
       type: object
-      required: [id, number, status, category, service_type, city, fare, currency, commission_amount, payment_method, passenger, driver, pickup, destination, stop_count, distance_m, has_open_dispute, created_at, accepted_at, completed_at, cancelled_at, cancelled_by]
+      required: [id, number, status, category, service_type, city, fare, currency, commission_amount, payment_method, passenger, driver, pickup, destination, stop_count, distance_m, has_open_dispute, created_at, accepted_at, completed_at, cancelled_at, cancelled_by, cancel_reason_code, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 1042}
         status: {$ref: '#/components/schemas/OrderStatus'}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15, description: Passengers of a taxi order; `null` for parcel/other.}
+        cargo_size:
+          description: Cargo size of a parcel/other order; `null` for taxi.
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        cargo_volume_l: {type: integer, minimum: 0, description: 'Cargo volume derived from `cargo_size` (s=10, m=60, l=400, xl=1500 L); 0 for taxi.'}
         service_type: {$ref: '#/components/schemas/ServiceType'}
         city: {$ref: '#/components/schemas/CityRef'}
         fare: {type: integer, format: int64}
@@ -4937,6 +5401,11 @@ components:
         cancelled_by:
           oneOf:
             - $ref: '#/components/schemas/ActorType'
+            - type: 'null'
+        cancel_reason_code:
+          description: The passenger's cancellation reason (§22.3).
+          oneOf:
+            - $ref: '#/components/schemas/CancelReasonCode'
             - type: 'null'
     AdminOrderPage:
       allOf:
@@ -4964,7 +5433,7 @@ components:
       required: [current_password, new_password]
       properties:
         current_password: {type: string, minLength: 1, writeOnly: true}
-        new_password: {type: string, minLength: 12, maxLength: 256, writeOnly: true, description: 12..256 characters, at most 1024 bytes, different from the current one.}
+        new_password: {type: string, minLength: 12, maxLength: 256, writeOnly: true, description: '12..256 characters, at most 1024 bytes, different from the current one.'}
     AdminPermission:
       type: string
       enum: [dashboard.view, orders.view, orders.manage, drivers.view, drivers.moderate, drivers.manage, documents.view, finance.view, finance.manage, config.manage, admins.manage, audit.view, reports.export]
@@ -5236,6 +5705,18 @@ components:
             phone: {type: [string, 'null']}
             hours: {$ref: '#/components/schemas/LocalizedText'}
         default_language: {$ref: '#/components/schemas/Language'}
+    BotAcceptResult:
+      type: object
+      description: The order the driver took with «✅ Алу», as `GET /driver/orders/{id}` shows it (with the passenger's contact).
+      required: [order, replayed, charged, wallet]
+      properties:
+        order: {$ref: '#/components/schemas/DriverOrderDetail'}
+        replayed: {type: boolean, description: The driver already held the order (a repeated tap); nothing changed.}
+        charged: {type: integer, format: int64, description: Commission charged by this acceptance (0 on a replay).}
+        wallet:
+          oneOf:
+            - $ref: '#/components/schemas/Wallet'
+            - type: 'null'
     BotContactRequest:
       type: object
       additionalProperties: false
@@ -5258,6 +5739,12 @@ components:
         phone: {type: string, description: Normalised E.164., example: '+77071234567'}
         phone_verified: {type: boolean, const: true}
         driver_id: {type: [string, 'null'], format: uuid, description: Driver profile updated as well; `null` before registration.}
+    BotPassengerContactResponse:
+      type: object
+      required: [phone, phone_verified]
+      properties:
+        phone: {type: string, description: Normalised E.164., example: '+77071234567'}
+        phone_verified: {type: boolean, const: true}
     BotDriverSummary:
       type: object
       required: [registered, driver_id, code, status, is_online, phone_verified, language, wallet, active_order, corrections, available_orders]
@@ -5343,12 +5830,21 @@ components:
           items: {$ref: '#/components/schemas/BotOrderSummary'}
     BotOrderSummary:
       type: object
-      required: [id, number, status, category, fare, currency, pickup_address, destination_address, created_at]
+      required: [id, number, status, category, fare, currency, pickup_address, destination_address, created_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 1042}
         status: {$ref: '#/components/schemas/OrderStatus'}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15}
+        cargo_size:
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
         fare: {type: integer, format: int64}
         currency: {$ref: '#/components/schemas/Currency'}
         pickup_address: {type: string}
@@ -5381,10 +5877,16 @@ components:
       enum: [none, parcel, other]
     City:
       type: object
-      required: [id, code, name, center, default_zoom, timezone, is_active, dispatch_radius_m, require_driver_location, driver_location_max_age_s, search_timeout_s, created_at, updated_at]
+      required: [id, code, name, center, default_zoom, timezone, is_active, is_default_region, dispatch_radius_m, require_driver_location, driver_location_max_age_s, search_timeout_s, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         code: {type: string, pattern: '^[A-Z]{3}$', description: Prefix of driver codes; immutable., example: EMB}
+        is_default_region:
+          type: boolean
+          description: |
+            `true` only for the nationwide default region `KAZ` (Қазақстан / Казахстан / Kazakhstan):
+            its zone is the Kazakhstan boundary and it prices every pickup that no smaller city zone
+            covers. It cannot be deactivated and its zone cannot be changed (`409 default_region_locked`).
         name: {$ref: '#/components/schemas/LocalizedText'}
         center: {$ref: '#/components/schemas/LatLon'}
         default_zoom: {type: number, minimum: 3, maximum: 20, example: 14}
@@ -5485,7 +5987,7 @@ components:
         timezone: {type: string, description: Zone used for days and defaults., example: Asia/Aqtobe}
         orders:
           type: object
-          required: [created, completed, cancelled, cancelled_by_passenger, cancelled_by_driver, cancelled_by_admin, no_driver_found, disputed, searching_now, active_now, by_category]
+          required: [created, completed, cancelled, cancelled_by_passenger, cancelled_by_driver, cancelled_by_admin, no_driver_found, cancelled_by_reason, disputed, searching_now, active_now, by_category]
           properties:
             created: {type: integer}
             completed: {type: integer}
@@ -5494,6 +5996,17 @@ components:
             cancelled_by_driver: {type: integer}
             cancelled_by_admin: {type: integer}
             no_driver_found: {type: integer, description: Cancelled by the search timeout.}
+            cancelled_by_reason:
+              type: object
+              description: Passenger cancellations by reason (§22.3); `unspecified` counts those without a reason (before v2).
+              required: [long_wait, driver_issue, vehicle_issue, changed_plans, other, unspecified]
+              properties:
+                long_wait: {type: integer}
+                driver_issue: {type: integer}
+                vehicle_issue: {type: integer}
+                changed_plans: {type: integer}
+                other: {type: integer}
+                unspecified: {type: integer}
             disputed: {type: integer}
             searching_now: {type: integer}
             active_now: {type: integer, description: accepted + driver_arriving + in_progress right now.}
@@ -5506,12 +6019,14 @@ components:
                 other: {type: integer}
         revenue:
           type: object
-          required: [gmv, commission_charged, commission_refunded, commission_net, currency]
+          required: [gmv, commission_charged, commission_refunded, commission_net, welcome_bonuses, manual_bonuses, currency]
           properties:
             gmv: {type: integer, format: int64, description: Sum of fares of completed orders.}
-            commission_charged: {type: integer, format: int64}
+            commission_charged: {type: integer, format: int64, description: Commission charged in the period (at acceptance since v2).}
             commission_refunded: {type: integer, format: int64}
             commission_net: {type: integer, format: int64, description: '`commission_charged - commission_refunded`.'}
+            welcome_bonuses: {type: integer, format: int64, description: Welcome balance credited to new drivers (§22.1).}
+            manual_bonuses: {type: integer, format: int64, description: Bonuses operators credited (§22.7).}
             currency: {$ref: '#/components/schemas/Currency'}
         drivers:
           type: object
@@ -5723,6 +6238,31 @@ components:
             - $ref: '#/components/schemas/OrderRef'
             - type: 'null'
         location: {$ref: '#/components/schemas/DriverLastLocation'}
+    DriverBonus:
+      type: object
+      required: [ledger_entry_id, kind, amount, comment, admin_id, admin_name, created_at]
+      properties:
+        ledger_entry_id: {type: integer, format: int64}
+        kind: {type: string, enum: [welcome, manual], description: '`welcome` (§22.1) or an operator''s bonus (§22.7).'}
+        amount: {type: integer, format: int64, example: 1000}
+        comment: {type: [string, 'null'], description: The operator's comment of a manual bonus.}
+        admin_id: {type: [string, 'null'], format: uuid}
+        admin_name: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+    DriverBonusRequest:
+      type: object
+      additionalProperties: false
+      required: [amount, idempotency_key]
+      properties:
+        amount: {type: integer, format: int64, minimum: 1, maximum: 1000000, description: KZT credited to the driver., example: 1000}
+        comment: {type: [string, 'null'], maxLength: 200, description: Shown to the driver in the bot message and stored on the ledger entry., example: Үздік жүргізуші}
+        idempotency_key: {type: string, description: 'A UUID (optionally prefixed `bonus:`); the nil UUID is invalid.', example: 3f2a7c1e-9d4b-4a6e-8f10-5b2c3d4e5f60}
+    DriverBonusResult:
+      type: object
+      required: [wallet, entry]
+      properties:
+        wallet: {$ref: '#/components/schemas/Wallet'}
+        entry: {$ref: '#/components/schemas/AdminLedgerEntry'}
     DriverLocationList:
       type: object
       required: [items]
@@ -5730,25 +6270,25 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/DriverLocationItem'}
-    DriverOrderCancelRequest:
-      type: object
-      additionalProperties: false
-      required: [reason]
-      properties:
-        reason:
-          type: string
-          description: Shown to the passenger and operators. Free-text rules apply.
-          minLength: 1
-          maxLength: 120
-          example: Көлік бұзылды
     DriverOrderCard:
       type: object
       description: Available order as listed to an eligible driver (no passenger contact data).
-      required: [id, number, category, service_type, cargo_type, stops, stop_count, comment, cargo_description, fare, currency, commission_amount, payment_method, distance_m, duration_s, distance_to_pickup_m, created_at, search_expires_at]
+      required: [id, number, category, service_type, cargo_type, stops, stop_count, comment, cargo_description, fare, currency, commission_amount, payment_method, distance_m, duration_s, distance_to_pickup_m, created_at, search_expires_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 1042}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15, description: Passengers of a taxi order; `null` for parcel/other.}
+        cargo_size:
+          description: Cargo size of a parcel/other order; `null` for taxi.
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        cargo_volume_l: {type: integer, minimum: 0, description: 'Cargo volume derived from `cargo_size` (s=10, m=60, l=400, xl=1500 L); 0 for taxi.'}
         service_type: {$ref: '#/components/schemas/ServiceType'}
         cargo_type: {$ref: '#/components/schemas/CargoType'}
         stops:
@@ -5781,13 +6321,24 @@ components:
         Order as seen by a driver. For an available order `is_mine` is `false`, and `passenger`,
         `recipient_phone`, `address_details` and `events` are withheld (`null` / empty) until the
         driver accepts it. Contact data is shown only while the order is active.
-      required: [id, number, status, is_mine, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, commission_bps, commission_amount, payment_method, distance_m, duration_s, distance_to_pickup_m, stop_count, stops, route, passenger, next_stop_id, events, rating, cancel_reason, cancelled_by, can_accept, can_arrive, can_start, can_complete, can_cancel, version, created_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at]
+      required: [id, number, status, is_mine, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, commission_bps, commission_amount, commission_charged, payment_method, distance_m, duration_s, distance_to_pickup_m, stop_count, stops, route, passenger, next_stop_id, events, rating, cancel_reason, cancelled_by, can_accept, can_arrive, can_start, can_complete, can_cancel, version, created_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 1042}
         status: {$ref: '#/components/schemas/OrderStatus'}
         is_mine: {type: boolean, description: The order is assigned to this driver.}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15, description: Passengers of a taxi order; `null` for parcel/other.}
+        cargo_size:
+          description: Cargo size of a parcel/other order; `null` for taxi.
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        cargo_volume_l: {type: integer, minimum: 0, description: 'Cargo volume derived from `cargo_size` (s=10, m=60, l=400, xl=1500 L); 0 for taxi.'}
         service_type: {$ref: '#/components/schemas/ServiceType'}
         cargo_type: {$ref: '#/components/schemas/CargoType'}
         cargo_description: {type: [string, 'null'], maxLength: 120, example: Құжаттар салынған конверт}
@@ -5800,6 +6351,7 @@ components:
         currency: {$ref: '#/components/schemas/Currency'}
         commission_bps: {type: integer, minimum: 0, maximum: 5000, example: 1000}
         commission_amount: {type: integer, format: int64, example: 80}
+        commission_charged: {type: integer, format: int64, minimum: 0, example: 50, description: 'Commission the driver''s wallet paid for this order (charges minus refunds); 0 when the order is not theirs. Kept when the passenger cancels (§22.2).'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
         distance_m: {type: integer, minimum: 0, example: 1840}
         duration_s: {type: integer, minimum: 0, example: 260}
@@ -5827,7 +6379,7 @@ components:
           oneOf:
             - $ref: '#/components/schemas/OrderRating'
             - type: 'null'
-        cancel_reason: {type: [string, 'null']}
+        cancel_reason: {type: [string, 'null'], description: 'Reason of an operator or system cancellation. Always null when the passenger cancelled: their reason is for operators only (§22.3).'}
         cancelled_by:
           oneOf:
             - $ref: '#/components/schemas/ActorType'
@@ -5836,7 +6388,7 @@ components:
         can_arrive: {type: boolean}
         can_start: {type: boolean}
         can_complete: {type: boolean, description: False while intermediate stops are pending.}
-        can_cancel: {type: boolean}
+        can_cancel: {type: boolean, description: 'Always false: drivers cannot cancel (§22.3); they contact support.'}
         version: {type: integer, minimum: 1, description: Increments on every status change.}
         created_at: {type: string, format: date-time}
         search_expires_at: {type: [string, 'null'], format: date-time}
@@ -5847,15 +6399,27 @@ components:
         cancelled_at: {type: [string, 'null'], format: date-time}
     DriverOrderSummary:
       type: object
-      required: [id, number, status, category, fare, currency, commission_amount, payment_method, pickup, destination, stop_count, distance_m, created_at, completed_at, cancelled_at, cancelled_by]
+      required: [id, number, status, category, fare, currency, commission_amount, commission_charged, payment_method, pickup, destination, stop_count, distance_m, created_at, completed_at, cancelled_at, cancelled_by, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 1042}
         status: {$ref: '#/components/schemas/OrderStatus'}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15, description: Passengers of a taxi order; `null` for parcel/other.}
+        cargo_size:
+          description: Cargo size of a parcel/other order; `null` for taxi.
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        cargo_volume_l: {type: integer, minimum: 0, description: 'Cargo volume derived from `cargo_size` (s=10, m=60, l=400, xl=1500 L); 0 for taxi.'}
         fare: {type: integer, format: int64, example: 800}
         currency: {$ref: '#/components/schemas/Currency'}
         commission_amount: {type: integer, format: int64, example: 80}
+        commission_charged: {type: integer, format: int64, minimum: 0, example: 50, description: 'Commission the driver''s wallet paid for this order (charges minus refunds); 0 when the order is not theirs. Kept when the passenger cancels (§22.2).'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
         pickup: {$ref: '#/components/schemas/StopSummary'}
         destination: {$ref: '#/components/schemas/StopSummary'}
@@ -6045,6 +6609,14 @@ components:
         first_name: {type: string, maxLength: 60, description: 'Letters, spaces, `-`, `''`, `.`.', example: Ерлан}
         last_name: {type: string, maxLength: 60, example: Бекенов}
         vehicle: {$ref: '#/components/schemas/VehicleInput'}
+        location:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [lat, lon]
+          description: Optional device position; on the first save it decides the driver's city (and the code prefix). Ignored afterwards.
+          properties:
+            lat: {type: number, minimum: -90, maximum: 90, example: 43.2389}
+            lon: {type: number, minimum: -180, maximum: 180, example: 76.8897}
     DriverRejectRequest:
       type: object
       additionalProperties: false
@@ -6148,6 +6720,7 @@ components:
         | `phone_taken` | 409 | Phone held by another live driver. |
         | `plate_taken` | 409 | Plate held by another live driver. |
         | `payment_reference_used` | 409 | Kaspi transaction id already recorded for another top-up. |
+        | `default_region_locked` | 409 | The nationwide default region `KAZ` cannot be deactivated and its zone cannot be changed. |
         | `payload_too_large` | 413 | Body over 64 KiB (JSON) / 10 MiB (upload). |
         | `unsupported_media_type` | 415 | Wrong `Content-Type`. |
         | `validation_failed` | 422 | Field validation; see `fields`. |
@@ -6157,6 +6730,7 @@ components:
         | `fare_not_allowed` | 422 | Fare is not one of the quote's options. |
         | `phone_not_verified` | 422 | A Telegram-verified phone is required. |
         | `registration_incomplete` | 422 | Required registration data missing; see `details.missing_fields`. |
+        | `location_required` | 422 | Going online or accepting needs a fresh GPS fix; `details.reason` = `location_required` or `location_stale`. |
         | `too_many_requests` | 429 | Rate limited; see `Retry-After`. |
         | `internal` | 500 | Unexpected server error (logged with the request id). |
       enum:
@@ -6181,8 +6755,10 @@ components:
         - plate_taken
         - phone_not_verified
         - registration_incomplete
+        - location_required
         - too_many_requests
         - payment_reference_used
+        - default_region_locked
         - payload_too_large
         - unsupported_media_type
         - internal
@@ -6208,8 +6784,10 @@ components:
         plate_taken: Plate held by another live driver.
         phone_not_verified: Telegram-verified phone required.
         registration_incomplete: Required registration data missing.
+        location_required: A fresh GPS location is required.
         too_many_requests: Rate limited.
         payment_reference_used: Provider transaction already recorded.
+        default_region_locked: The nationwide default region cannot be deactivated or changed.
         payload_too_large: Request body too large.
         unsupported_media_type: Wrong Content-Type.
         internal: Unexpected server error.
@@ -6431,8 +7009,11 @@ components:
       description: |
         `topup_credit` (+balance), `topup_refund` (−balance), `commission_reserve` (+reserved),
         `commission_release` (−reserved), `commission_charge` (−balance, −reserved),
-        `commission_refund` (+balance), `adjustment_credit` (+balance), `adjustment_debit` (−balance).
-      enum: [topup_credit, topup_refund, commission_reserve, commission_release, commission_charge, commission_refund, adjustment_credit, adjustment_debit]
+        `commission_refund` (+balance), `adjustment_credit` (+balance), `adjustment_debit` (−balance),
+        `bonus_credit` (+balance; the welcome bonus `welcome_bonus:<driver_id>` or an operator's
+        bonus `bonus:<key>`). Since v2 `commission_charge` is written when the driver takes the order
+        (−balance only); reserve/release remain for orders accepted before.
+      enum: [topup_credit, topup_refund, commission_reserve, commission_release, commission_charge, commission_refund, adjustment_credit, adjustment_debit, bonus_credit]
     LocalizedNameInput:
       type: object
       additionalProperties: false
@@ -6542,7 +7123,7 @@ components:
           oneOf:
             - $ref: '#/components/schemas/AdminRef'
             - type: 'null'
-        override_body: {type: [string, 'null'], description: The stored override as saved, even if it no longer validates.}
+        override_body: {type: [string, 'null'], description: 'The stored override as saved, even if it no longer validates.'}
         bots:
           type: array
           description: Bots that send this template.
@@ -6580,7 +7161,6 @@ components:
         - order_completed_driver
         - order_cancelled_passenger
         - order_cancelled_driver
-        - order_taken_driver
         - order_no_driver
         - moderation_submitted
         - moderation_approved
@@ -6595,6 +7175,11 @@ components:
         - dispute_opened
         - dispute_resolved
         - phone_verified
+        - driver_welcome_bonus
+        - driver_bonus_granted
+        - order_offer_won
+        - order_offer_taken
+        - order_offer_cancelled
     NotificationTemplateList:
       type: object
       required: [items, max_body_length]
@@ -6614,15 +7199,27 @@ components:
       description: |
         Order as seen by its passenger. The commission belongs to the driver and admin
         representations (`DriverOrderDetail`, `AdminOrder`) and is never included here.
-        `driver` and `vehicle` are set once a driver is assigned (they stay after a cancellation
-        by the driver); `driver_location` only while the order is `accepted`,
-        `driver_arriving` or `in_progress`; `driver.phone` only in those statuses too.
-      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, payment_method, distance_m, duration_s, stop_count, city, stops, route, driver, vehicle, driver_location, events, rating, dispute, cancel_reason, cancelled_by, can_cancel, can_rate, can_dispute, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at]
+        `driver` and `vehicle` are set once a driver is assigned (they stay after a cancellation);
+        `driver_location` only while the order is `accepted`, `driver_arriving` or `in_progress`;
+        `driver.phone` only in those statuses too. `driver_eta_s` is the driver's estimated time
+        to pickup A (§22.6), recomputed at most every 30 s while `accepted`.
+      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, payment_method, distance_m, duration_s, stop_count, city, stops, route, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, events, rating, dispute, cancel_reason, cancel_reason_code, cancelled_by, can_cancel, can_rate, can_dispute, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, description: Human order number., example: 1042}
         status: {$ref: '#/components/schemas/OrderStatus'}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15, description: Passengers of a taxi order; `null` for parcel/other.}
+        cargo_size:
+          description: Cargo size of a parcel/other order; `null` for taxi.
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        cargo_volume_l: {type: integer, minimum: 0, description: 'Cargo volume derived from `cargo_size` (s=10, m=60, l=400, xl=1500 L); 0 for taxi.'}
         service_type: {$ref: '#/components/schemas/ServiceType'}
         cargo_type: {$ref: '#/components/schemas/CargoType'}
         cargo_description: {type: [string, 'null'], maxLength: 120}
@@ -6666,12 +7263,19 @@ components:
           oneOf:
             - $ref: '#/components/schemas/OrderDisputeInfo'
             - type: 'null'
-        cancel_reason: {type: [string, 'null'], example: Жоспарым өзгерді}
+        cancel_reason: {type: [string, 'null'], description: 'The passenger''s comment, or the operator''s / system reason.', example: Басқа көлік таптым}
+        cancel_reason_code:
+          description: The passenger's reason (§22.3); `null` otherwise.
+          oneOf:
+            - $ref: '#/components/schemas/CancelReasonCode'
+            - type: 'null'
+        driver_eta_s: {type: [integer, 'null'], minimum: 0, description: 'Driver''s estimated seconds to pickup A (OSRM from the latest GPS fix; straight line at 30 km/h as fallback), set from acceptance; show "~N мин" while `accepted`.', example: 420}
+        driver_eta_at: {type: [string, 'null'], format: date-time, description: When `driver_eta_s` was computed.}
         cancelled_by:
           oneOf:
             - $ref: '#/components/schemas/ActorType'
             - type: 'null'
-        can_cancel: {type: boolean, description: 'True while searching, accepted or driver_arriving.'}
+        can_cancel: {type: boolean, description: 'True while searching, accepted or driver_arriving (cancelling needs a reason, §22.3).'}
         can_rate: {type: boolean, description: True when completed and not yet rated.}
         can_dispute: {type: boolean, description: True while in_progress or within 72h after completion with no open dispute.}
         version: {type: integer, minimum: 1, description: Increments on every status change.}
@@ -6735,8 +7339,26 @@ components:
     OrderCancelRequest:
       type: object
       additionalProperties: false
+      description: |
+        The passenger's cancellation reason (§22.3). Labels kk / ru / en: `long_wait` Ұзақ күттім /
+        Долго ждать / Waited too long; `driver_issue` Жүргізуші ұнамады / Не понравился водитель /
+        Didn't like the driver; `vehicle_issue` Көлік ұнамады / Не понравилась машина / Didn't like
+        the car; `changed_plans` Жоспарым өзгерді / Планы изменились / My plans changed; `other`
+        Басқа себеп / Другое / Other.
+      required: [reason_code]
       properties:
-        reason: {type: [string, 'null'], maxLength: 120, example: Жоспарым өзгерді}
+        reason_code: {$ref: '#/components/schemas/CancelReasonCode'}
+        comment:
+          type: [string, 'null']
+          maxLength: 120
+          description: Free text (≤ 120 code points); required when `reason_code` is `other`.
+          example: Басқа көлік таптым
+        expected_status:
+          allOf: [{$ref: '#/components/schemas/OrderStatus'}]
+          description: |
+            The status the passenger saw when confirming; the cancellation applies only while the order is
+            still in it (`409 conflict` `order_changed` otherwise). Optional for older apps.
+          example: searching
     OrderCategory:
       type: string
       description: What the passenger books (`taxi` ride, `parcel` delivery, `other` delivery).
@@ -6837,11 +7459,20 @@ components:
         closed_at: {type: [string, 'null'], format: date-time}
     OrderPassenger:
       type: object
-      description: Passenger as shown to the assigned driver while the order is active.
-      required: [first_name, phone]
+      description: |
+        Passenger as shown to the assigned driver while the order is active (§22.4/§22.5): the
+        first name, the phone when the passenger shared it through Telegram, and how to write to
+        them in Telegram.
+      required: [first_name, phone, phone_verified, telegram_username, telegram_url]
       properties:
         first_name: {type: string, example: Айгүл}
-        phone: {type: [string, 'null'], description: E.164 when the passenger shared a phone., example: '+77021234567'}
+        phone: {type: [string, 'null'], description: E.164 when the passenger shared (verified) a phone; `null` otherwise., example: '+77021234567'}
+        phone_verified: {type: boolean}
+        telegram_username: {type: [string, 'null'], description: Public Telegram username without `@`., example: aigul_k}
+        telegram_url:
+          type: string
+          description: '`https://t.me/<username>`, or `tg://user?id=<telegram_user_id>` (a mention link) when the passenger has no username.'
+          example: https://t.me/aigul_k
     OrderRating:
       type: object
       required: [rating, comment, created_at]
@@ -6869,12 +7500,23 @@ components:
       enum: [draft, searching, accepted, driver_arriving, in_progress, completed, cancelled, disputed]
     OrderSummary:
       type: object
-      required: [id, number, status, category, service_type, fare, currency, payment_method, pickup, destination, stop_count, distance_m, driver_first_name, rating, can_rate, created_at, completed_at, cancelled_at]
+      required: [id, number, status, category, service_type, fare, currency, payment_method, pickup, destination, stop_count, distance_m, driver_first_name, rating, can_rate, created_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
         number: {type: integer, format: int64, example: 1042}
         status: {$ref: '#/components/schemas/OrderStatus'}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        vehicle_class_name: {$ref: '#/components/schemas/LocalizedText'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15, description: Passengers of a taxi order; `null` for parcel/other.}
+        cargo_size:
+          description: Cargo size of a parcel/other order; `null` for taxi.
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        cargo_volume_l: {type: integer, minimum: 0, description: 'Cargo volume derived from `cargo_size` (s=10, m=60, l=400, xl=1500 L); 0 for taxi.'}
         service_type: {$ref: '#/components/schemas/ServiceType'}
         fare: {type: integer, format: int64, example: 800}
         currency: {$ref: '#/components/schemas/Currency'}
@@ -7008,7 +7650,7 @@ components:
         source:
           type: string
           enum: [manual_admin, webhook, receipt_auto]
-          description: '`receipt_auto`: credited automatically from a Kaspi PDF receipt (`recorded_by` null).' 
+          description: '`receipt_auto`: credited automatically from a Kaspi PDF receipt (`recorded_by` null).'
         recorded_by:
           oneOf:
             - $ref: '#/components/schemas/AdminRef'
@@ -7077,7 +7719,7 @@ components:
         language: {$ref: '#/components/schemas/Language'}
     PublicConfig:
       type: object
-      required: [app, default_language, languages, city, map, routing, bots, support, delivery, navigation]
+      required: [app, default_language, languages, city, map, routing, bots, support, delivery, navigation, vehicle_classes, cargo_sizes, max_passenger_count]
       properties:
         app: {type: string, enum: [passenger, driver, admin]}
         default_language: {$ref: '#/components/schemas/Language'}
@@ -7168,6 +7810,38 @@ components:
               type: array
               items: {type: integer, format: int64}
               example: [1000, 2000, 5000, 10000]
+        vehicle_classes:
+          type: array
+          description: Active vehicle classes in display order (driver registration, passenger class choice).
+          items: {$ref: '#/components/schemas/PublicVehicleClass'}
+        cargo_sizes:
+          type: array
+          items:
+            type: object
+            required: [code, volume_l]
+            properties:
+              code: {$ref: '#/components/schemas/CargoSize'}
+              volume_l: {type: integer, example: 10}
+          example: [{code: s, volume_l: 10}, {code: m, volume_l: 60}, {code: l, volume_l: 400}, {code: xl, volume_l: 1500}]
+        max_passenger_count: {type: integer, example: 15}
+        cancel_reasons:
+          type: array
+          description: Passenger cancellation reasons in display order (`app=passenger` only, §22.3); send `code` as `reason_code` to `POST /orders/{id}/cancel`.
+          items:
+            type: object
+            required: [code, label, comment_required]
+            properties:
+              code: {$ref: '#/components/schemas/CancelReasonCode'}
+              label: {$ref: '#/components/schemas/LocalizedText'}
+              comment_required: {type: boolean, description: True for `other`.}
+        commission:
+          type: object
+          description: The commission charged when a driver takes an order (`app=driver` only, §22.2).
+          required: [mode, fixed_amount]
+          properties:
+            mode: {type: string, enum: [fixed, percent]}
+            fixed_amount: {type: integer, format: int64, description: KZT per order in `fixed` mode (within 50..100)., example: 50}
+        welcome_bonus: {type: integer, format: int64, description: 'Welcome balance a new driver gets on the first approval (`app=driver` only, §22.1; 0 when off).', example: 500}
     QuoteStop:
       type: object
       description: Normalised stop echoed in a quote.
@@ -7218,7 +7892,10 @@ components:
         ts: {type: string, format: date-time}
         data:
           type: object
-          description: Small ids and statuses only (e.g. `order_id`, `order_number`, `status`, `driver_id`, `topup_id`).
+          description: |
+            Small ids and statuses only (e.g. `order_id`, `order_number`, `status`, `driver_id`,
+            `topup_id`). `order.accepted` and `driver.location_updated` carry `driver_eta_s`
+            (seconds to pickup A, or `null`) while the order is `accepted` (§22.6).
           additionalProperties: true
       example:
         type: order.accepted
@@ -7248,6 +7925,7 @@ components:
         - moderation.approved
         - moderation.rejected
         - driver.phone_verified
+        - user.phone_verified
     RealtimePingFrame:
       type: object
       description: 'Optional application-level ping; the server answers `{"type": "pong"}`. Other client frames are ignored.'
@@ -7295,7 +7973,7 @@ components:
       required: [verified_amount, provider_transaction_id, paid_at, payer_info]
       properties:
         verified_amount: {type: [integer, 'null'], format: int64}
-        provider_transaction_id: {type: [string, 'null'], description: Receipt number, e.g. QR18149336524.}
+        provider_transaction_id: {type: [string, 'null'], description: 'Receipt number, e.g. QR18149336524.'}
         paid_at: {type: [string, 'null'], format: date-time}
         payer_info: {type: [string, 'null'], description: Masked payer name.}
     DriverReceiptCheck:
@@ -7395,7 +8073,7 @@ components:
     RegistrationField:
       type: string
       description: Registration field addressed by corrections and `missing_fields`.
-      enum: [avatar, first_name, last_name, phone, id_front, id_back, vehicle_make_model, vehicle_color, vehicle_plate, vehicle_photos]
+      enum: [avatar, first_name, last_name, phone, id_front, id_back, vehicle_class, vehicle_make_model, vehicle_color, vehicle_plate, vehicle_photos]
     RegistrationHistoryItem:
       type: object
       required: [action, from_status, to_status, comment, corrections, created_at]
@@ -7416,7 +8094,7 @@ components:
         created_at: {type: string, format: date-time}
     RegistrationVehicle:
       type: object
-      required: [make, model, color, plate, plate_normalized, photos]
+      required: [make, model, color, plate, plate_normalized, photos, vehicle_class, vehicle_class_name, seats, cargo_volume_l]
       properties:
         make: {type: string, maxLength: 40, description: Empty until entered.}
         model: {type: string, maxLength: 40}
@@ -7427,6 +8105,14 @@ components:
           type: string
           enum: [current, legacy]
           description: Admin responses only, when a plate is set; `legacy` is the pre-2012 `L NNN LL(L)` format.
+        vehicle_class: {type: [string, 'null'], pattern: '^[a-z_]{2,20}$', description: 'Class of the vehicle (§21); `null` until the driver chose one.', example: sedan}
+        vehicle_class_name:
+          description: Localized name of the class; `null` without a class.
+          oneOf:
+            - $ref: '#/components/schemas/LocalizedText'
+            - type: 'null'
+        seats: {type: [integer, 'null'], minimum: 1, maximum: 60, description: Passenger seats (1..class seats_max)., example: 4}
+        cargo_volume_l: {type: [integer, 'null'], minimum: 0, maximum: 100000, description: Cargo space in litres., example: 400}
         photos:
           type: array
           description: Current vehicle photos in display order (`main`, `back`, `side`, `plate`, then `extra`).
@@ -7450,6 +8136,11 @@ components:
           minItems: 2
           maxItems: 5
           items: {$ref: '#/components/schemas/StopInput'}
+        passenger_count: {type: integer, minimum: 1, maximum: 15, default: 1, description: 'Taxi only (`422 not_allowed` otherwise). Only classes whose `seats_max` covers it are offered.'}
+        cargo_size:
+          description: 'Parcel/other only (`422 not_allowed` for taxi); default `s`. Only cargo-capable classes whose default volume covers it are offered.'
+          allOf:
+            - $ref: '#/components/schemas/CargoSize'
       example:
         category: taxi
         stops:
@@ -7457,8 +8148,10 @@ components:
           - {lat: 48.8291, lon: 58.1504, address: Теміржол вокзалы}
     RouteQuote:
       type: object
-      required: [quote_id, expires_at, category, city, stops, distance_m, duration_s, legs, geometry, bbox, fare, currency, commission_bps, payment_methods]
+      required: [quote_id, expires_at, category, city, stops, distance_m, duration_s, legs, geometry, bbox, fare, currency, commission_bps, payment_methods, vehicle_class, passenger_count, cargo_size, options, locality, tariff_region]
       properties:
+        locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
+        tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         quote_id: {type: string, format: uuid}
         expires_at: {type: string, format: date-time, description: The quote must be used by this time (`422 quote_expired` after).}
         category: {$ref: '#/components/schemas/OrderCategory'}
@@ -7477,6 +8170,20 @@ components:
         fare: {$ref: '#/components/schemas/FareOptions'}
         currency: {$ref: '#/components/schemas/Currency'}
         commission_bps: {type: integer, minimum: 0, maximum: 5000, example: 1000}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        passenger_count: {type: [integer, 'null'], minimum: 1, maximum: 15}
+        cargo_size:
+          oneOf:
+            - $ref: '#/components/schemas/CargoSize'
+            - type: 'null'
+        options:
+          type: array
+          minItems: 1
+          description: |
+            One quote per active vehicle class able to carry the request and priced in the city, in class
+            display order. The top-level `quote_id`, `expires_at`, `vehicle_class`, `fare` and `commission_bps`
+            repeat the first option. Create the order with the chosen option's `quote_id`.
+          items: {$ref: '#/components/schemas/RouteQuoteOption'}
         payment_methods:
           type: array
           items: {$ref: '#/components/schemas/PaymentMethod'}
@@ -7527,8 +8234,14 @@ components:
         `driver.require_phone_verification`, `driver.online_idle_hours`, `topup.min_amount`,
         `topup.max_amount`, `topup.expiry_hours`, `topup.presets`, `delivery.prohibited_items`,
         `delivery.blocked_keywords`, `kaspi.payment_url`, `kaspi.recipient_name`,
-        `kaspi.instructions`, `navigation.twogis_base_url`.
-      required: [key, type, value, default, source, has_env_default, overrides_env, description, constraints, updated_at, updated_by]
+        `kaspi.instructions`, `navigation.twogis_base_url`, `dispatch.*`, `topup.auto_*`,
+        `company.*`, and the business rules v2 keys (§22): `commission.mode` (`fixed` | `percent`,
+        default `fixed`), `commission.fixed_amount` (default 50; its `constraints.min/max` are the
+        effective `commission.fixed_min..commission.fixed_max`, 50..100), `commission.fixed_min`
+        and `commission.fixed_max` (read-only), `driver.welcome_bonus` (default 500; 0 = off),
+        `orders.passenger_cancels_after_accept_per_day` (default 3, 0..100; 0 = no limit: how many
+        driver-accepted orders a passenger may cancel within 24 hours before new orders are refused).
+      required: [key, type, value, default, source, has_env_default, overrides_env, description, constraints, read_only, updated_at, updated_by]
       properties:
         key: {type: string, pattern: '^[a-z0-9_.]+$', example: topup.min_amount}
         type:
@@ -7536,7 +8249,7 @@ components:
           description: '`code_list` holds machine codes the apps translate; `localized_text` is `{kk, ru, en}`.'
           enum: [int, bool, string, url, localized_text, int_list, code_list, string_list]
         value: {description: Effective value (JSON of `type`).}
-        default: {description: Default when no database row exists (the environment value when configured, else built-in).}
+        default: {description: 'Default when no database row exists (the environment value when configured, else built-in).'}
         source: {type: string, enum: [database, env, default], description: Where `value` comes from.}
         has_env_default: {type: boolean, description: An environment variable can supply the default.}
         overrides_env: {type: boolean, description: A database row overrides an environment-backed default.}
@@ -7551,6 +8264,7 @@ components:
             max_length: {type: integer}
             max_items: {type: integer}
             required: {type: boolean}
+        read_only: {type: boolean, description: 'Shown but not changeable through `PATCH /admin/settings` (`read_only`).'}
         updated_at: {type: [string, 'null'], format: date-time}
         updated_by: {type: [string, 'null'], format: uuid, description: Admin id of the last change; `null` for defaults and system writes.}
     SettingList:
@@ -7610,11 +8324,12 @@ components:
         Immutable tariff version. A quote's minimum fare is `base_fare + ceil(per_km × km) +
         ceil(per_minute × minutes) + extra_stop_fee × intermediate stops + Σ extra_fees.amount`,
         rounded up to `fare_step` and clamped to `[min_fare, max_fare]`.
-      required: [id, city_id, category, version, is_active, min_fare, max_fare, fare_step, base_fare, per_km, per_minute, extra_stop_fee, extra_fees, commission_bps, created_by, created_at]
+      required: [id, city_id, category, version, is_active, min_fare, max_fare, fare_step, base_fare, per_km, per_minute, extra_stop_fee, extra_fees, commission_bps, created_by, created_at, vehicle_class]
       properties:
         id: {type: string, format: uuid}
         city_id: {type: string, format: uuid}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
         version: {type: integer, minimum: 1}
         is_active: {type: boolean}
         min_fare: {type: integer, example: 500}
@@ -7640,8 +8355,9 @@ components:
       properties:
         city_id: {type: string, format: uuid}
         category: {$ref: '#/components/schemas/OrderCategory'}
+        vehicle_class: {type: string, pattern: '^[a-z_]{2,20}$', default: sedan, description: 'Vehicle class the tariff prices (default `sedan`). Must exist; taxi needs a passenger-capable class, parcel/other a cargo-capable one (`422 vehicle_class not_found / not_allowed`). Versions and the active version are per city × category × class.'}
         min_fare: {type: integer, format: int64, minimum: 1, maximum: 10000000, description: Multiple of `fare_step`.}
-        max_fare: {type: integer, format: int64, minimum: 1, maximum: 10000000, description: Multiple of `fare_step`, ≥ `min_fare`.}
+        max_fare: {type: integer, format: int64, minimum: 1, maximum: 10000000, description: 'Multiple of `fare_step`, ≥ `min_fare`.'}
         fare_step: {type: integer, format: int64, minimum: 1, maximum: 10000000, description: At most 500 options from `min_fare` to `max_fare`.}
         base_fare: {type: [integer, 'null'], format: int64, minimum: 0, maximum: 10000000, default: 0}
         per_km: {type: [integer, 'null'], format: int64, minimum: 0, maximum: 10000000, default: 0}
@@ -7659,6 +8375,17 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/Tariff'}
+    TariffRegion:
+      type: object
+      description: |
+        The city or region whose tariff priced the order (`cities.Resolve` on pickup A): the city
+        owning the smallest active zone covering the pickup, else the nationwide default region
+        `KAZ`. Shown separately from `locality` (the real settlement of the pickup).
+      required: [code, name]
+      properties:
+        code: {type: string, pattern: '^[A-Z]{3}$', example: KAZ}
+        name: {$ref: '#/components/schemas/LocalizedText'}
+      example: {code: KAZ, name: {kk: Қазақстан, ru: Казахстан, en: Kazakhstan}}
     TelegramAuthRequest:
       type: object
       additionalProperties: false
@@ -7782,7 +8509,7 @@ components:
         url: {type: [string, 'null'], description: Kaspi payment link when configured.}
         recipient_name: {type: string}
         recipient_phone: {type: [string, 'null'], description: Always `null` for `kaspi_manual` (no setting holds a recipient phone).}
-        instructions: {type: string, description: States the exact amount and the reference to paste into the payment message, plus any configured text.}
+        instructions: {type: string, description: 'States the exact amount and the reference to paste into the payment message, plus any configured text.'}
         reference: {type: string, description: Text to put in the payment message.}
         amount: {type: integer, format: int64}
         currency: {$ref: '#/components/schemas/Currency'}
@@ -7836,6 +8563,14 @@ components:
         model: {type: string, example: Camry}
         color: {type: string, example: Ақ}
         plate: {type: string, description: Display form of the normalised plate., example: 123 ABC 04}
+        vehicle_class: {type: [string, 'null'], pattern: '^[a-z_]{2,20}$', description: 'Class of the vehicle (§21); `null` until the driver chose one.', example: sedan}
+        vehicle_class_name:
+          description: Localized name of the class; `null` without a class.
+          oneOf:
+            - $ref: '#/components/schemas/LocalizedText'
+            - type: 'null'
+        seats: {type: [integer, 'null'], minimum: 1, maximum: 60, description: Passenger seats (1..class seats_max)., example: 4}
+        cargo_volume_l: {type: [integer, 'null'], minimum: 0, maximum: 100000, description: Cargo space in litres., example: 400}
     VehicleInput:
       type: object
       additionalProperties: false
@@ -7852,6 +8587,27 @@ components:
             look-alikes → Latin) and validated against the current format
             `^\d{3}[A-Z]{2,3}(0[1-9]|1\d|20)$` or the legacy format `^[A-Z]\d{3}[A-Z]{2,3}$`.
           example: 123 АВС 04
+        vehicle_class:
+          type: string
+          pattern: '^[a-z_]{2,20}$'
+          description: |
+            Active vehicle class code from `GET /public/config` `vehicle_classes` (`422 vehicle.vehicle_class`
+            `not_found` / `not_allowed` for an unknown or deactivated class). Omitted: the stored class is kept.
+            Required before submission (`missing_fields` lists `vehicle_class`). In `changes_requested` the class,
+            seats and cargo volume change only when `vehicle_class` was flagged.
+          example: minivan
+        seats:
+          type: integer
+          minimum: 1
+          maximum: 60
+          description: 'Passenger seats, 1..class `seats_max` (`422 vehicle.seats too_large` with `details.seats_max`). Omitted: kept, or the class default when the class changes.'
+          example: 7
+        cargo_volume_l:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          description: 'Cargo space in litres. Omitted: kept, or the class default when the class changes.'
+          example: 800
     VehiclePhoto:
       type: object
       description: '`id` is the file id (use it with `DELETE /driver/registration/files/{fileId}` for extra photos).'
@@ -7866,16 +8622,148 @@ components:
     VehiclePhotoKind:
       type: string
       enum: [main, back, side, plate, extra]
+    VehicleClassCode:
+      type: string
+      pattern: '^[a-z_]{2,20}$'
+      description: 'Vehicle class code (§21). Seeded: `sedan`, `universal`, `minivan`, `microbus`, `cargo_van`, `truck`; admins may add more.'
+      example: sedan
+    CancelReasonCode:
+      type: string
+      description: Why the passenger cancelled (§22.3); `null` on orders cancelled by others or before v2.
+      enum: [long_wait, driver_issue, vehicle_issue, changed_plans, other]
+    CargoSize:
+      type: string
+      enum: [s, m, l, xl]
+      description: 'Cargo size of a parcel/other order: s = 10 L, m = 60 L, l = 400 L, xl = 1500 L.'
+    VehicleClassIcon:
+      type: string
+      enum: [sedan, universal, minivan, microbus, cargo_van, truck]
+    VehicleClass:
+      type: object
+      description: Vehicle class (body type) as administered (§21.1).
+      required: [code, name, examples, seats_default, seats_max, cargo_volume_l_default, passenger_capable, cargo_capable, serves, icon, sort, is_active, created_at, updated_at]
+      properties:
+        code: {$ref: '#/components/schemas/VehicleClassCode'}
+        name: {$ref: '#/components/schemas/LocalizedText'}
+        examples: {type: string, maxLength: 80, example: 'Toyota Alphard, Toyota Sienna'}
+        seats_default: {type: integer, minimum: 1, example: 7}
+        seats_max: {type: integer, minimum: 1, maximum: 60, example: 8}
+        cargo_volume_l_default: {type: integer, minimum: 0, maximum: 100000, example: 800}
+        passenger_capable: {type: boolean, description: May take taxi orders.}
+        cargo_capable: {type: boolean, description: May take parcel/other orders.}
+        serves:
+          type: array
+          description: Class codes whose orders vehicles of this class may take; always starts with the class itself.
+          items: {$ref: '#/components/schemas/VehicleClassCode'}
+          example: [universal, sedan]
+        icon: {$ref: '#/components/schemas/VehicleClassIcon'}
+        sort: {type: integer, minimum: 0, maximum: 1000}
+        is_active: {type: boolean, description: Inactive classes are not offered to passengers nor selectable at registration; existing vehicles keep them.}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    VehicleClassList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/VehicleClass'}
+    VehicleClassCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name, seats_default, seats_max, cargo_volume_l_default, passenger_capable, cargo_capable, icon]
+      properties:
+        code: {$ref: '#/components/schemas/VehicleClassCode'}
+        name: {$ref: '#/components/schemas/LocalizedNameInput'}
+        examples: {type: string, maxLength: 80}
+        seats_default: {type: integer, minimum: 1, maximum: 60, description: '≤ seats_max (`too_large`).'}
+        seats_max: {type: integer, minimum: 1, maximum: 60}
+        cargo_volume_l_default: {type: integer, minimum: 0, maximum: 100000}
+        passenger_capable: {type: boolean}
+        cargo_capable: {type: boolean, description: 'At least one capability is required (`one_required`).'}
+        serves:
+          type: array
+          maxItems: 10
+          description: 'Existing class codes (`serves.N not_found`); the class itself is always added.'
+          items: {$ref: '#/components/schemas/VehicleClassCode'}
+        icon: {$ref: '#/components/schemas/VehicleClassIcon'}
+        sort: {type: integer, minimum: 0, maximum: 1000, default: 100}
+        is_active: {type: boolean, default: true}
+    VehicleClassUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: Partial update; omitted fields keep their value. `code` is immutable (`immutable`).
+      properties:
+        name: {$ref: '#/components/schemas/LocalizedNameInput'}
+        examples: {type: string, maxLength: 80}
+        seats_default: {type: integer, minimum: 1, maximum: 60}
+        seats_max: {type: integer, minimum: 1, maximum: 60}
+        cargo_volume_l_default: {type: integer, minimum: 0, maximum: 100000}
+        passenger_capable: {type: boolean}
+        cargo_capable: {type: boolean}
+        serves:
+          type: array
+          maxItems: 10
+          items: {$ref: '#/components/schemas/VehicleClassCode'}
+        icon: {$ref: '#/components/schemas/VehicleClassIcon'}
+        sort: {type: integer, minimum: 0, maximum: 1000}
+        is_active: {type: boolean}
+    PublicVehicleClass:
+      type: object
+      required: [code, name, examples, icon, seats_default, seats_max, cargo_volume_l_default, passenger_capable, cargo_capable]
+      properties:
+        code: {$ref: '#/components/schemas/VehicleClassCode'}
+        name: {$ref: '#/components/schemas/LocalizedText'}
+        examples: {type: string, example: 'Toyota Camry, Hyundai Sonata'}
+        icon: {$ref: '#/components/schemas/VehicleClassIcon'}
+        seats_default: {type: integer, example: 4}
+        seats_max: {type: integer, example: 4}
+        cargo_volume_l_default: {type: integer, example: 400}
+        passenger_capable: {type: boolean}
+        cargo_capable: {type: boolean}
+    RouteQuoteOption:
+      type: object
+      description: The quote of one vehicle class for the previewed route.
+      required: [vehicle_class, name, examples, icon, seats_max, cargo_volume_l, quote_id, expires_at, fare, commission_bps, tariff_region, eta_s]
+      properties:
+        vehicle_class: {$ref: '#/components/schemas/VehicleClassCode'}
+        name: {$ref: '#/components/schemas/LocalizedText'}
+        examples: {type: string}
+        icon: {$ref: '#/components/schemas/VehicleClassIcon'}
+        seats_max: {type: integer, example: 8}
+        cargo_volume_l: {type: integer, description: The class default cargo volume in litres., example: 800}
+        quote_id: {type: string, format: uuid}
+        expires_at: {type: string, format: date-time}
+        fare: {$ref: '#/components/schemas/FareOptions'}
+        commission_bps: {type: integer, minimum: 0, maximum: 5000}
+        tariff_region:
+          allOf: [{$ref: '#/components/schemas/TariffRegion'}]
+          description: The city or nationwide region (`KAZ`) whose tariff priced this class.
+        eta_s:
+          type: [integer, 'null']
+          description: |
+            Coarse pickup estimate from the nearest free online driver whose vehicle fits, in whole 5-minute steps
+            (300, 600, …). It must not reveal where drivers are: the pickup is snapped to a ~500 m grid, each
+            driver's position is shifted by a secret offset of up to 500 m that changes hourly, and only drivers
+            whose shifted position is inside the base dispatch radius count (1 minute plus 2 minutes per km, then
+            rounded up to 5 minutes). `null` when no such driver is near.
+          example: 300
     Wallet:
       type: object
       required: [balance, reserved, available, currency, min_online_balance, updated_at]
       properties:
         balance: {type: integer, format: int64, minimum: 0, description: Money the platform holds for the driver., example: 2000}
-        reserved: {type: integer, format: int64, minimum: 0, description: Part of the balance held for the active order's commission., example: 80}
+        reserved: {type: integer, format: int64, minimum: 0, description: 'Part of the balance held for the commission of an order accepted before business rules v2 (since v2 the commission is charged at acceptance, so this is normally 0).', example: 0}
         available: {type: integer, format: int64, minimum: 0, description: '`balance - reserved`.', example: 1920}
         currency: {$ref: '#/components/schemas/Currency'}
         min_online_balance: {type: integer, format: int64, description: Minimum available balance to go online., example: 50}
         updated_at: {type: string, format: date-time}
+    WelcomeBonus:
+      type: object
+      required: [amount, granted_at]
+      properties:
+        amount: {type: integer, format: int64, example: 500}
+        granted_at: {type: string, format: date-time}
     WalletAdjustmentRequest:
       type: object
       additionalProperties: false

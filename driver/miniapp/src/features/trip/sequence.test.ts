@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Stop } from '../../api/types'
-import { actionLabelKey, cancelReasons } from './labels'
-import { canDriverCancel, currentTarget, primaryAction, remainingStops, type TripState } from './sequence'
+import { actionLabelKey } from './labels'
+import { currentTarget, primaryAction, remainingStops, type TripState } from './sequence'
 
 function stop(seq: number, kind: Stop['kind'], done = false): Stop {
   return {
@@ -20,7 +20,7 @@ function stop(seq: number, kind: Stop['kind'], done = false): Stop {
 const STOPS = [stop(3, 'destination'), stop(0, 'pickup'), stop(2, 'intermediate'), stop(1, 'intermediate')]
 
 function state(over: Partial<TripState>): TripState {
-  return { status: 'accepted', stops: STOPS, can_arrive: false, can_start: false, can_complete: false, can_cancel: false, ...over }
+  return { status: 'accepted', stops: STOPS, can_arrive: false, can_start: false, can_complete: false, ...over }
 }
 
 describe('primaryAction', () => {
@@ -63,7 +63,7 @@ describe('primaryAction', () => {
   })
 })
 
-describe('targets and cancelling', () => {
+describe('targets and labels', () => {
   it('the pickup is the target before the start, then the next uncompleted stop', () => {
     expect(currentTarget({ status: 'accepted', stops: STOPS })?.seq).toBe(0)
     expect(currentTarget({ status: 'driver_arriving', stops: STOPS })?.seq).toBe(0)
@@ -72,19 +72,6 @@ describe('targets and cancelling', () => {
     expect(remainingStops({ status: 'in_progress', stops: moving }).map((s) => s.seq)).toEqual([2, 3])
     expect(remainingStops({ status: 'accepted', stops: STOPS }).map((s) => s.seq)).toEqual([0, 1, 2, 3])
     expect(remainingStops({ status: 'completed', stops: STOPS })).toEqual([])
-  })
-
-  it('cancel only before the start', () => {
-    expect(canDriverCancel(state({ status: 'accepted', can_cancel: true }))).toBe(true)
-    expect(canDriverCancel(state({ status: 'driver_arriving', can_cancel: true }))).toBe(true)
-    expect(canDriverCancel(state({ status: 'in_progress', can_cancel: true }))).toBe(false)
-    expect(canDriverCancel(state({ status: 'accepted', can_cancel: false }))).toBe(false)
-  })
-
-  it('offers reasons that fit the order', () => {
-    expect(cancelReasons('taxi', 'accepted')).toEqual(['passenger_asked', 'cannot_reach', 'vehicle_problem'])
-    expect(cancelReasons('taxi', 'driver_arriving')).toContain('passenger_no_show')
-    expect(cancelReasons('parcel', 'driver_arriving')).toEqual(['sender_no_show', 'passenger_asked', 'cannot_reach', 'vehicle_problem', 'unsafe_cargo'])
   })
 
   it('labels every action', () => {

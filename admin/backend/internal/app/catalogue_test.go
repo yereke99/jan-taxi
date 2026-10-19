@@ -60,7 +60,7 @@ var endpointCatalogue = []string{
 	"POST /api/v1/driver/orders/{}/start",
 	"POST /api/v1/driver/orders/{}/stops/{}/complete",
 	"POST /api/v1/driver/orders/{}/complete",
-	"POST /api/v1/driver/orders/{}/cancel",
+	// Drivers cannot cancel (§22.3): no /driver/orders/{}/cancel.
 	// Wallet and top-ups
 	"GET /api/v1/driver/wallet",
 	"GET /api/v1/driver/wallet/transactions",
@@ -103,6 +103,7 @@ var endpointCatalogue = []string{
 	"POST /api/v1/admin/drivers/{}/restore",
 	"PATCH /api/v1/admin/drivers/{}",
 	"POST /api/v1/admin/drivers/{}/wallet/adjustments",
+	"POST /api/v1/admin/drivers/{}/bonus",
 	"GET /api/v1/admin/topups",
 	"GET /api/v1/admin/topups/{}",
 	"GET /api/v1/admin/topups/{}/receipt",
@@ -124,6 +125,9 @@ var endpointCatalogue = []string{
 	"DELETE /api/v1/admin/places/{}",
 	"GET /api/v1/admin/tariffs",
 	"POST /api/v1/admin/tariffs",
+	"GET /api/v1/admin/vehicle-classes", // §21.3
+	"POST /api/v1/admin/vehicle-classes",
+	"PATCH /api/v1/admin/vehicle-classes/{}",
 	"GET /api/v1/admin/settings",
 	"PATCH /api/v1/admin/settings",
 	"GET /api/v1/admin/notification-templates",
@@ -139,9 +143,11 @@ var endpointCatalogue = []string{
 	"POST /internal/v1/bots/{}/users/sync",
 	"PUT /internal/v1/bots/{}/users/{}/language",
 	"GET /internal/v1/passenger/{}/orders",
+	"POST /internal/v1/passenger/{}/contact",
 	"GET /internal/v1/driver/{}/summary",
 	"POST /internal/v1/driver/{}/availability",
 	"GET /internal/v1/driver/{}/orders",
+	"POST /internal/v1/driver/{}/orders/{}/accept",
 	"POST /internal/v1/driver/{}/contact",
 	"POST /internal/v1/driver/{}/location",
 	"POST /internal/v1/driver/{}/topup-receipt",
@@ -253,8 +259,8 @@ func TestInternalRoutesRequireServiceSecret(t *testing.T) {
 			t.Errorf("%s %s on the public listener: %d", method, path, res.status)
 		}
 	}
-	if n != 13 {
-		t.Fatalf("catalogue lists %d internal routes, want 13", n)
+	if n != 15 {
+		t.Fatalf("catalogue lists %d internal routes, want 15", n)
 	}
 
 	// With valid credentials the same listener answers normally.
@@ -285,6 +291,7 @@ func TestBackgroundJobsRegistered(t *testing.T) {
 		"session_cleanup":            time.Hour,
 		"notification_retention":     24 * time.Hour,
 		"file_orphan_cleanup":        6 * time.Hour,
+		"driver_eta":                 10 * time.Second,
 	}
 	got := map[string]time.Duration{}
 	for _, j := range a.jobs {

@@ -23,16 +23,19 @@ type CancelInput struct {
 // CancelResult reports what a cancellation did.
 type CancelResult struct {
 	Before, After Core
-	// Released is the commission returned to the assigned driver's available balance.
+	// Released is a reservation (earlier commission model) returned to the
+	// assigned driver's available balance.
 	Released int64
 	// OfferedDrivers are drivers whose open offer was closed.
 	OfferedDrivers []uuid.UUID
 }
 
-// Cancel moves an order to cancelled, releases the driver's commission
-// reservation, closes open offers and publishes order.cancelled (plus
-// wallet.updated for the driver). Notifications are the caller's job because
-// they depend on who cancelled.
+// Cancel moves an order to cancelled, closes open offers (their bot messages
+// are marked cancelled) and publishes order.cancelled. The commission charged
+// at acceptance is never returned here (§22.2: a passenger's cancellation
+// keeps it; operators refund explicitly); a reservation left by an
+// acceptance under the earlier model is released (plus wallet.updated).
+// Notifications are the caller's job because they depend on who cancelled.
 func Cancel(ctx context.Context, tx pgx.Tx, in CancelInput) (CancelResult, error) {
 	in.To = StatusCancelled
 	if in.Action == "" {
@@ -52,6 +55,9 @@ func Cancel(ctx context.Context, tx pgx.Tx, in CancelInput) (CancelResult, error
 		offerStatus = OfferCancelled
 	}
 	if res.OfferedDrivers, err = CloseOpenOffers(ctx, tx, in.OrderID, offerStatus, uuid.Nil); err != nil {
+		return CancelResult{}, err
+	}
+	if err := CloseOfferMessages(ctx, tx, in.OrderID, res.OfferedDrivers, OfferMessageCancelled); err != nil {
 		return CancelResult{}, err
 	}
 	data := EventData(after, map[string]any{"cancelled_by": in.Actor.Type})

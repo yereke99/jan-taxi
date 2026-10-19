@@ -136,6 +136,8 @@ func TestRegistryCoversSeedAndExtraKeys(t *testing.T) {
 		"dispatch.location_max_age_s",
 		"topup.auto_confirm_enabled", "topup.auto_max_per_day", "topup.auto_max_amount_per_day", "topup.receipt_max_age_hours",
 		"company.bin", "company.iban", "company.bank", "company.bic", "company.kbe", "company.address",
+		"commission.mode", "commission.fixed_amount", "commission.fixed_min", "commission.fixed_max", "driver.welcome_bonus",
+		"orders.passenger_cancels_after_accept_per_day",
 	}
 	for _, k := range want {
 		if _, ok := Lookup(k); !ok {

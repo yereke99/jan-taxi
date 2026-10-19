@@ -10,7 +10,8 @@ import (
 )
 
 // TestConcurrentAcceptExactlyOneWinner: 50 eligible drivers accept the same
-// order at once; exactly one wins and money moves exactly once.
+// order at once; exactly one wins, the commission is charged exactly once
+// (§22.2) and every other driver's offer message is marked taken (§22.4).
 func TestConcurrentAcceptExactlyOneWinner(t *testing.T) {
 	e := newEnv(t)
 	const n = 50
@@ -22,6 +23,12 @@ func TestConcurrentAcceptExactlyOneWinner(t *testing.T) {
 	o, pid, _ := e.order(embiStops[:2], 800)
 	if got := e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1 AND status = 'sent'`, o.ID); got != n {
 		t.Fatalf("offers sent = %d, want %d", got, n)
+	}
+	// Every offer reached the driver bot (message ids 1..n).
+	if _, err := e.pool.Exec(context.Background(), `
+		UPDATE notification_outbox SET status = 'sent', sent_at = now(), telegram_message_id = 1000 + attempts
+		WHERE template = 'order_available_driver' AND params->>'order_id' = $1`, o.ID.String()); err != nil {
+		t.Fatal(err)
 	}
 
 	var wg sync.WaitGroup
@@ -61,14 +68,16 @@ func TestConcurrentAcceptExactlyOneWinner(t *testing.T) {
 	if got := e.count(`SELECT count(*) FROM orders WHERE id = $1 AND driver_id = $2`, o.ID, w.DriverID); got != 1 {
 		t.Fatal("order not assigned to the winner")
 	}
-	if got := e.count(`SELECT count(*) FROM wallet_reservations WHERE order_id = $1 AND status = 'active'`, o.ID); got != 1 {
-		t.Fatalf("active reservations = %d", got)
-	}
-	if got := e.count(`SELECT count(*) FROM wallet_reservations WHERE order_id = $1`, o.ID); got != 1 {
+	if got := e.count(`SELECT count(*) FROM wallet_reservations WHERE order_id = $1`, o.ID); got != 0 {
 		t.Fatalf("reservations = %d", got)
 	}
-	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_reserve'`, o.ID); got != 1 {
-		t.Fatalf("reserve ledger rows = %d", got)
+	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1`, o.ID); got != 1 {
+		t.Fatalf("ledger rows = %d", got)
+	}
+	if got := e.count(`SELECT count(*) FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id
+		WHERE l.order_id = $1 AND l.entry_type = 'commission_charge' AND l.balance_delta = -50
+		  AND l.idempotency_key = 'charge:' || $1 AND w.driver_id = $2`, o.ID, w.DriverID); got != 1 {
+		t.Fatal("winner's commission charge missing")
 	}
 	if got := e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1 AND status = 'accepted' AND driver_id = $2`, o.ID, w.DriverID); got != 1 {
 		t.Fatal("winner offer not accepted")
@@ -79,19 +88,28 @@ func TestConcurrentAcceptExactlyOneWinner(t *testing.T) {
 	if got := e.count(`SELECT count(*) FROM order_status_events WHERE order_id = $1 AND to_status = 'accepted'`, o.ID); got != 1 {
 		t.Fatalf("accept events = %d", got)
 	}
-	if got := e.count(`SELECT count(*) FROM notification_outbox WHERE template = 'order_taken_driver' AND dedupe_key LIKE $1`, "order_taken_driver:"+o.ID.String()+":%"); got != n-1 {
-		t.Fatalf("taken notifications = %d", got)
+	if got := e.count(`SELECT count(*) FROM notification_outbox o JOIN notification_outbox r ON r.id = o.ref_outbox_id
+		WHERE o.kind = 'edit' AND o.template = 'order_offer_taken' AND r.params->>'order_id' = $1`, o.ID.String()); got != n-1 {
+		t.Fatalf("taken offer edits = %d", got)
+	}
+	if got := e.count(`SELECT count(*) FROM notification_outbox o JOIN notification_outbox r ON r.id = o.ref_outbox_id
+		WHERE o.kind = 'edit' AND o.template = 'order_offer_won' AND o.user_id = $1 AND r.params->>'order_id' = $2`,
+		w.UserID, o.ID.String()); got != 1 {
+		t.Fatalf("won offer edits = %d", got)
+	}
+	if got := e.count(`SELECT count(*) FROM notification_outbox WHERE template = 'order_taken_driver'`); got != 0 {
+		t.Fatalf("separate taken messages = %d", got)
 	}
 	if e.outbox("order_accepted_passenger", pid) != 1 {
 		t.Fatal("passenger not notified once")
 	}
 	for i, d := range drivers {
 		bal, res := e.wallet(d.DriverID)
-		want := int64(0)
+		want := int64(1000)
 		if i == winner {
-			want = 80
+			want = 950
 		}
-		if bal != 1000 || res != want {
+		if bal != want || res != 0 {
 			t.Fatalf("driver %d wallet %d/%d", i, bal, res)
 		}
 	}
@@ -100,13 +118,16 @@ func TestConcurrentAcceptExactlyOneWinner(t *testing.T) {
 	}
 }
 
-// TestConcurrentCompleteChargesOnce: 20 simultaneous completes settle the
-// commission exactly once.
+// TestConcurrentCompleteChargesOnce: the commission is charged once when the
+// order is taken; 20 simultaneous completes charge nothing more.
 func TestConcurrentCompleteChargesOnce(t *testing.T) {
 	e := newEnv(t)
 	drv := e.driver(500, true)
 	o, _, _ := e.order(embiStops[:2], 1000)
 	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil), http.StatusOK, "")
+	if bal, res := e.wallet(drv.DriverID); bal != 450 || res != 0 {
+		t.Fatalf("wallet after accept %d/%d", bal, res)
+	}
 	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/start", o.ID), nil), http.StatusOK, "")
 
 	const n = 20
@@ -139,7 +160,7 @@ func TestConcurrentCompleteChargesOnce(t *testing.T) {
 	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_charge'`, o.ID); got != 1 {
 		t.Fatalf("charges = %d", got)
 	}
-	if bal, res := e.wallet(drv.DriverID); bal != 400 || res != 0 {
+	if bal, res := e.wallet(drv.DriverID); bal != 450 || res != 0 {
 		t.Fatalf("wallet %d/%d", bal, res)
 	}
 	if got := e.count(`SELECT completed_trips FROM driver_profiles WHERE id = $1`, drv.DriverID); got != 1 {
@@ -176,17 +197,24 @@ func TestAcceptInsufficientBalance(t *testing.T) {
 	r = e.do(poor.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil)
 	e.expect(r, http.StatusPaymentRequired, "insufficient_balance")
 	d := r.err(t).Error.Details
-	if d["required"] != float64(80) || d["available"] != float64(30) || d["currency"] != "KZT" || d["topup_min_amount"] != float64(500) {
+	if d["required"] != float64(50) || d["available"] != float64(30) || d["currency"] != "KZT" || d["topup_min_amount"] != float64(500) {
 		t.Fatalf("details: %v", d)
 	}
 	if s := e.status(o.ID); s != "searching" {
 		t.Fatalf("status %s", s)
 	}
+	// The driver who missed the offer for lack of money is told once a day,
+	// with a top-up button (§22.2), however many orders follow.
+	e.order(embiStops[:2], 900)
+	if got := e.count(`SELECT count(*) FROM notification_outbox WHERE template = 'wallet_low_balance' AND user_id = $1
+		AND params->>'available' = '30' AND params->>'required' = '50'`, poor.UserID); got != 1 {
+		t.Fatalf("low balance messages = %d", got)
+	}
 	if bal, res := e.wallet(poor.DriverID); bal != 30 || res != 0 {
 		t.Fatalf("wallet %d/%d", bal, res)
 	}
-	if got := e.count(`SELECT count(*) FROM wallet_reservations WHERE order_id = $1`, o.ID); got != 0 {
-		t.Fatalf("reservations = %d", got)
+	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1`, o.ID); got != 0 {
+		t.Fatalf("ledger rows = %d", got)
 	}
 	if got := e.count(`SELECT count(*) FROM order_status_events WHERE order_id = $1`, o.ID); got != 1 {
 		t.Fatalf("events = %d", got)
@@ -209,8 +237,8 @@ func TestDriverWithActiveOrderCannotAccept(t *testing.T) {
 	if s := e.status(second.ID); s != "searching" {
 		t.Fatalf("second order status %s", s)
 	}
-	if _, res := e.wallet(drv.DriverID); res != 80 {
-		t.Fatalf("reserved %d", res)
+	if bal, res := e.wallet(drv.DriverID); bal != 950 || res != 0 {
+		t.Fatalf("wallet %d/%d", bal, res)
 	}
 	// A repeated accept of the order the driver already holds is a no-op.
 	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", first.ID), nil), http.StatusOK, "")

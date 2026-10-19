@@ -205,8 +205,8 @@ func (b *Bot) availabilityError(ctx context.Context, s *session, err error) erro
 	return fmt.Errorf("set availability: %w", err)
 }
 
-// orders lists up to five orders the driver can accept now, each with a
-// button that opens it in the Mini App.
+// orders lists up to five orders the driver can accept now, each with
+// «✅ Алу» and a button that opens it in the Mini App.
 func (b *Bot) orders(ctx context.Context, s *session) error {
 	if ok, err := b.requireApproved(ctx, s); !ok {
 		return err
@@ -224,15 +224,14 @@ func (b *Bot) orders(ctx context.Context, s *session) error {
 	}
 	blocks := []string{s.t("orders_title")}
 	var rows [][]telegram.InlineKeyboardButton
-	var row []telegram.InlineKeyboardButton
 	for _, o := range res.Items {
 		blocks = append(blocks, orderCard(s, o))
-		row = append(row, runtime.WebAppButton(s.t("btn_order", o.Number), b.miniAppURL(ctx, "order_"+o.ID)))
-		if len(row) == 3 {
-			rows, row = append(rows, row), nil
-		}
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			runtime.CallbackButton(s.t("btn_take_order", o.Number), takePrefix+o.ID),
+			runtime.WebAppButton(s.t("btn_map"), b.miniAppURL(ctx, "order_"+o.ID)),
+		})
 	}
-	rows = append(rows, row, b.appButton(ctx, s, "btn_all_orders", "orders"))
+	rows = append(rows, b.appButton(ctx, s, "btn_all_orders", "orders"))
 	return b.send(ctx, s, strings.Join(blocks, "\n\n"), runtime.Inline(rows...))
 }
 
@@ -267,6 +266,9 @@ func (b *Bot) needLocation(ctx context.Context, s *session, key string) error {
 // withholds it until the driver accepts).
 func orderCard(s *session, o botapi.OrderCard) string {
 	lines := []string{s.t("order_head", o.Number, runtime.Esc(s.t("category_"+o.Category)), runtime.Esc(runtime.FormatMoney(o.Fare)))}
+	if l := localityLine(o.Locality); l != "" {
+		lines = append(lines, l)
+	}
 	if len(o.Stops) > 0 {
 		lines = append(lines, s.t("order_from", runtime.Esc(stopLabel(s, o.Stops[0]))))
 		lines = append(lines, s.t("order_to", runtime.Esc(stopLabel(s, o.Stops[len(o.Stops)-1]))))
@@ -285,6 +287,15 @@ func orderCard(s *session, o botapi.OrderCard) string {
 		lines = append(lines, s.t("order_comment", runtime.Esc(*o.Comment)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// localityLine is "📍 <settlement of the pickup>", or "" when the locality is
+// unknown (coordinates are never shown).
+func localityLine(l *string) string {
+	if name := runtime.PlaceLabel(botapi.LocalityOf(l), ""); name != "" {
+		return "📍 " + runtime.Esc(name)
+	}
+	return ""
 }
 
 // stopLabel is the stop address, or "point on the map" when it has none
@@ -321,10 +332,15 @@ func (b *Bot) trip(ctx context.Context, s *session) error {
 	lines := []string{
 		s.t("trip_title", o.Number),
 		s.t("trip_status", runtime.Esc(s.t("order_status_"+o.Status))),
+	}
+	if l := localityLine(o.Locality); l != "" {
+		lines = append(lines, l)
+	}
+	lines = append(lines,
 		s.t("order_from", runtime.Esc(runtime.PlaceLabel(o.PickupAddress, s.t("map_point")))),
 		s.t("order_to", runtime.Esc(runtime.PlaceLabel(o.DestinationAddress, s.t("map_point")))),
 		s.t("trip_fare", runtime.Esc(runtime.FormatMoney(o.Fare))),
-	}
+	)
 	return b.send(ctx, s, strings.Join(lines, "\n"), runtime.Inline(b.appButton(ctx, s, "btn_trip", "trip")))
 }
 
@@ -467,8 +483,12 @@ func (b *Bot) languagePicker(ctx context.Context, s *session) error {
 	return b.send(ctx, s, s.t("pick_language"), runtime.Inline(languageRow()))
 }
 
-// onCallback handles inline button presses (only the language picker).
+// onCallback handles inline button presses: «✅ Алу» on offers and the
+// language picker.
 func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) error {
+	if orderID, ok := strings.CutPrefix(q.Data, takePrefix); ok {
+		return b.onTake(ctx, q, orderID)
+	}
 	lang, ok := strings.CutPrefix(q.Data, "lang:")
 	if !ok || runtime.Lang(lang) != lang {
 		return b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID})

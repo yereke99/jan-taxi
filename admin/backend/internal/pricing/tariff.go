@@ -37,8 +37,8 @@ const Currency = "KZT"
 // ErrTariffNotFound is returned for unknown tariff ids.
 var ErrTariffNotFound = httpx.NewError(http.StatusNotFound, "not_found", "tariff not found")
 
-// ErrNoActiveTariff means the city has no active tariff for the category, so
-// the category cannot be booked there.
+// ErrNoActiveTariff means the city has no active tariff for the category (and
+// vehicle class), so it cannot be booked there.
 var ErrNoActiveTariff = &httpx.Error{
 	Status: http.StatusUnprocessableEntity, Code: "validation_failed",
 	Message: "category is not available in this city", Fields: map[string]string{"category": "not_allowed"},
@@ -63,6 +63,7 @@ type Tariff struct {
 	ID            uuid.UUID  `json:"id"`
 	CityID        uuid.UUID  `json:"city_id"`
 	Category      string     `json:"category"`
+	VehicleClass  string     `json:"vehicle_class"`
 	Version       int        `json:"version"`
 	IsActive      bool       `json:"is_active"`
 	MinFare       int        `json:"min_fare"`
@@ -78,7 +79,7 @@ type Tariff struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
-const tariffColumns = `t.id, t.city_id, t.category, t.version, t.is_active, t.min_fare, t.max_fare, t.fare_step,
+const tariffColumns = `t.id, t.city_id, t.category, t.vehicle_class, t.version, t.is_active, t.min_fare, t.max_fare, t.fare_step,
 	t.base_fare, t.per_km, t.per_minute, t.extra_stop_fee, t.extra_fees, t.commission_bps, t.created_at,
 	a.id, a.email::text, a.full_name`
 
@@ -94,7 +95,7 @@ func scanTariff(s scanner) (Tariff, error) {
 		adminMail *string
 		adminName *string
 	)
-	err := s.Scan(&t.ID, &t.CityID, &t.Category, &t.Version, &t.IsActive, &t.MinFare, &t.MaxFare, &t.FareStep,
+	err := s.Scan(&t.ID, &t.CityID, &t.Category, &t.VehicleClass, &t.Version, &t.IsActive, &t.MinFare, &t.MaxFare, &t.FareStep,
 		&t.BaseFare, &t.PerKm, &t.PerMinute, &t.ExtraStopFee, &fees, &t.CommissionBps, &t.CreatedAt,
 		&adminID, &adminMail, &adminName)
 	if err != nil {
@@ -120,11 +121,11 @@ func deref(s *string) string {
 	return *s
 }
 
-// ActiveTariff returns the active tariff version for (cityID, category), or
-// ErrNoActiveTariff when none exists.
-func ActiveTariff(ctx context.Context, q db.Querier, cityID uuid.UUID, category string) (Tariff, error) {
+// ActiveTariff returns the active tariff version for (cityID, category,
+// vehicleClass), or ErrNoActiveTariff when none exists.
+func ActiveTariff(ctx context.Context, q db.Querier, cityID uuid.UUID, category, vehicleClass string) (Tariff, error) {
 	t, err := scanTariff(q.QueryRow(ctx, `SELECT `+tariffColumns+tariffFrom+`
-		WHERE t.city_id = $1 AND t.category = $2 AND t.is_active`, cityID, category))
+		WHERE t.city_id = $1 AND t.category = $2 AND t.vehicle_class = $3 AND t.is_active`, cityID, category, vehicleClass))
 	if db.IsNoRows(err) {
 		return Tariff{}, ErrNoActiveTariff
 	}
@@ -132,6 +133,26 @@ func ActiveTariff(ctx context.Context, q db.Querier, cityID uuid.UUID, category 
 		return Tariff{}, fmt.Errorf("load active tariff: %w", err)
 	}
 	return t, nil
+}
+
+// ActiveTariffs returns the active tariffs of (cityID, category) keyed by
+// vehicle class.
+func ActiveTariffs(ctx context.Context, q db.Querier, cityID uuid.UUID, category string) (map[string]Tariff, error) {
+	rows, err := q.Query(ctx, `SELECT `+tariffColumns+tariffFrom+`
+		WHERE t.city_id = $1 AND t.category = $2 AND t.is_active`, cityID, category)
+	if err != nil {
+		return nil, fmt.Errorf("load active tariffs: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]Tariff{}
+	for rows.Next() {
+		t, err := scanTariff(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan tariff: %w", err)
+		}
+		out[t.VehicleClass] = t
+	}
+	return out, rows.Err()
 }
 
 // GetTariff loads any tariff version by id.
@@ -150,17 +171,22 @@ func GetTariff(ctx context.Context, q db.Querier, id uuid.UUID) (Tariff, error) 
 type TariffFilter struct {
 	CityID          *uuid.UUID
 	Category        string // empty = all
+	VehicleClass    string // empty = all
 	IncludeInactive bool
 }
 
-// ListTariffs returns tariffs ordered by city, category and newest version first.
+// ListTariffs returns tariffs ordered by city, category, vehicle class
+// (display order) and newest version first.
 func ListTariffs(ctx context.Context, q db.Querier, f TariffFilter) ([]Tariff, error) {
 	sql := `SELECT ` + tariffColumns + tariffFrom + `
+		LEFT JOIN vehicle_classes vc ON vc.code = t.vehicle_class
 		WHERE ($1::uuid IS NULL OR t.city_id = $1)
 		  AND ($2 = '' OR t.category = $2)
 		  AND ($3 OR t.is_active)
-		ORDER BY t.city_id, array_position(ARRAY['taxi','parcel','other'], t.category), t.version DESC`
-	rows, err := q.Query(ctx, sql, f.CityID, f.Category, f.IncludeInactive)
+		  AND ($4 = '' OR t.vehicle_class = $4)
+		ORDER BY t.city_id, array_position(ARRAY['taxi','parcel','other'], t.category), vc.sort, t.vehicle_class,
+		         t.version DESC`
+	rows, err := q.Query(ctx, sql, f.CityID, f.Category, f.IncludeInactive, f.VehicleClass)
 	if err != nil {
 		return nil, fmt.Errorf("list tariffs: %w", err)
 	}

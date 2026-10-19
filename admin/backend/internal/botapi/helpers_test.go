@@ -110,15 +110,15 @@ func insertOrder(t *testing.T, pool *pgxpool.Pool, passengerID uuid.UUID, driver
 		INSERT INTO orders (passenger_id, city_id, category, service_type, cargo_type, status, driver_id, fare,
 		                    commission_bps, commission_amount, payment_method, tariff_id, distance_m, duration_s,
 		                    stop_count, pickup_lat, pickup_lon, idempotency_key, accepted_at, cancelled_at,
-		                    cancelled_by, search_expires_at, created_at)
+		                    cancelled_by, search_expires_at, created_at, vehicle_class, passenger_count)
 		SELECT $1, t.city_id, 'taxi', 'passenger', 'none', $2, $3, $4, 1000, ($4 * 1000 + 5000) / 10000, 'cash',
 		       t.id, 1800, 300, 2, 48.8264, 58.1442, $5,
 		       CASE WHEN $3::uuid IS NOT NULL THEN now() END,
 		       CASE WHEN $2 = 'cancelled' THEN now() END,
 		       CASE WHEN $2 = 'cancelled' THEN 'passenger' END,
-		       CASE WHEN $2 = 'searching' THEN now() + interval '10 minutes' END, $6
+		       CASE WHEN $2 = 'searching' THEN now() + interval '10 minutes' END, $6, 'sedan', 1
 		FROM tariffs t JOIN cities c ON c.id = t.city_id
-		WHERE c.code = 'EMB' AND t.category = 'taxi' AND t.is_active
+		WHERE c.code = 'EMB' AND t.category = 'taxi' AND t.vehicle_class = 'sedan' AND t.is_active
 		RETURNING id`, passengerID, status, driverID, fare, uuid.NewString(), createdAt).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert order: %v", err)

@@ -42,7 +42,11 @@ type record struct {
 	DurationS          int
 	StopCount          int
 	CancelReason       *string
+	CancelReasonCode   *string
 	CancelledBy        *string
+	CommissionMode     string
+	DriverETAS         *int
+	DriverETAAt        *time.Time
 	SearchExpiresAt    *time.Time
 	AcceptedAt         *time.Time
 	ArrivedAt          *time.Time
@@ -52,6 +56,8 @@ type record struct {
 	Version            int
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	Load               OrderLoad
+	Place              OrderPlace
 
 	City      CityRef
 	Passenger passengerRow
@@ -60,12 +66,13 @@ type record struct {
 }
 
 type passengerRow struct {
-	TelegramID int64
-	FirstName  string
-	LastName   string
-	Username   *string
-	Phone      *string
-	IsBlocked  bool
+	TelegramID    int64
+	FirstName     string
+	LastName      string
+	Username      *string
+	Phone         *string
+	PhoneVerified bool
+	IsBlocked     bool
 }
 
 type driverRow struct {
@@ -95,12 +102,17 @@ type LocalizedText struct {
 	EN string `json:"en"`
 }
 
-// Vehicle is the assigned vehicle (openapi Vehicle).
+// Vehicle is the assigned vehicle (openapi Vehicle) with its own class, which
+// may differ from the order's class when the class serves several (§21.1).
 type Vehicle struct {
-	Make  string `json:"make"`
-	Model string `json:"model"`
-	Color string `json:"color"`
-	Plate string `json:"plate"`
+	Make             string         `json:"make"`
+	Model            string         `json:"model"`
+	Color            string         `json:"color"`
+	Plate            string         `json:"plate"`
+	VehicleClass     *string        `json:"vehicle_class"`
+	VehicleClassName *LocalizedText `json:"vehicle_class_name"`
+	Seats            *int           `json:"seats"`
+	CargoVolumeL     *int           `json:"cargo_volume_l"`
 }
 
 const recordColumns = `
@@ -109,11 +121,15 @@ const recordColumns = `
 	o.commission_bps, o.commission_amount, o.payment_method, o.tariff_id, o.quote_id, o.distance_m, o.duration_s,
 	o.stop_count, o.cancel_reason, o.cancelled_by, o.search_expires_at, o.accepted_at, o.arrived_at, o.started_at,
 	o.completed_at, o.cancelled_at, o.version, o.created_at, o.updated_at,
+	o.cancel_reason_code, o.commission_mode, o.driver_eta_s, o.driver_eta_at,
 	c.code, c.name_kk, c.name_ru, c.name_en,
-	pu.telegram_user_id, pu.first_name, pu.last_name, pu.username, pu.phone_e164, pu.is_blocked,
+	pu.telegram_user_id, pu.first_name, pu.last_name, pu.username, pu.phone_e164, pu.phone_verified_at IS NOT NULL,
+	pu.is_blocked,
 	d.id, d.user_id, d.code, d.first_name, d.last_name, COALESCE(d.phone_e164, du.phone_e164),
 	d.rating_sum, d.rating_count, d.completed_trips, d.avatar_file_id,
-	v.make, v.model, v.color, v.plate_normalized, v.plate_raw`
+	v.make, v.model, v.color, v.plate_normalized, v.plate_raw,
+	v.class_code, vvc.name_kk, vvc.name_ru, vvc.name_en, v.seats, v.cargo_volume_l,
+	` + loadColumns + `, ` + placeColumns
 
 const recordFrom = `
 	FROM orders o
@@ -121,7 +137,8 @@ const recordFrom = `
 	JOIN users pu ON pu.id = o.passenger_id
 	LEFT JOIN driver_profiles d ON d.id = o.driver_id
 	LEFT JOIN users du ON du.id = d.user_id
-	LEFT JOIN vehicles v ON v.id = o.vehicle_id`
+	LEFT JOIN vehicles v ON v.id = o.vehicle_id
+	LEFT JOIN vehicle_classes vvc ON vvc.code = v.class_code` + loadJoin + placeJoin
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -133,22 +150,28 @@ func scanRecord(row scanner) (record, error) {
 		dRatingSum, dRatingCnt, dTrips     *int
 		dAvatar                            *uuid.UUID
 		vMake, vModel, vColor, vNorm, vRaw *string
+		vClass, vKK, vRU, vEN              *string
+		vSeats, vCargo                     *int
 	)
-	err := row.Scan(
+	dest := []any{
 		&r.ID, &r.Number, &r.PassengerID, &r.CityID, &r.Category, &r.ServiceType, &r.CargoType, &r.CargoDescription,
 		&r.RecipientPhone, &r.ProhibitedItemsAck, &r.Comment, &r.Status, &r.DriverID, &r.VehicleID, &r.Fare, &r.Currency,
 		&r.CommissionBps, &r.CommissionAmount, &r.PaymentMethod, &r.TariffID, &r.QuoteID, &r.DistanceM, &r.DurationS,
 		&r.StopCount, &r.CancelReason, &r.CancelledBy, &r.SearchExpiresAt, &r.AcceptedAt, &r.ArrivedAt, &r.StartedAt,
 		&r.CompletedAt, &r.CancelledAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
+		&r.CancelReasonCode, &r.CommissionMode, &r.DriverETAS, &r.DriverETAAt,
 		&r.City.Code, &r.City.Name.KK, &r.City.Name.RU, &r.City.Name.EN,
 		&r.Passenger.TelegramID, &r.Passenger.FirstName, &r.Passenger.LastName, &r.Passenger.Username,
-		&r.Passenger.Phone, &r.Passenger.IsBlocked,
+		&r.Passenger.Phone, &r.Passenger.PhoneVerified, &r.Passenger.IsBlocked,
 		&dID, &dUser, &dCode, &dFirst, &dLast, &dPhone, &dRatingSum, &dRatingCnt, &dTrips, &dAvatar,
-		&vMake, &vModel, &vColor, &vNorm, &vRaw)
+		&vMake, &vModel, &vColor, &vNorm, &vRaw, &vClass, &vKK, &vRU, &vEN, &vSeats, &vCargo}
+	dest = append(dest, loadDest(&r.Load)...)
+	err := row.Scan(append(dest, placeDest(&r.Place)...)...)
 	if err != nil {
 		return record{}, err
 	}
-	utc(r.SearchExpiresAt, r.AcceptedAt, r.ArrivedAt, r.StartedAt, r.CompletedAt, r.CancelledAt, &r.CreatedAt, &r.UpdatedAt)
+	utc(r.SearchExpiresAt, r.AcceptedAt, r.ArrivedAt, r.StartedAt, r.CompletedAt, r.CancelledAt, &r.CreatedAt, &r.UpdatedAt,
+		r.DriverETAAt)
 	r.City.ID = r.CityID
 	if dID != nil {
 		r.Driver = &driverRow{ID: *dID, UserID: deref(dUser), Code: str(dCode), FirstName: str(dFirst),
@@ -156,7 +179,11 @@ func scanRecord(row scanner) (record, error) {
 			CompletedTrips: num(dTrips), AvatarFileID: dAvatar}
 	}
 	if r.VehicleID != nil {
-		r.Vehicle = &Vehicle{Make: str(vMake), Model: str(vModel), Color: str(vColor), Plate: lifecycle.PlateDisplay(vNorm, vRaw)}
+		r.Vehicle = &Vehicle{Make: str(vMake), Model: str(vModel), Color: str(vColor), Plate: lifecycle.PlateDisplay(vNorm, vRaw),
+			VehicleClass: vClass, Seats: vSeats, CargoVolumeL: vCargo}
+		if vClass != nil {
+			r.Vehicle.VehicleClassName = &LocalizedText{KK: str(vKK), RU: str(vRU), EN: str(vEN)}
+		}
 	}
 	return r, nil
 }

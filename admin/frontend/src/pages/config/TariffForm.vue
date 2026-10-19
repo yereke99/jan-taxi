@@ -1,31 +1,48 @@
 <!--
-  New tariff version for a city × category (the API never edits a version in
-  place). Prefilled from the current version; the same rules as the API:
-  min/max are multiples of the step, max ≥ min, commission ≤ 50 %.
+  New tariff version for a city × category × vehicle class (the API never
+  edits a version in place). Prefilled from the current version of the chosen
+  class; the same rules as the API: min/max are multiples of the step,
+  max ≥ min, commission ≤ 50 %, and only classes that can carry the category.
 -->
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { tariffsApi, type Tariff } from '../../api/config'
-import { AppButton, Drawer, FormField, TextInput, toast } from '../../components'
+import { classServesCategory } from '../../api/vehicleClasses'
+import { AppButton, Drawer, FormField, SelectInput, TextInput, toast } from '../../components'
 import { useErrors } from '../../composables/useErrors'
 import { useFormat } from '../../composables/useFormat'
+import { useVehicleClasses } from '../../composables/useVehicleClasses'
 import { bpsToPercentInput, parseInteger } from '../../forms/numbers'
 import { DEFAULT_FARE_STEP, LIMITS, validateTariffForm, type FeeRow, type TariffForm } from '../../forms/validation'
 import type { Category } from '../../utils/status'
 
-const props = defineProps<{ open: boolean; cityId: string; category: Category; current: Tariff | null; defaultCommissionBps?: number }>()
+const props = defineProps<{
+  open: boolean
+  cityId: string
+  category: Category
+  vehicleClass: string
+  /** Every version of the city (current versions prefill the form). */
+  tariffs: Tariff[]
+  defaultCommissionBps?: number
+}>()
 const emit = defineEmits<{ 'update:open': [open: boolean]; saved: [tariff: Tariff] }>()
 
 const { t } = useI18n()
 const fmt = useFormat()
 const errors = useErrors()
+const vc = useVehicleClasses()
 
-function initial(): TariffForm {
-  const c = props.current
+function currentOf(cls: string): Tariff | null {
+  return props.tariffs.find((x) => x.category === props.category && x.vehicle_class === cls && x.is_active) ?? null
+}
+
+function initial(cls: string): TariffForm {
+  const c = currentOf(cls)
   return {
     city_id: props.cityId,
     category: props.category,
+    vehicle_class: cls,
     min_fare: String(c?.min_fare ?? 500),
     max_fare: String(c?.max_fare ?? 1500),
     fare_step: String(c?.fare_step ?? DEFAULT_FARE_STEP),
@@ -38,18 +55,42 @@ function initial(): TariffForm {
   }
 }
 
-const form = reactive<TariffForm>(initial())
+const form = reactive<TariffForm>(initial(props.vehicleClass))
 const fieldErrors = ref<Record<string, string>>({})
 const saving = ref(false)
+/** Snapshot of the last prefill: switching class re-prefills only an untouched form. */
+let pristine = JSON.stringify(form)
 
 watch(
   () => props.open,
   (open) => {
     if (!open) return
-    Object.assign(form, initial())
+    Object.assign(form, initial(props.vehicleClass))
+    pristine = JSON.stringify(form)
     fieldErrors.value = {}
   },
 )
+
+watch(
+  () => form.vehicle_class,
+  (cls, prev) => {
+    if (!cls || cls === prev) return
+    const snapshot = JSON.stringify({ ...form, vehicle_class: prev })
+    if (snapshot !== pristine) return
+    Object.assign(form, initial(cls))
+    pristine = JSON.stringify(form)
+  },
+)
+
+/** Classes that can carry the category; a class already priced here stays selectable. */
+const classOptions = computed(() =>
+  vc.classes.value
+    .filter((c) => classServesCategory(c, props.category) || c.code === form.vehicle_class)
+    .map((c) => ({ value: c.code, label: c.is_active === false ? `${fmt.name(c.name)} · ${t('classes.inactive')}` : fmt.name(c.name) })),
+)
+
+const current = computed(() => currentOf(form.vehicle_class))
+const title = computed(() => t('config.tariff_new_title', { category: `${t(`category.${props.category}`)} · ${vc.name(form.vehicle_class)}` }))
 
 /** Fare options the passenger will see (min..max by step), or null when the inputs are not valid yet. */
 const preview = computed(() => {
@@ -107,8 +148,11 @@ function feeKey(_: FeeRow, i: number): number {
 </script>
 
 <template>
-  <Drawer :open="open" :title="t('config.tariff_new_title', { category: t(`category.${category}`) })" width="620px" @update:open="(v) => emit('update:open', v)">
+  <Drawer :open="open" :title="title" width="620px" @update:open="(v) => emit('update:open', v)">
     <form class="jt-form" novalidate @submit.prevent="save">
+      <FormField v-slot="f" :label="t('classes.class')" :error="fieldErrors.vehicle_class" :hint="t('config.tariff_class_hint')" required>
+        <SelectInput :id="f.id" :model-value="form.vehicle_class || null" :options="classOptions" :invalid="f.invalid" @update:model-value="(v) => (form.vehicle_class = v ?? '')" />
+      </FormField>
       <p class="jt-muted">{{ current ? t('config.tariff_new_hint', { version: current.version }) : t('config.tariff_first_hint') }} {{ t('config.amounts_in_kzt') }}</p>
       <div class="grid">
         <FormField v-for="[key, label] in moneyFields" :key="key" v-slot="f" :label="t(label)" :error="fieldErrors[key]" :required="key === 'min_fare' || key === 'max_fare' || key === 'fare_step'">
@@ -118,6 +162,7 @@ function feeKey(_: FeeRow, i: number): number {
           <TextInput :id="f.id" v-model="form.commission_percent" inputmode="decimal" :invalid="f.invalid" />
         </FormField>
       </div>
+      <p class="jt-muted note">{{ t('config.tariff_commission_note') }}</p>
       <p v-if="preview" class="preview">
         {{ t('config.fare_preview', { n: preview.count, values: preview.sample.map((v) => fmt.money(v)).join(', ') }) }}
       </p>
@@ -166,6 +211,10 @@ function feeKey(_: FeeRow, i: number): number {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--jt-space-3);
+}
+
+.note {
+  font: var(--jt-font-small);
 }
 
 .preview {

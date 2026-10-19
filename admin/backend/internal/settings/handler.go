@@ -43,8 +43,10 @@ type Item struct {
 	OverridesEnv  bool            `json:"overrides_env"`
 	Description   Localized       `json:"description"`
 	Constraints   Constraints     `json:"constraints"`
-	UpdatedAt     *time.Time      `json:"updated_at"`
-	UpdatedBy     *uuid.UUID      `json:"updated_by"`
+	// ReadOnly settings cannot be changed through PATCH /admin/settings.
+	ReadOnly  bool       `json:"read_only"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	UpdatedBy *uuid.UUID `json:"updated_by"`
 }
 
 // Constraints lets the admin UI render matching inputs.
@@ -103,6 +105,12 @@ func List(ctx context.Context, q db.Querier) ([]Item, error) {
 		it := Item{
 			Key: d.Key, Type: d.Kind, Default: def, Source: "default",
 			HasEnvDefault: d.HasEnvDefault(), Description: d.Description, Constraints: d.constraints(),
+			ReadOnly: d.ReadOnly,
+		}
+		if d.Key == "commission.fixed_amount" {
+			// The admin may only choose within the configured bounds (§22.7).
+			lo, hi := CommissionBounds(ctx, q)
+			it.Constraints.Min, it.Constraints.Max = &lo, &hi
 		}
 		if d.env != nil {
 			if _, ok := d.env(env); ok {
@@ -162,6 +170,10 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request) error {
 		d, ok := Lookup(k)
 		if !ok {
 			fields[k] = ReasonUnknown
+			continue
+		}
+		if d.ReadOnly {
+			fields[k] = ReasonReadOnly
 			continue
 		}
 		if string(raw) == "null" {
@@ -263,6 +275,16 @@ func checkConsistency(ctx context.Context, tx pgx.Tx, changes map[string]json.Ra
 		}
 		if maxR < base {
 			fields["dispatch.radius_max_m"] = "less_than_base"
+		}
+	}
+	if touches(changes, "commission.fixed_amount") {
+		var amount int64
+		if err := resolveAfter(ctx, tx, changes, "commission.fixed_amount", &amount); err != nil {
+			return httpx.Internal(err)
+		}
+		if lo, hi := CommissionBounds(ctx, tx); amount < lo || amount > hi {
+			return httpx.Validation(map[string]string{"commission.fixed_amount": ReasonOutOfRange}).
+				WithDetails(map[string]any{"min": lo, "max": hi})
 		}
 	}
 	if len(fields) > 0 {

@@ -127,6 +127,10 @@ func TestPassengerOrders(t *testing.T) {
 		first["pickup_address"] != "Жиенқали Тілепбергенов көшесі, 12" || first["destination_address"] != "48.83010, 58.15100" {
 		t.Fatalf("newest order: %v", first)
 	}
+	if first["vehicle_class"] != "sedan" || first["vehicle_class_name"].(map[string]any)["kk"] != "Седан" ||
+		first["passenger_count"] != float64(1) || first["cargo_size"] != nil {
+		t.Fatalf("newest order load: %v", first)
+	}
 	if st, b := e.call(t, "passenger", http.MethodGet, "/passenger/"+itoa(tg)+"/orders?limit=2", nil); st != 200 || len(b["items"].([]any)) != 2 {
 		t.Fatalf("limit=2: %d %v", st, b)
 	}

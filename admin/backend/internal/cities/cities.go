@@ -23,7 +23,9 @@ import (
 var (
 	ErrNotFound     = httpx.NewError(http.StatusNotFound, "not_found", "city not found")
 	ErrNoActiveCity = httpx.NewError(http.StatusUnprocessableEntity, "no_active_city", "no active city is configured")
-	ErrInvalidPoint = &httpx.Error{Status: http.StatusUnprocessableEntity, Code: "validation_failed", Message: "invalid coordinates", Fields: map[string]string{"point": "invalid"}}
+	// ErrDefaultRegionLocked refuses deactivating the nationwide default region.
+	ErrDefaultRegionLocked = httpx.Conflict("default_region_locked", "the nationwide default region cannot be deactivated or deleted")
+	ErrInvalidPoint        = &httpx.Error{Status: http.StatusUnprocessableEntity, Code: "validation_failed", Message: "invalid coordinates", Fields: map[string]string{"point": "invalid"}}
 )
 
 // Name is a name in the three supported languages.
@@ -45,9 +47,14 @@ func (n Name) Get(lang string) string {
 	}
 }
 
-// City is a service city: the tariff area of the orders resolved to it
-// (Resolve), the prefix of its drivers' codes and a map centre. It does not
-// restrict dispatch, which is by distance from the driver to the pickup
+// DefaultRegionCode is the code of the nationwide default region seeded by
+// migration 00009: its zone is all of Kazakhstan and it prices every order
+// whose pickup no smaller city zone covers.
+const DefaultRegionCode = "KAZ"
+
+// City is a service city or region: the tariff area of the orders resolved
+// to it (Resolve), the prefix of its drivers' codes and a map centre. It does
+// not restrict dispatch, which is by distance from the driver to the pickup
 // (ARCHITECTURE §7, settings dispatch.*).
 type City struct {
 	ID          uuid.UUID
@@ -57,6 +64,9 @@ type City struct {
 	DefaultZoom float64
 	Timezone    string
 	IsActive    bool
+	// IsDefaultRegion marks the nationwide region (KAZ): the fallback of
+	// Resolve, never deactivated through the admin API.
+	IsDefaultRegion bool
 	// DispatchRadiusM, RequireDriverLocation and DriverLocationMaxAgeS are
 	// legacy per-city dispatch fields. They are still stored and editable
 	// but nothing reads them: the global dispatch.* settings apply.
@@ -88,6 +98,7 @@ type cityJSON struct {
 	DefaultZoom           float64   `json:"default_zoom"`
 	Timezone              string    `json:"timezone"`
 	IsActive              bool      `json:"is_active"`
+	IsDefaultRegion       bool      `json:"is_default_region"`
 	DispatchRadiusM       int       `json:"dispatch_radius_m"`
 	RequireDriverLocation bool      `json:"require_driver_location"`
 	DriverLocationMaxAgeS int       `json:"driver_location_max_age_s"`
@@ -100,7 +111,7 @@ type cityJSON struct {
 func (c City) MarshalJSON() ([]byte, error) {
 	return json.Marshal(cityJSON{
 		ID: c.ID, Code: c.Code, Name: c.Name, Center: toLatLon(c.Center), DefaultZoom: c.DefaultZoom,
-		Timezone: c.Timezone, IsActive: c.IsActive, DispatchRadiusM: c.DispatchRadiusM,
+		Timezone: c.Timezone, IsActive: c.IsActive, IsDefaultRegion: c.IsDefaultRegion, DispatchRadiusM: c.DispatchRadiusM,
 		RequireDriverLocation: c.RequireDriverLocation, DriverLocationMaxAgeS: c.DriverLocationMaxAgeS,
 		SearchTimeoutS: c.SearchTimeoutS, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
 	})
@@ -108,7 +119,7 @@ func (c City) MarshalJSON() ([]byte, error) {
 
 const cityColumns = `c.id, c.code, c.name_kk, c.name_ru, c.name_en, c.center_lat, c.center_lon,
 	c.default_zoom::float8, c.timezone, c.is_active, c.dispatch_radius_m, c.require_driver_location,
-	c.driver_location_max_age_s, c.search_timeout_s, c.created_at, c.updated_at`
+	c.driver_location_max_age_s, c.search_timeout_s, c.created_at, c.updated_at, c.is_default_region`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -116,7 +127,7 @@ func scanCity(s scanner) (City, error) {
 	var c City
 	err := s.Scan(&c.ID, &c.Code, &c.Name.KK, &c.Name.RU, &c.Name.EN, &c.Center.Lat, &c.Center.Lon,
 		&c.DefaultZoom, &c.Timezone, &c.IsActive, &c.DispatchRadiusM, &c.RequireDriverLocation,
-		&c.DriverLocationMaxAgeS, &c.SearchTimeoutS, &c.CreatedAt, &c.UpdatedAt)
+		&c.DriverLocationMaxAgeS, &c.SearchTimeoutS, &c.CreatedAt, &c.UpdatedAt, &c.IsDefaultRegion)
 	return c, err
 }
 
@@ -179,10 +190,12 @@ func validPoint(p geo.Point) bool {
 		p.Lat >= -90 && p.Lat <= 90 && p.Lon >= -180 && p.Lon <= 180
 }
 
-// Resolve picks the city responsible for p: the active city whose active
-// service zone covers p (nearest centre wins if zones overlap), otherwise the
-// nearest active city centre. It does not check the Kazakhstan boundary;
-// callers validate points with geo.RequireInServiceArea first.
+// Resolve picks the city responsible for p (the tariff region of an order
+// with pickup p): the active city owning the smallest active service zone
+// that covers p, so a configured city wins over the nationwide region inside
+// its zone; otherwise the active default region (KAZ). It never falls back to
+// the nearest city. It does not check the Kazakhstan boundary; callers
+// validate points with geo.RequireInServiceArea first.
 func Resolve(ctx context.Context, q db.Querier, p geo.Point) (City, error) {
 	if !validPoint(p) {
 		return City{}, ErrInvalidPoint
@@ -190,27 +203,43 @@ func Resolve(ctx context.Context, q db.Querier, p geo.Point) (City, error) {
 	c, err := scanCity(q.QueryRow(ctx, `
 		WITH pt AS (SELECT ST_SetSRID(ST_MakePoint($2, $1), 4326) AS g)
 		SELECT `+cityColumns+`
-		FROM cities c, pt
-		WHERE c.is_active
-		ORDER BY EXISTS (
-		             SELECT 1 FROM service_zones z
-		             WHERE z.city_id = c.id AND z.is_active AND ST_Covers(z.geom, pt.g)
-		         ) DESC,
-		         ST_Distance(c.center, pt.g::geography),
-		         c.code
+		FROM pt
+		JOIN service_zones z ON z.is_active AND ST_Covers(z.geom, pt.g)
+		JOIN cities c ON c.id = z.city_id AND c.is_active
+		ORDER BY ST_Area(z.geom) ASC, c.is_default_region ASC, c.code
 		LIMIT 1`, p.Lat, p.Lon))
-	if db.IsNoRows(err) {
-		return City{}, ErrNoActiveCity
+	if err == nil {
+		return c, nil
 	}
-	if err != nil {
+	if !db.IsNoRows(err) {
 		return City{}, fmt.Errorf("resolve city: %w", err)
 	}
-	return c, nil
+	return DefaultRegion(ctx, q)
 }
+
+// DefaultRegion returns the active nationwide default region (KAZ), or
+// ErrNoActiveCity when it is missing or inactive.
+func DefaultRegion(ctx context.Context, q db.Querier) (City, error) {
+	c, err := getCity(ctx, q, `c.is_default_region AND c.is_active ORDER BY c.created_at LIMIT 1`)
+	if errors.Is(err, ErrNotFound) {
+		return City{}, ErrNoActiveCity
+	}
+	return c, err
+}
+
+// Region is a short tariff-region reference (openapi TariffRegion): the
+// city or nationwide region whose tariff priced an order.
+type Region struct {
+	Code string `json:"code"`
+	Name Name   `json:"name"`
+}
+
+// Ref returns the short region reference of c.
+func (c City) Ref() Region { return Region{Code: c.Code, Name: c.Name} }
 
 // Default returns the configured default city: ref may be a code ("EMB") or an
 // English name ("Embi"). An unknown or inactive reference falls back to the
-// oldest active city.
+// oldest active city, a real city before the nationwide region.
 func Default(ctx context.Context, q db.Querier, ref string) (City, error) {
 	ref = strings.TrimSpace(ref)
 	if ref != "" {
@@ -223,7 +252,7 @@ func Default(ctx context.Context, q db.Querier, ref string) (City, error) {
 			return City{}, err
 		}
 	}
-	c, err := getCity(ctx, q, `c.is_active ORDER BY c.created_at, c.code LIMIT 1`)
+	c, err := getCity(ctx, q, `c.is_active ORDER BY c.is_default_region, c.created_at, c.code LIMIT 1`)
 	if errors.Is(err, ErrNotFound) {
 		return City{}, ErrNoActiveCity
 	}

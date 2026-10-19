@@ -292,13 +292,28 @@ function velocity(d: Drag): number {
   return (last.y - first.y) / (last.t - first.t)
 }
 
+/**
+ * Swallows the click that ends a drag, so the control the finger started on
+ * is not activated. iOS sends that click after a round trip to the UI
+ * process, well after a 0 ms timer, so the guard stays until the next press
+ * (a new gesture) or CLICK_GUARD_MS, whichever comes first.
+ */
+const CLICK_GUARD_MS = 800
+
 function suppressNextClick(): void {
+  const done = (): void => {
+    clearTimeout(timer)
+    window.removeEventListener('click', stop, { capture: true })
+    window.removeEventListener('pointerdown', done, { capture: true })
+  }
   const stop = (ev: Event): void => {
     ev.stopPropagation()
     ev.preventDefault()
+    done()
   }
-  window.addEventListener('click', stop, { capture: true, once: true })
-  setTimeout(() => window.removeEventListener('click', stop, { capture: true }), 0)
+  const timer = setTimeout(done, CLICK_GUARD_MS)
+  window.addEventListener('click', stop, { capture: true })
+  window.addEventListener('pointerdown', done, { capture: true })
 }
 
 function onPointerUp(e: PointerEvent): void {

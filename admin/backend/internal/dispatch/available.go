@@ -8,20 +8,31 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/stops"
+	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
 
 // OrderCard is an available order as listed to an eligible driver
 // (openapi DriverOrderCard): no passenger contact data, no address details.
 type OrderCard struct {
-	ID                uuid.UUID       `json:"id"`
-	Number            int64           `json:"number"`
-	Category          string          `json:"category"`
-	ServiceType       string          `json:"service_type"`
-	CargoType         string          `json:"cargo_type"`
+	ID               uuid.UUID           `json:"id"`
+	Number           int64               `json:"number"`
+	Category         string              `json:"category"`
+	ServiceType      string              `json:"service_type"`
+	CargoType        string              `json:"cargo_type"`
+	VehicleClass     string              `json:"vehicle_class"`
+	VehicleClassName vehicleclasses.Name `json:"vehicle_class_name"`
+	PassengerCount   *int                `json:"passenger_count"`
+	CargoSize        *string             `json:"cargo_size"`
+	CargoVolumeL     int                 `json:"cargo_volume_l"`
+	// Locality is the settlement of the pickup (nil when unknown, never
+	// coordinates); TariffRegion is the region whose tariff priced the order.
+	Locality          *string         `json:"locality"`
+	TariffRegion      cities.Region   `json:"tariff_region"`
 	Stops             []stops.Summary `json:"stops"`
 	StopCount         int             `json:"stop_count"`
 	Comment           *string         `json:"comment"`
@@ -51,7 +62,8 @@ const (
 
 // orderFilter is the per-order part of §7 for driver @driver_id: a searching
 // order that is not the driver's own passenger order, with a pickup inside
-// the order's effective radius of the driver's fresh location. Nothing here
+// the order's effective radius of the driver's fresh location, that the
+// driver's vehicle can take (§21.4). Nothing here
 // depends on the driver's or the order's city. The affordability test is left
 // to the caller so the same filter can count orders that only the balance
 // excludes.
@@ -59,7 +71,8 @@ const orderFilter = `
 	o.status = 'searching'
 	AND o.passenger_id <> d.user_id
 	AND ` + freshLocation + `
-	AND ` + withinRadius
+	AND ` + withinRadius + `
+	AND ` + vehicleFits
 
 const orderFrom = `
 	FROM orders o
@@ -75,8 +88,12 @@ func listCards(ctx context.Context, q db.Querier, p settings.DispatchSettings, d
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.category, o.service_type, o.cargo_type, o.stop_count, o.comment,
 		       o.cargo_description, o.fare, o.currency, o.commission_amount, o.payment_method,
-		       o.distance_m, o.duration_s, o.created_at, o.search_expires_at, `+distanceToPickup+`
+		       o.distance_m, o.duration_s, o.created_at, o.search_expires_at, `+distanceToPickup+`,
+		       o.vehicle_class, cvc.name_kk, cvc.name_ru, cvc.name_en, o.passenger_count, o.cargo_size, o.cargo_volume_l,
+		       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en
 		`+orderFrom+`
+		JOIN vehicle_classes cvc ON cvc.code = o.vehicle_class
+		JOIN cities trc ON trc.id = o.city_id
 		WHERE `+orderFilter+` AND `+affordable+`
 		  AND (@order_id::uuid IS NULL OR o.id = @order_id)
 		ORDER BY ST_Distance(dl.location, o.pickup) ASC, o.created_at DESC, o.id DESC
@@ -88,7 +105,10 @@ func listCards(ctx context.Context, q db.Querier, p settings.DispatchSettings, d
 		var c OrderCard
 		err := row.Scan(&c.ID, &c.Number, &c.Category, &c.ServiceType, &c.CargoType, &c.StopCount, &c.Comment,
 			&c.CargoDescription, &c.Fare, &c.Currency, &c.CommissionAmount, &c.PaymentMethod,
-			&c.DistanceM, &c.DurationS, &c.CreatedAt, &c.SearchExpiresAt, &c.DistanceToPickupM)
+			&c.DistanceM, &c.DurationS, &c.CreatedAt, &c.SearchExpiresAt, &c.DistanceToPickupM,
+			&c.VehicleClass, &c.VehicleClassName.KK, &c.VehicleClassName.RU, &c.VehicleClassName.EN,
+			&c.PassengerCount, &c.CargoSize, &c.CargoVolumeL,
+			&c.Locality, &c.TariffRegion.Code, &c.TariffRegion.Name.KK, &c.TariffRegion.Name.RU, &c.TariffRegion.Name.EN)
 		c.CreatedAt = c.CreatedAt.UTC()
 		if c.SearchExpiresAt != nil {
 			*c.SearchExpiresAt = c.SearchExpiresAt.UTC()

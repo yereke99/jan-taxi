@@ -87,6 +87,27 @@ func TestCommission(t *testing.T) {
 	}
 }
 
+func TestOrderCommission(t *testing.T) {
+	tests := []struct {
+		mode        string
+		fixed       int64
+		fare, bps   int
+		want        int
+		description string
+	}{
+		{"fixed", 50, 1500, 1000, 50, "fixed amount ignores the tariff rate"},
+		{"fixed", 50, 30, 1000, 30, "never more than the fare"},
+		{"fixed", 0, 1500, 1000, 0, "zero fixed amount"},
+		{"percent", 50, 1500, 1000, 150, "tariff percentage"},
+		{"percent", 50, 555, 1000, 56, "percentage rounds half up"},
+	}
+	for _, tt := range tests {
+		if got := OrderCommission(tt.mode, tt.fixed, tt.fare, tt.bps); got != tt.want {
+			t.Errorf("%s: OrderCommission(%s, %d, %d, %d) = %d, want %d", tt.description, tt.mode, tt.fixed, tt.fare, tt.bps, got, tt.want)
+		}
+	}
+}
+
 func TestValidateFare(t *testing.T) {
 	q := StoredQuote{MinFare: 600, MaxFare: 1500, FareStep: 50, CommissionBps: 1000}
 	for _, fare := range []int{600, 650, 1500} {

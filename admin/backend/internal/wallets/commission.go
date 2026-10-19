@@ -16,7 +16,6 @@ func reserveKey(orderID, driverID uuid.UUID) string {
 }
 func releaseKey(reservationID uuid.UUID) string { return "release:" + reservationID.String() }
 func chargeKey(orderID uuid.UUID) string        { return "charge:" + orderID.String() }
-func refundKey(orderID uuid.UUID) string        { return "commission_refund:" + orderID.String() }
 
 // Reserve earmarks amount of the driver's available balance for orderID
 // (commission_reserve). It must run in the same transaction that assigns the
@@ -175,53 +174,6 @@ func SettleForOrder(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (int64, e
 		return 0, fmt.Errorf("wallets: charge key %q already used", key)
 	}
 	return r.Amount, nil
-}
-
-// RefundCommission returns a charged commission to the driver's balance after a
-// dispute is resolved as cancelled (commission_refund, key
-// "commission_refund:<order_id>"). Replays return the amount refunded before. An
-// order settled with a zero commission refunds 0; an order that was never
-// charged returns ErrNotFound. adminID may be uuid.Nil for system actions.
-func RefundCommission(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, adminID uuid.UUID) (int64, error) {
-	charge, err := findEntry(ctx, tx, chargeKey(orderID))
-	if err != nil {
-		return 0, err
-	}
-	if charge == nil {
-		amount, err := settledAmount(ctx, tx, orderID)
-		if err != nil {
-			return 0, err
-		}
-		if amount != 0 {
-			return 0, fmt.Errorf("wallets: order %s settled for %d without a charge entry", orderID, amount)
-		}
-		return 0, nil
-	}
-	w, err := lockByID(ctx, tx, charge.WalletID)
-	if err != nil {
-		return 0, err
-	}
-	key := refundKey(orderID)
-	if prev, err := findEntry(ctx, tx, key); err != nil {
-		return 0, err
-	} else if prev != nil {
-		return prev.BalanceDelta, nil
-	}
-	amount := -charge.BalanceDelta
-	applied, err := apply(ctx, tx, &w, entry{
-		typ:          EntryCommissionRefund,
-		balanceDelta: amount,
-		orderID:      idPtr(orderID),
-		adminID:      nullID(adminID),
-		key:          key,
-	})
-	if err != nil {
-		return 0, err
-	}
-	if !applied {
-		return 0, fmt.Errorf("wallets: refund key %q already used", key)
-	}
-	return amount, nil
 }
 
 // lockActiveReservation locks the wallet holding the order's active reservation

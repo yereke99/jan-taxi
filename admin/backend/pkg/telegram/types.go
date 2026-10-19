@@ -202,11 +202,12 @@ type SendMessageParams struct {
 
 // EditMessageTextParams are the editMessageText arguments.
 type EditMessageTextParams struct {
-	ChatID      int64
-	MessageID   int64
-	Text        string
-	ParseMode   string
-	ReplyMarkup *InlineKeyboardMarkup
+	ChatID                int64
+	MessageID             int64
+	Text                  string
+	ParseMode             string
+	ReplyMarkup           *InlineKeyboardMarkup
+	DisableWebPagePreview bool
 }
 
 // AnswerCallbackQueryParams are the answerCallbackQuery arguments.
@@ -214,4 +215,33 @@ type AnswerCallbackQueryParams struct {
 	CallbackQueryID string
 	Text            string
 	ShowAlert       bool
+}
+
+// InputPhoto is a photo to send: the file_id of a photo Telegram already
+// has, or the bytes to upload (FileID wins).
+type InputPhoto struct {
+	FileID   string
+	Data     []byte
+	FileName string
+}
+
+// SendPhotoParams are the sendPhoto arguments. The caption is at most 1024
+// characters after entities are parsed.
+type SendPhotoParams struct {
+	ChatID      int64
+	Photo       InputPhoto
+	Caption     string
+	ParseMode   string
+	ReplyMarkup any
+}
+
+// LargestPhoto returns the file_id of the biggest size of a sent photo.
+func (m *Message) LargestPhoto() string {
+	best, area := "", -1
+	for _, p := range m.Photo {
+		if a := p.Width * p.Height; a > area {
+			best, area = p.FileID, a
+		}
+	}
+	return best
 }

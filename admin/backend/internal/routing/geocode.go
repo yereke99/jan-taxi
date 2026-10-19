@@ -23,6 +23,9 @@ type Place struct {
 	Source   string // "place" (admin gazetteer) or the provider name
 	// CountryCode is the ISO country reported by the provider ("" if unknown).
 	CountryCode string
+	// Locality is the settlement the place belongs to (city, town or
+	// village, else the district), "" when the provider did not say.
+	Locality string
 }
 
 // Geocoder searches addresses and places and resolves a point to an address.
@@ -30,6 +33,15 @@ type Place struct {
 type Geocoder interface {
 	Search(ctx context.Context, query string, near *geo.Point, lang string, limit int) ([]Place, error)
 	Reverse(ctx context.Context, p geo.Point, lang string) (*Place, error)
+}
+
+// SettlementFinder is implemented by geocoders that can name the settlement
+// (city, town or village) whose outline covers a point, in the place's own
+// official form, which the address of a nearby building may not use (e.g.
+// «Ембі» where some addresses still say «Эмба»). Settlement returns "" when
+// no known settlement covers p.
+type SettlementFinder interface {
+	Settlement(ctx context.Context, p geo.Point, lang string) (string, error)
 }
 
 // Provider source names (Place.Source).

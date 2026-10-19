@@ -19,6 +19,7 @@ import { useRealtimeEvents, useResync } from '../../composables/useRealtime'
 import { useResource } from '../../composables/useResource'
 import type { Permission } from '../../permissions'
 import { useAuthStore } from '../../stores/auth'
+import CancelReasonsCard from './CancelReasonsCard.vue'
 import KpiTile from './KpiTile.vue'
 import LiveDriversMap from './LiveDriversMap.vue'
 
@@ -120,6 +121,13 @@ const period = computed(() => {
     { key: 'registered', label: t('dashboard.drivers_registered'), value: fmt.count(m.drivers.registered_in_period), detail: t('dashboard.drivers_total', { approved: m.drivers.approved, total: m.drivers.total, suspended: m.drivers.suspended }) },
     { key: 'wallets', label: t('dashboard.wallets_total'), value: fmt.money(m.wallets.total_balance), detail: t('dashboard.wallets_reserved', { amount: fmt.money(m.wallets.total_reserved) }) },
     {
+      key: 'bonuses',
+      label: t('dashboard.bonuses'),
+      value: fmt.money((m.revenue.welcome_bonuses ?? 0) + (m.revenue.manual_bonuses ?? 0)),
+      detail: t('dashboard.bonuses_breakdown', { welcome: fmt.money(m.revenue.welcome_bonuses ?? 0), manual: fmt.money(m.revenue.manual_bonuses ?? 0) }),
+      to: link('finance.view', { name: 'ledger', query: { type: 'bonus_credit' } }),
+    },
+    {
       key: 'notifications',
       label: t('dashboard.notifications_dead'),
       value: fmt.count(m.notifications.dead),
@@ -190,6 +198,8 @@ useResync(() => void res.reload({ silent: true }))
       <div class="tiles tiles--4">
         <KpiTile v-for="k in period" :key="k.key" :label="k.label" :value="k.value" :detail="k.detail" :to="k.to" :tone="k.tone" />
       </div>
+
+      <CancelReasonsCard :counts="d.orders.cancelled_by_reason" />
 
       <div class="jt-grid-2">
         <Card :title="t('dashboard.commission_per_day')">

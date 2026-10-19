@@ -19,7 +19,7 @@ func TestActiveTariffSeed(t *testing.T) {
 	ctx := context.Background()
 	cityID := testutil.CityID(t, pool, "EMB")
 	for _, cat := range Categories {
-		tr, err := ActiveTariff(ctx, pool, cityID, cat)
+		tr, err := ActiveTariff(ctx, pool, cityID, cat, "sedan")
 		if err != nil {
 			t.Fatalf("%s: %v", cat, err)
 		}
@@ -32,13 +32,13 @@ func TestActiveTariffSeed(t *testing.T) {
 			t.Fatalf("GetTariff: %v %+v", err, got)
 		}
 	}
-	if _, err := ActiveTariff(ctx, pool, uuid.New(), CategoryTaxi); !errors.Is(err, ErrNoActiveTariff) {
+	if _, err := ActiveTariff(ctx, pool, uuid.New(), CategoryTaxi, "sedan"); !errors.Is(err, ErrNoActiveTariff) {
 		t.Fatalf("unknown city: %v", err)
 	}
 	if _, err := GetTariff(ctx, pool, uuid.New()); !errors.Is(err, ErrTariffNotFound) {
 		t.Fatalf("unknown tariff: %v", err)
 	}
-	all, err := ListTariffs(ctx, pool, TariffFilter{CityID: &cityID})
+	all, err := ListTariffs(ctx, pool, TariffFilter{CityID: &cityID, VehicleClass: "sedan"})
 	if err != nil || len(all) != 3 || all[0].Category != CategoryTaxi || all[1].Category != CategoryParcel || all[2].Category != CategoryOther {
 		t.Fatalf("ListTariffs = %v %+v", err, all)
 	}
@@ -48,7 +48,7 @@ func createTestQuote(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) StoredQ
 	t.Helper()
 	ctx := context.Background()
 	cityID := testutil.CityID(t, pool, "EMB")
-	tr, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi)
+	tr, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi, "sedan")
 	if err != nil {
 		t.Fatal(err)
 	}

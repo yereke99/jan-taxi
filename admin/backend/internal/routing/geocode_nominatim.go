@@ -134,6 +134,8 @@ func (r nominatimPlace) place() (Place, bool) {
 		Point:       geo.Point{Lat: lat, Lon: lon},
 		Source:      SourceNominatim,
 		CountryCode: strings.ToUpper(a["country_code"]),
+		Locality: firstNonEmpty(a["city"], a["town"], a["village"], a["hamlet"], a["municipality"],
+			a["county"], a["state_district"], a["district"]),
 	}, true
 }
 

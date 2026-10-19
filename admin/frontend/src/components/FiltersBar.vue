@@ -15,8 +15,10 @@ const props = withDefaults(
     showSearch?: boolean
     showReset?: boolean
     debounceMs?: number
+    /** CSS width of the search field (a longer hint needs more room). */
+    searchWidth?: string
   }>(),
-  { search: '', searchPlaceholder: '', showSearch: true, showReset: true, debounceMs: 300 },
+  { search: '', searchPlaceholder: '', showSearch: true, showReset: true, debounceMs: 300, searchWidth: '280px' },
 )
 
 const emit = defineEmits<{ 'update:search': [value: string]; reset: [] }>()
@@ -49,10 +51,10 @@ onBeforeUnmount(() => clearTimeout(timer))
 
 <template>
   <div class="filters" role="search">
-    <label v-if="showSearch" class="filters__search">
+    <label v-if="showSearch" class="filters__search" :style="{ width: searchWidth }">
       <Search :size="15" aria-hidden="true" />
       <span class="jt-visually-hidden">{{ t('common.search') }}</span>
-      <input type="search" :value="local" :placeholder="searchPlaceholder || t('common.search')" @input="onInput" />
+      <input type="search" :value="local" :placeholder="searchPlaceholder || t('common.search')" :title="searchPlaceholder || undefined" @input="onInput" />
     </label>
     <slot />
     <AppButton v-if="showReset" variant="plain" size="sm" @click="reset">{{ t('common.reset') }}</AppButton>

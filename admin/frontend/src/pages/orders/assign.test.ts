@@ -1,7 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { driversApi, type AdminDriverListItem } from '../../api/drivers'
 import { ordersApi, type AdminOrder } from '../../api/orders'
+import { setVehicleClasses } from '../../composables/useVehicleClasses'
 import { i18n } from '../../i18n'
 import { distanceMeters } from '../../utils/geo'
 import AssignDriverDialog from './AssignDriverDialog.vue'
@@ -38,6 +40,12 @@ const order = {
   city,
   driver: null,
   commission_amount: 50,
+  vehicle_class: 'minivan',
+  vehicle_class_name: { kk: 'Минивэн', ru: 'Минивэн', en: 'Minivan' },
+  passenger_count: 7,
+  cargo_size: null,
+  cargo_volume_l: 0,
+  ledger: [],
   stops: [{ id: 's1', seq: 0, kind: 'pickup', lat: 43.2389, lon: 76.8897, address: 'A', address_details: null, completed_at: null }],
 } as unknown as AdminOrder
 
@@ -55,6 +63,8 @@ const location = (lat: number, lon: number) => ({
 
 beforeEach(() => {
   i18n.global.locale.value = 'en'
+  setActivePinia(createPinia())
+  setVehicleClasses([])
 })
 
 afterEach(() => {
@@ -78,6 +88,7 @@ describe('AssignDriverDialog', () => {
     await flushPromises()
 
     expect(list.mock.calls[0]![0]).not.toHaveProperty('city_id')
+    expect(document.body.textContent).toContain('Minivan · seats: 7')
     const rows = [...document.querySelectorAll<HTMLButtonElement>('.assign__row')]
     expect(rows.map((r) => r.querySelector('.assign__code')?.textContent)).toEqual(['ALA001', 'EMB001'])
 
@@ -87,7 +98,7 @@ describe('AssignDriverDialog', () => {
     buttons[buttons.length - 1]!.click()
     await flushPromises()
 
-    expect(assign).toHaveBeenCalledWith('o1', 'far')
+    expect(assign).toHaveBeenCalledWith('o1', 'far', false)
     expect(wrapper.emitted('assigned')).toHaveLength(1)
     expect(wrapper.emitted('update:open')).toBeUndefined()
     const body = document.body.textContent ?? ''

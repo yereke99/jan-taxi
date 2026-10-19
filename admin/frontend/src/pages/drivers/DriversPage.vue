@@ -1,20 +1,26 @@
-<!-- Drivers: status, city, online filters and search by code, phone, plate or name. -->
+<!-- Drivers: status, city, online filters, search by code, phone, plate or name, and the company bonus (finance.manage). -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { driversApi, type AdminDriverListItem } from '../../api/drivers'
-import { DataTable, FilterSelect, FiltersBar, Pagination, StateView, StatusBadge, type Column } from '../../components'
+import { AppButton, DataTable, FilterSelect, FiltersBar, Pagination, StateView, StatusBadge, VehicleClassIcon, type Column } from '../../components'
 import { useCities } from '../../composables/useCities'
 import { useFormat } from '../../composables/useFormat'
 import { usePagedList } from '../../composables/usePagedList'
 import { useRealtimeEvents, useResync } from '../../composables/useRealtime'
+import { useVehicleClasses } from '../../composables/useVehicleClasses'
+import { useAuthStore } from '../../stores/auth'
 import { MODERATION_STATUSES } from '../../utils/status'
+import BonusDialog from './BonusDialog.vue'
 
 const { t } = useI18n()
 const fmt = useFormat()
 const router = useRouter()
 const { options: cityOptions } = useCities()
+const vc = useVehicleClasses()
+const auth = useAuthStore()
+const bonusOpen = ref(false)
 
 const list = usePagedList({ status: '', city_id: '', online: '', q: '' }, (f, page, size, signal) => driversApi.list(f, page, size, signal))
 const f = list.filters
@@ -29,7 +35,7 @@ const columns = computed<Column<AdminDriverListItem>[]>(() => [
   { key: 'code', label: t('drivers.code'), width: '90px', mono: true },
   { key: 'driver', label: t('drivers.full_name') },
   { key: 'status', label: t('common.status') },
-  { key: 'city', label: t('common.city'), value: (r) => fmt.name(r.city.name) },
+  { key: 'city', label: t('drivers.region'), value: (r) => fmt.name(r.city.name) },
   { key: 'vehicle', label: t('drivers.vehicle') },
   { key: 'completed_trips', label: t('drivers.trips'), align: 'right' },
   { key: 'wallet_available', label: t('drivers.available'), align: 'right', mono: true, format: (v) => fmt.money(v as number | null) },
@@ -47,9 +53,13 @@ useResync(() => void list.reload({ silent: true }))
   <section class="jt-page">
     <FiltersBar v-model:search="f.q" :search-placeholder="t('drivers.search_placeholder')" @reset="list.reset">
       <FilterSelect v-model="f.status" :options="statusOptions" :placeholder="t('drivers.all_statuses')" />
-      <FilterSelect v-model="f.city_id" :options="cityOptions" :placeholder="t('common.all_cities')" />
+      <FilterSelect v-model="f.city_id" :options="cityOptions" :placeholder="t('drivers.all_regions')" :aria-label="t('drivers.region')" />
       <FilterSelect v-model="f.online" :options="onlineOptions" :placeholder="t('drivers.any_availability')" />
+      <template v-if="auth.can('finance.manage')" #actions>
+        <AppButton @click="bonusOpen = true">{{ t('bonus.grant') }}</AppButton>
+      </template>
     </FiltersBar>
+    <BonusDialog v-if="auth.can('finance.manage')" v-model:open="bonusOpen" @done="list.reload({ silent: true })" />
     <StateView v-if="list.error.value" :error="list.error.value" @retry="list.reload()" />
     <template v-else>
       <DataTable
@@ -88,7 +98,14 @@ useResync(() => void list.reload({ silent: true }))
         <template #cell-vehicle="{ row }">
           <span v-if="row.vehicle" class="two-line">
             <span>{{ row.vehicle.make }} {{ row.vehicle.model }} · {{ row.vehicle.color }}</span>
-            <span class="jt-mono jt-muted">{{ row.vehicle.plate }}</span>
+            <span class="jt-muted vehicle-meta">
+              <span class="jt-mono">{{ row.vehicle.plate }}</span>
+              <template v-if="row.vehicle.vehicle_class">
+                · <VehicleClassIcon :icon="vc.byCode(row.vehicle.vehicle_class)?.icon ?? row.vehicle.vehicle_class" :size="14" />
+                {{ vc.name(row.vehicle.vehicle_class, row.vehicle.vehicle_class_name) }}
+                <template v-if="row.vehicle.seats"> · {{ t('classes.seats_n', { n: row.vehicle.seats }) }}</template>
+              </template>
+            </span>
           </span>
           <span v-else class="jt-muted">—</span>
         </template>
@@ -135,5 +152,11 @@ useResync(() => void list.reload({ silent: true }))
 
 .online {
   font: var(--jt-font-caption);
+}
+
+.vehicle-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>

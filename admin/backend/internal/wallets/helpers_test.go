@@ -29,7 +29,7 @@ func newEnv(t *testing.T) *env {
 	pool := testutil.NewDB(t)
 	e := &env{t: t, pool: pool, ctx: context.Background()}
 	e.cityID = testutil.CityID(t, pool, "EMB")
-	if err := pool.QueryRow(e.ctx, `SELECT id FROM tariffs WHERE city_id = $1 AND category = 'taxi' ORDER BY version DESC LIMIT 1`, e.cityID).Scan(&e.tariffID); err != nil {
+	if err := pool.QueryRow(e.ctx, `SELECT id FROM tariffs WHERE city_id = $1 AND category = 'taxi' AND vehicle_class = 'sedan' ORDER BY version DESC LIMIT 1`, e.cityID).Scan(&e.tariffID); err != nil {
 		t.Fatalf("tariff: %v", err)
 	}
 	e.passID, _ = testutil.CreateUser(t, pool)
@@ -49,9 +49,9 @@ func (e *env) order() uuid.UUID {
 	err := e.pool.QueryRow(e.ctx, `
 		INSERT INTO orders (passenger_id, city_id, category, service_type, cargo_type, status, fare, commission_bps,
 		                    commission_amount, payment_method, tariff_id, distance_m, duration_s, stop_count,
-		                    pickup_lat, pickup_lon, idempotency_key)
+		                    pickup_lat, pickup_lon, idempotency_key, vehicle_class, passenger_count)
 		VALUES ($1, $2, 'taxi', 'passenger', 'none', 'draft', 1000, 1000, 100, 'cash', $3, 1000, 120, 2,
-		        48.8264, 58.1442, $4)
+		        48.8264, 58.1442, $4, 'sedan', 1)
 		RETURNING id`, e.passID, e.cityID, e.tariffID, uuid.NewString()).Scan(&id)
 	if err != nil {
 		e.t.Fatalf("create order: %v", err)

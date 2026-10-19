@@ -5,7 +5,9 @@ import type { DriverRegistration } from '../api/types'
 import { PD_CONSENT_VERSION } from '../features/registration/consent'
 import { ApiError } from '../services/http'
 import * as telegram from '../telegram'
+import type { VehicleClassOption } from '../features/vehicle/classes'
 import { fieldFromRequestKey, PHONE_POLL_MS, PHONE_WAIT_MS, submitProblem, useRegistrationStore } from './registration'
+import { useSessionStore } from './session'
 
 vi.mock('../api/driver', () => ({
   getRegistration: vi.fn(),
@@ -15,10 +17,22 @@ vi.mock('../api/driver', () => ({
   uploadRegistrationFile: vi.fn(),
   deleteRegistrationFile: vi.fn(),
 }))
-vi.mock('../telegram', () => ({ requestContact: vi.fn() }))
+vi.mock('../telegram', () => ({ requestContact: vi.fn(), getLocation: vi.fn() }))
 
 const mocked = vi.mocked(api)
 const tg = vi.mocked(telegram)
+
+const MINIVAN: VehicleClassOption = {
+  code: 'minivan',
+  name: { kk: 'Минивэн', ru: 'Минивэн', en: 'Minivan' },
+  examples: 'Toyota Alphard, Sienna',
+  icon: 'minivan',
+  seats_default: 7,
+  seats_max: 8,
+  cargo_volume_l_default: 800,
+  passenger_capable: true,
+  cargo_capable: true,
+}
 
 function reg(over: Partial<DriverRegistration> = {}): DriverRegistration {
   return {
@@ -32,7 +46,18 @@ function reg(over: Partial<DriverRegistration> = {}): DriverRegistration {
     phone_verified: false,
     avatar: null,
     documents: { id_front: null, id_back: null },
-    vehicle: { make: '', model: '', color: '', plate: '', plate_normalized: null, photos: [] },
+    vehicle: {
+      make: '',
+      model: '',
+      color: '',
+      plate: '',
+      plate_normalized: null,
+      vehicle_class: null,
+      vehicle_class_name: null,
+      seats: null,
+      cargo_volume_l: null,
+      photos: [],
+    },
     corrections: [],
     correction_comment: null,
     rejection_reason: null,
@@ -194,8 +219,47 @@ describe('registration store', () => {
       store.prefillNames('Ержан', 'John2')
       expect(store.form.first_name).toBe('Ержан')
       expect(store.form.last_name).toBe('') // not a valid name: left for the driver
-      await store.save()
+      tg.getLocation.mockRejectedValue(new Error('denied'))
+      await store.save(false, true)
       expect(mocked.saveRegistration.mock.calls[0]![0].first_name).toBe('Ержан')
+    })
+
+    it('the first "Next" creates the profile with the device position (city and code prefix)', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg({ id: null, code: null }))
+      mocked.saveRegistration.mockResolvedValue(reg({ code: 'KAZ001' }))
+      tg.getLocation.mockResolvedValue({ lat: 43.23891234, lon: 76.88971234, accuracy_m: 12, heading: null, speed_mps: null, timestamp: Date.now(), source: 'telegram' })
+      await store.load()
+      store.form.first_name = 'Ержан'
+      store.touch()
+      // Background saves never create the profile: typing waits for the step action.
+      await vi.advanceTimersByTimeAsync(2_000)
+      await store.save()
+      expect(mocked.saveRegistration).not.toHaveBeenCalled()
+      expect(tg.getLocation).not.toHaveBeenCalled()
+      await store.save(false, true)
+      expect(mocked.saveRegistration).toHaveBeenCalledTimes(1)
+      expect(mocked.saveRegistration.mock.calls[0]![0].location).toEqual({ lat: 43.238912, lon: 76.889712 })
+      // Later saves do not send it again.
+      store.form.last_name = 'Әлиев'
+      store.touch()
+      await store.save(false, true)
+      expect(mocked.saveRegistration).toHaveBeenCalledTimes(2)
+      expect(mocked.saveRegistration.mock.calls[1]![0]).not.toHaveProperty('location')
+      expect(tg.getLocation).toHaveBeenCalledTimes(1)
+    })
+
+    it('creates the profile without a position when the device has none', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg({ id: null, code: null }))
+      mocked.saveRegistration.mockResolvedValue(reg())
+      tg.getLocation.mockRejectedValue(new Error('denied'))
+      await store.load()
+      store.form.first_name = 'Ержан'
+      store.touch()
+      await store.save(false, true)
+      expect(mocked.saveRegistration).toHaveBeenCalledTimes(1)
+      expect(mocked.saveRegistration.mock.calls[0]![0]).not.toHaveProperty('location')
     })
 
     it('creates the profile (first PUT) before the first upload', async () => {
@@ -203,10 +267,65 @@ describe('registration store', () => {
       mocked.getRegistration.mockResolvedValue(reg({ id: null, code: null }))
       mocked.saveRegistration.mockResolvedValue(reg())
       mocked.uploadRegistrationFile.mockResolvedValue({ id: 'f1', kind: 'avatar', url: '/api/v1/driver/files/f1', width: 1, height: 1, created_at: '' })
+      tg.getLocation.mockRejectedValue(new Error('unavailable'))
       await store.load()
       await store.upload('avatar', new Blob(['x']), () => undefined, new AbortController().signal)
       expect(mocked.saveRegistration).toHaveBeenCalledTimes(1)
       expect(mocked.saveRegistration.mock.invocationCallOrder[0]!).toBeLessThan(mocked.uploadRegistrationFile.mock.invocationCallOrder[0]!)
+    })
+  })
+
+  describe('vehicle class (§21)', () => {
+    it('choosing a class prefills seats and cargo from the class and saves them with the draft', async () => {
+      const store = useRegistrationStore()
+      useSessionStore().extras.vehicleClasses = [MINIVAN]
+      mocked.getRegistration.mockResolvedValue(reg())
+      mocked.saveRegistration.mockResolvedValue(reg())
+      await store.load()
+      store.chooseClass(MINIVAN)
+      expect(store.form).toMatchObject({ vehicle_class: 'minivan', seats: 7, cargo_volume_l: '800' })
+      await vi.advanceTimersByTimeAsync(2_000) // autosave
+      expect(mocked.saveRegistration).toHaveBeenCalledTimes(1)
+      expect(mocked.saveRegistration.mock.calls[0]![0].vehicle).toMatchObject({ vehicle_class: 'minivan', seats: 7, cargo_volume_l: 800 })
+    })
+
+    it('sends no class fields before a class is chosen (the API keeps what it has)', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg())
+      mocked.saveRegistration.mockResolvedValue(reg())
+      await store.load()
+      store.form.first_name = 'Ержан'
+      await store.save(true)
+      const body = mocked.saveRegistration.mock.calls[0]![0].vehicle
+      expect(body).not.toHaveProperty('vehicle_class')
+      expect(body).not.toHaveProperty('seats')
+      expect(body).not.toHaveProperty('cargo_volume_l')
+    })
+
+    it('does not send seats above the class maximum', async () => {
+      const store = useRegistrationStore()
+      useSessionStore().extras.vehicleClasses = [MINIVAN]
+      mocked.getRegistration.mockResolvedValue(reg())
+      mocked.saveRegistration.mockResolvedValue(reg())
+      await store.load()
+      store.chooseClass(MINIVAN)
+      store.form.seats = 9
+      await store.save(true)
+      const body = mocked.saveRegistration.mock.calls.at(-1)![0].vehicle
+      expect(body.vehicle_class).toBe('minivan')
+      expect(body).not.toHaveProperty('seats')
+    })
+
+    it('keeps a class the moderator did not flag (corrections)', async () => {
+      const store = useRegistrationStore()
+      useSessionStore().extras.vehicleClasses = [MINIVAN]
+      const stored = { ...reg().vehicle, vehicle_class: 'sedan', vehicle_class_name: { kk: 'Седан', ru: 'Седан', en: 'Sedan' }, seats: 4, cargo_volume_l: 400 }
+      mocked.getRegistration.mockResolvedValue(
+        reg({ status: 'changes_requested', vehicle: stored, corrections: [{ field: 'vehicle_color', reason: 'other', comment: null }] }),
+      )
+      await store.load()
+      store.chooseClass(MINIVAN)
+      expect(store.form.vehicle_class).toBe('sedan')
     })
   })
 
@@ -231,11 +350,18 @@ describe('registration store', () => {
       expect(submitProblem(new ApiError(409, 'phone_taken', 'x'), reg()).steps).toEqual(['phone'])
       const invalid = new ApiError(422, 'validation_failed', 'x', { 'vehicle.color': 'too_long', last_name: 'invalid' })
       expect(submitProblem(invalid, reg()).steps).toEqual(['personal', 'vehicle'])
+      const noClass = new ApiError(422, 'registration_incomplete', 'x', {}, { missing_fields: ['vehicle_plate', 'vehicle_class'] })
+      expect(submitProblem(noClass, reg()).steps).toEqual(['vehicle_class', 'vehicle'])
+      const seats = new ApiError(422, 'validation_failed', 'x', { 'vehicle.seats': 'too_large' }, { seats_max: 8 })
+      expect(submitProblem(seats, reg()).steps).toEqual(['vehicle_class'])
     })
 
     it('maps request field names to registration fields', () => {
       expect(fieldFromRequestKey('vehicle.make')).toBe('vehicle_make_model')
       expect(fieldFromRequestKey('vehicle.plate')).toBe('vehicle_plate')
+      expect(fieldFromRequestKey('vehicle.vehicle_class')).toBe('vehicle_class')
+      expect(fieldFromRequestKey('vehicle.seats')).toBe('vehicle_class')
+      expect(fieldFromRequestKey('vehicle.cargo_volume_l')).toBe('vehicle_class')
       expect(fieldFromRequestKey('first_name')).toBe('first_name')
       expect(fieldFromRequestKey('pd_consent')).toBeNull()
     })

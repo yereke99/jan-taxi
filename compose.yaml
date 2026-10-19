@@ -282,6 +282,9 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
       MAP_CONNECT_SRC: ${MAP_CONNECT_SRC:-https://tiles.openfreemap.org}
       CADDY_GLOBAL_OPTIONS: ${CADDY_GLOBAL_OPTIONS:-}
+      # One directive for Caddy's server options, e.g. "trusted_proxies static
+      # private_ranges" when another proxy or tunnel sits in front of Caddy.
+      CADDY_SERVER_OPTIONS: ${CADDY_SERVER_OPTIONS:-}
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"

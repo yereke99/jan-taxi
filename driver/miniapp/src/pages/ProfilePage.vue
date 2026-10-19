@@ -1,7 +1,8 @@
 <!--
   The driver's profile (GET /driver/profile): photo, name, code, masked
-  phone, vehicle and plate, rating, trips, status and city. Moderated data
-  changes only through registration corrections.
+  phone, vehicle with its class, seats and cargo space (§21) and plate,
+  rating, trips, status and city. Moderated data changes only through
+  registration corrections.
 -->
 <script setup lang="ts">
 import { Star } from '@lucide/vue'
@@ -12,6 +13,7 @@ import PrivateImage from '../components/driver/PrivateImage.vue'
 import { JBadge, JButton, JEmptyState, JListGroup, JListRow, JSkeleton } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
 import { formatPlate } from '../features/registration/form'
+import { useVehicleText } from '../features/vehicle/useVehicleText'
 import { useErrorText } from '../i18n/core'
 import { ROUTE } from '../router/names'
 import { pickLocalized } from '../services/config'
@@ -24,12 +26,22 @@ const fmt = useFormat()
 const errorText = useErrorText()
 const session = useSessionStore()
 const store = useProfileStore()
+const vt = useVehicleText()
 
 const p = computed(() => store.profile)
 const name = computed(() => (p.value ? `${p.value.first_name} ${p.value.last_name}`.trim() : ''))
 const vehicle = computed(() => {
   const v = p.value?.vehicle
   return v ? [v.color, v.make, v.model].filter(Boolean).join(' ') : ''
+})
+const vclass = computed(() => {
+  const v = p.value?.vehicle
+  if (!v?.vehicle_class) return null
+  return {
+    name: vt.className(v.vehicle_class, v.vehicle_class_name),
+    seats: v.seats !== null ? String(v.seats) : '—',
+    cargo: v.cargo_volume_l !== null ? vt.litres(v.cargo_volume_l) : '—',
+  }
 })
 const plate = computed(() => {
   const v = p.value?.vehicle
@@ -78,6 +90,11 @@ onMounted(() => void store.refresh())
 
       <JListGroup :header="t('profile.vehicle')" :footer="t('profile.moderated_note')">
         <JListRow :title="vehicle || '—'" />
+        <template v-if="vclass">
+          <JListRow :title="t('profile.vehicle_class')" :value="vclass.name" />
+          <JListRow :title="t('profile.seats')" :value="vclass.seats" />
+          <JListRow :title="t('profile.cargo')" :value="vclass.cargo" />
+        </template>
         <JListRow :title="t('profile.plate')">
           <template #accessory><span class="prof__plate jt-tabular">{{ plate || '—' }}</span></template>
         </JListRow>

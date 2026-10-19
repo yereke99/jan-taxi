@@ -3,7 +3,7 @@
 
 import { http } from '../services/http'
 import { parseOrder, parseOrderPage } from './parse'
-import type { CursorPage, Order, OrderCreateRequest, OrderScope, OrderSummary } from './types'
+import type { CancelOrderRequest, CursorPage, Order, OrderCreateRequest, OrderScope, OrderSummary } from './types'
 
 export const ORDERS_PAGE_SIZE = 20
 
@@ -23,8 +23,10 @@ export async function getOrder(id: string, signal?: AbortSignal): Promise<Order>
   return parseOrder(await http.get<unknown>(`/orders/${encodeURIComponent(id)}`, { signal }))
 }
 
-export async function cancelOrder(id: string, reason?: string): Promise<Order> {
-  const body = reason ? { reason } : {}
+/** Cancels with the passenger's reason (§22.3); the comment is sent only when given. */
+export async function cancelOrder(id: string, req: CancelOrderRequest): Promise<Order> {
+  const comment = req.comment?.trim()
+  const body: CancelOrderRequest = comment ? { reason_code: req.reason_code, comment } : { reason_code: req.reason_code }
   return parseOrder(await http.post<unknown>(`/orders/${encodeURIComponent(id)}/cancel`, body))
 }
 

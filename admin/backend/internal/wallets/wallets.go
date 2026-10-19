@@ -42,12 +42,13 @@ const (
 	EntryCommissionRefund  = "commission_refund"
 	EntryAdjustmentCredit  = "adjustment_credit"
 	EntryAdjustmentDebit   = "adjustment_debit"
+	EntryBonusCredit       = "bonus_credit"
 )
 
 // EntryTypes lists every ledger entry type, for filter validation.
 var EntryTypes = []string{
 	EntryTopUpCredit, EntryTopUpRefund, EntryCommissionReserve, EntryCommissionRelease,
-	EntryCommissionCharge, EntryCommissionRefund, EntryAdjustmentCredit, EntryAdjustmentDebit,
+	EntryCommissionCharge, EntryCommissionRefund, EntryAdjustmentCredit, EntryAdjustmentDebit, EntryBonusCredit,
 }
 
 // ValidEntryType reports whether t is a known ledger entry type.

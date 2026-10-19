@@ -458,7 +458,8 @@ func TestOrdersList(t *testing.T) {
 		t.Fatal("contact data in an order card")
 	}
 	b := bottest.InlineButtons(msgs[0])
-	if len(b) != 2 || bottest.WebAppURL(b[0]) != appURL+"?startapp=order_"+orderID || bottest.WebAppURL(b[1]) != appURL+"?startapp=orders" {
+	if len(b) != 3 || b[0]["callback_data"] != "take:"+orderID || b[0]["text"] != "✅ №1042 алу" ||
+		bottest.WebAppURL(b[1]) != appURL+"?startapp=order_"+orderID || bottest.WebAppURL(b[2]) != appURL+"?startapp=orders" {
 		t.Fatalf("order buttons: %v", b)
 	}
 

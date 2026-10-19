@@ -3,12 +3,16 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"math"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/plate"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
 	"github.com/yereke99/jantaxi/admin/backend/internal/stops"
 )
 
@@ -22,7 +26,22 @@ type DriverInfo struct {
 	Make      string
 	Model     string
 	Color     string
-	Plate     string // normalised plate (e.g. 123ABC04), raw input as a fallback
+	Plate     string // display form (e.g. 123 ABC 04), raw input as a fallback
+	// Phone is the driver's phone (profile, else the user's verified one).
+	Phone string
+	// AvatarFileID is the driver's photo (files.id), if any.
+	AvatarFileID *uuid.UUID
+	RatingSum    int
+	RatingCount  int
+}
+
+// Rating is the average rating with one decimal ("4.9"), or "" before the
+// first rating.
+func (d DriverInfo) Rating() string {
+	if d.RatingCount <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(math.Round(float64(d.RatingSum)/float64(d.RatingCount)*10)/10, 'f', 1, 64)
 }
 
 // Name is the driver's first name with the last-name initial ("Ерлан Б.").
@@ -65,22 +84,23 @@ func LoadDriverInfo(ctx context.Context, q db.Querier, driverID uuid.UUID) (Driv
 	var d DriverInfo
 	var make_, model, color, plateNorm, plateRaw *string
 	err := q.QueryRow(ctx, `
-		SELECT d.id, d.user_id, d.code, d.first_name, d.last_name, v.make, v.model, v.color, v.plate_normalized, v.plate_raw
+		SELECT d.id, d.user_id, d.code, d.first_name, d.last_name, v.make, v.model, v.color, v.plate_normalized, v.plate_raw,
+		       COALESCE(d.phone_e164, u.phone_e164, ''), d.avatar_file_id, d.rating_sum, d.rating_count
 		FROM driver_profiles d
+		JOIN users u ON u.id = d.user_id
 		LEFT JOIN LATERAL (
 			SELECT make, model, color, plate_normalized, plate_raw FROM vehicles
 			WHERE driver_id = d.id AND status <> 'archived'
 			ORDER BY (status = 'claimed') DESC, created_at DESC LIMIT 1) v ON true
 		WHERE d.id = $1`, driverID).
-		Scan(&d.ID, &d.UserID, &d.Code, &d.FirstName, &d.LastName, &make_, &model, &color, &plateNorm, &plateRaw)
+		Scan(&d.ID, &d.UserID, &d.Code, &d.FirstName, &d.LastName, &make_, &model, &color, &plateNorm, &plateRaw,
+			&d.Phone, &d.AvatarFileID, &d.RatingSum, &d.RatingCount)
 	if err != nil {
 		return DriverInfo{}, fmt.Errorf("orders: load driver %s: %w", driverID, err)
 	}
 	d.Make, d.Model, d.Color = deref(make_), deref(model), deref(color)
-	d.Plate = deref(plateNorm)
-	if d.Plate == "" {
-		d.Plate = strings.TrimSpace(deref(plateRaw))
-	}
+	// Messages show the plate as it is written on the car ("123 ABC 04").
+	d.Plate = PlateDisplay(plateNorm, plateRaw)
 	return d, nil
 }
 
@@ -93,30 +113,45 @@ func PlateDisplay(normalized, raw *string) string {
 	return strings.TrimSpace(deref(raw))
 }
 
-// Route is the pickup and destination addresses of an order, as shown in messages.
+// Route is the stop addresses of an order as shown in messages. An address
+// may be empty: message templates show it as a point on the map, never as
+// coordinates.
 type Route struct {
 	Pickup      string
+	Via         []string // intermediate stops in order
 	Destination string
 }
 
-// LoadRoute reads the first and last stop addresses.
+// ViaText joins the intermediate stops with arrows ("" when there are none);
+// a stop without an address is called placeholder.
+func (r Route) ViaText(placeholder string) string {
+	parts := make([]string, 0, len(r.Via))
+	for _, v := range r.Via {
+		if v == "" {
+			v = placeholder
+		}
+		parts = append(parts, v)
+	}
+	return strings.Join(parts, " → ")
+}
+
+// LoadRoute reads the stop addresses.
 func LoadRoute(ctx context.Context, q db.Querier, orderID uuid.UUID) (Route, error) {
 	list, err := stops.ForOrder(ctx, q, orderID)
 	if err != nil {
 		return Route{}, err
 	}
 	var r Route
-	if p := stops.Pickup(list); p != nil {
-		r.Pickup = stops.DisplayAddress(p.Address, p.Lat, p.Lon)
-	}
-	if d := stops.Destination(list); d != nil {
-		r.Destination = stops.DisplayAddress(d.Address, d.Lat, d.Lon)
-	}
-	if r.Pickup == "" {
-		r.Pickup = "—"
-	}
-	if r.Destination == "" {
-		r.Destination = "—"
+	for _, s := range list {
+		addr := textutil.Clean(s.Address)
+		switch s.Kind {
+		case stops.KindPickup:
+			r.Pickup = addr
+		case stops.KindDestination:
+			r.Destination = addr
+		default:
+			r.Via = append(r.Via, addr)
+		}
 	}
 	return r, nil
 }
@@ -126,4 +161,19 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// telegramUsernameRe is a public Telegram username.
+var telegramUsernameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{3,31}$`)
+
+// TelegramLink is how a driver reaches a passenger in Telegram: the public
+// profile https://t.me/<username>, or a mention by id (tg://user?id=<id>)
+// when the passenger has no username.
+func TelegramLink(username *string, telegramUserID int64) string {
+	if username != nil {
+		if u := strings.TrimPrefix(strings.TrimSpace(*username), "@"); telegramUsernameRe.MatchString(u) {
+			return "https://t.me/" + u
+		}
+	}
+	return "tg://user?id=" + strconv.FormatInt(telegramUserID, 10)
 }

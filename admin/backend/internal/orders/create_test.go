@@ -3,6 +3,7 @@ package orders_test
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -317,9 +318,25 @@ func TestDeliveryContactHiddenUntilAccept(t *testing.T) {
 	e.expect(r, http.StatusOK, "")
 	var dd orders.DriverOrderDetail
 	r.decode(t, &dd)
+	// The passenger never shared the number through Telegram: the driver gets
+	// the Telegram link only (§22.5).
 	if dd.RecipientPhone == nil || *dd.RecipientPhone != "+77011234567" || dd.Passenger == nil ||
-		dd.Passenger.Phone == nil || *dd.Passenger.Phone != "+77029876543" || dd.Stops[0].AddressDetails == nil {
+		dd.Passenger.Phone != nil || dd.Passenger.PhoneVerified || dd.Stops[0].AddressDetails == nil ||
+		dd.Passenger.TelegramUsername == nil || dd.Passenger.TelegramURL != "https://t.me/"+*dd.Passenger.TelegramUsername ||
+		dd.CanCancel {
 		t.Fatalf("accepted detail: %+v", dd)
+	}
+	if _, err := e.pool.Exec(context.Background(), `UPDATE users SET phone_verified_at = now(), username = NULL WHERE id = $1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	r = e.do(drv.c, http.MethodGet, path("/driver/orders/%s", o.ID), nil)
+	e.expect(r, http.StatusOK, "")
+	r.decode(t, &dd)
+	var tg int64
+	_ = e.pool.QueryRow(context.Background(), `SELECT telegram_user_id FROM users WHERE id = $1`, pid).Scan(&tg)
+	if dd.Passenger == nil || dd.Passenger.Phone == nil || *dd.Passenger.Phone != "+77029876543" || !dd.Passenger.PhoneVerified ||
+		dd.Passenger.TelegramUsername != nil || dd.Passenger.TelegramURL != "tg://user?id="+strconv.FormatInt(tg, 10) {
+		t.Fatalf("verified passenger: %+v", dd.Passenger)
 	}
 	// The commission is never part of the passenger view.
 	r = e.do(pc, http.MethodGet, path("/orders/%s", o.ID), nil)

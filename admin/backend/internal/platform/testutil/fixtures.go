@@ -84,6 +84,12 @@ type DriverOptions struct {
 	Location    *LatLon
 	LocationAge time.Duration
 	NoLocation  bool
+
+	// VehicleClass is the vehicle's class (default "sedan" with 4 seats and
+	// 400 L); Seats (0) and CargoVolumeL (nil) default to the class defaults.
+	VehicleClass string
+	Seats        int
+	CargoVolumeL *int
 }
 
 // CreateDriver inserts a complete driver: user, profile, claimed vehicle and a wallet
@@ -128,9 +134,15 @@ func CreateDriver(t testing.TB, pool *pgxpool.Pool, opt DriverOptions) DriverFix
 	if opt.Status == "draft" || opt.Status == "rejected" {
 		vstatus = map[string]string{"draft": "draft", "rejected": "released"}[opt.Status]
 	}
+	if opt.VehicleClass == "" {
+		opt.VehicleClass = "sedan"
+	}
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO vehicles (driver_id, make, model, color, plate_raw, plate_normalized, status)
-		VALUES ($1, 'Toyota', 'Camry', 'White', $2, $2, $3) RETURNING id`, f.DriverID, plate, vstatus).Scan(&f.VehicleID); err != nil {
+		INSERT INTO vehicles (driver_id, make, model, color, plate_raw, plate_normalized, status, class_code, seats, cargo_volume_l)
+		SELECT $1, 'Toyota', 'Camry', 'White', $2, $2, $3, vc.code, COALESCE(NULLIF($5::int, 0), vc.seats_default),
+		       COALESCE($6::int, vc.cargo_volume_l_default)
+		FROM vehicle_classes vc WHERE vc.code = $4
+		RETURNING id`, f.DriverID, plate, vstatus, opt.VehicleClass, opt.Seats, opt.CargoVolumeL).Scan(&f.VehicleID); err != nil {
 		t.Fatalf("create vehicle: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO wallets (driver_id, balance) VALUES ($1, $2) RETURNING id`, f.DriverID, opt.Balance).Scan(&f.WalletID); err != nil {

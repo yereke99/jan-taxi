@@ -147,6 +147,7 @@ export const LEDGER_TYPES = [
   'commission_refund',
   'adjustment_credit',
   'adjustment_debit',
+  'bonus_credit',
 ] as const
 export type LedgerEntryType = (typeof LEDGER_TYPES)[number]
 

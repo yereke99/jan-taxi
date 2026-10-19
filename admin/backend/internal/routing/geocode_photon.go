@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,6 +25,14 @@ type Photon struct {
 const (
 	photonReverseRadiusKm = "0.3"
 	photonReverseWideKm   = "1"
+)
+
+// Settlement lookups ask Photon's city layer (cities, towns and villages)
+// for the photonSettlementLimit settlements nearest to the point within
+// photonSettlementRadiusKm; only those whose extent covers the point count.
+const (
+	photonSettlementRadiusKm = "25"
+	photonSettlementLimit    = "5"
 )
 
 // Search near a position: Photon's location bias at city zoom with a low
@@ -73,6 +82,23 @@ type photonProps struct {
 	County      string `json:"county"`
 	State       string `json:"state"`
 	CountryCode string `json:"countrycode"`
+	OsmKey      string `json:"osm_key"`
+	OsmValue    string `json:"osm_value"`
+	// Extent is the bounding box of an object mapped as an area:
+	// [west, north, east, south]; absent for a single node.
+	Extent []float64 `json:"extent"`
+}
+
+// settlementTypes are the OSM place values that name a settlement.
+var settlementTypes = map[string]bool{"city": true, "town": true, "village": true, "hamlet": true}
+
+// photonLocality is the settlement of a Photon feature: the feature itself
+// when it is a city, town or village, else its city, then its district.
+func photonLocality(p photonProps) string {
+	if p.OsmKey == "place" && settlementTypes[p.OsmValue] && p.Name != "" {
+		return p.Name
+	}
+	return firstNonEmpty(p.City, p.County, p.District)
 }
 
 // Search implements Geocoder. With a position the search is local: results
@@ -131,6 +157,45 @@ func (g *Photon) Reverse(ctx context.Context, p geo.Point, lang string) (*Place,
 	return nil, nil
 }
 
+// Settlement implements SettlementFinder: of the settlements Photon's city
+// layer returns around p, the smallest one whose extent covers p, by its own
+// name (local names for kk and ru). A settlement mapped as a single node is
+// skipped: nothing says how far it reaches. An instance without the layer
+// filter (HTTP 400) answers "", like a point outside every settlement.
+func (g *Photon) Settlement(ctx context.Context, p geo.Point, lang string) (string, error) {
+	q := url.Values{}
+	q.Set("lat", strconv.FormatFloat(p.Lat, 'f', 6, 64))
+	q.Set("lon", strconv.FormatFloat(p.Lon, 'f', 6, 64))
+	q.Set("lang", photonLang(lang))
+	q.Set("layer", "city")
+	q.Set("limit", photonSettlementLimit)
+	q.Set("radius", photonSettlementRadiusKm)
+	u := *g.base
+	u.Path += "/reverse"
+	u.RawQuery = q.Encode()
+	var resp photonResponse
+	if err := getJSON(ctx, g.client, SourcePhoton, u.String(), &resp, http.StatusBadRequest); err != nil {
+		return "", err
+	}
+	best, bestArea := "", math.Inf(1)
+	for _, f := range resp.Features {
+		pr := f.Properties
+		name := strings.TrimSpace(pr.Name)
+		if name == "" || len(pr.Extent) != 4 || (pr.CountryCode != "" && !strings.EqualFold(pr.CountryCode, "KZ")) {
+			continue
+		}
+		west, east := math.Min(pr.Extent[0], pr.Extent[2]), math.Max(pr.Extent[0], pr.Extent[2])
+		south, north := math.Min(pr.Extent[1], pr.Extent[3]), math.Max(pr.Extent[1], pr.Extent[3])
+		if p.Lon < west || p.Lon > east || p.Lat < south || p.Lat > north {
+			continue
+		}
+		if area := (east - west) * (north - south); area < bestArea {
+			best, bestArea = name, area
+		}
+	}
+	return best, nil
+}
+
 func (g *Photon) get(ctx context.Context, path string, q url.Values) ([]Place, error) {
 	u := *g.base
 	u.Path += path
@@ -152,6 +217,7 @@ func (g *Photon) get(ctx context.Context, path string, q url.Values) ([]Place, e
 			Title: title, Subtitle: subtitle, Source: SourcePhoton,
 			Point:       geo.Point{Lat: f.Geometry.Coordinates[1], Lon: f.Geometry.Coordinates[0]},
 			CountryCode: strings.ToUpper(f.Properties.CountryCode),
+			Locality:    photonLocality(f.Properties),
 		})
 	}
 	return out, nil

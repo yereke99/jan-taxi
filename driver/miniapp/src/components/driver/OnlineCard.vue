@@ -3,9 +3,14 @@
   insufficient balance → top-up, missing location → enable it, outside
   Kazakhstan, profile not approved. While online, location problems that stop
   dispatch are shown under the switch.
+
+  Switch, title and colour show the availability the API confirmed
+  (features/duty/status): online is green, offline neutral gray, a request in
+  flight says so. The card re-reads the real state when it appears and when
+  the order list reports the driver offline although the app thinks online.
 -->
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { suggestedTopUpAmount } from '../../features/orders/acceptOutcome'
@@ -16,6 +21,8 @@ import { useDutyStore, type OnlineOutcome } from '../../stores/duty'
 import { useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
 import { useEnsureLocation } from '../../features/location/useEnsureLocation'
+import { dutyView } from '../../features/duty/status'
+import { useOrdersStore } from '../../stores/orders'
 import { canOpenLocationSettings, haptics, openLocationSettings } from '../../telegram'
 import { JButton, JSwitch, toast } from '../ui'
 
@@ -26,11 +33,24 @@ const router = useRouter()
 const duty = useDutyStore()
 const location = useLocationStore()
 const session = useSessionStore()
+const orders = useOrdersStore()
 const gps = useEnsureLocation()
 
 const problem = ref<Exclude<OnlineOutcome, { ok: true }> | null>(null)
 
 const online = computed(() => duty.isOnline)
+const view = computed(() => dutyView({ online: online.value, switchingTo: duty.switchingTo }))
+
+onMounted(() => void duty.reconcile())
+
+// GET /driver/orders says "offline" while the app shows online: the cached
+// state is out of date (idle timeout, driver bot). Re-read it.
+watch(
+  () => orders.eligibility?.reason === 'offline' && online.value,
+  (mismatch) => {
+    if (mismatch) void duty.reconcile()
+  },
+)
 
 const locationIssue = computed(() => {
   if (!online.value) return null
@@ -92,13 +112,13 @@ const locationProblem = computed(() => {
 </script>
 
 <template>
-  <section class="online" :class="{ 'is-on': online }">
+  <section class="online" :class="`is-${view.tone}`">
     <div class="online__row">
       <div class="online__text">
-        <p class="online__title">{{ online ? t('home.online') : t('home.offline') }}</p>
-        <p class="online__hint">{{ online ? t('home.online_hint') : t('home.offline_hint') }}</p>
+        <p class="online__title" role="status">{{ t(view.title) }}</p>
+        <p class="online__hint">{{ t(view.hint) }}</p>
       </div>
-      <JSwitch class="online__switch" :model-value="online" :busy="duty.switching" :label="t('home.online_switch')" @update:model-value="toggle" />
+      <JSwitch class="online__switch" :model-value="view.checked" :busy="duty.switching" :label="t('home.online_switch')" @update:model-value="toggle" />
     </div>
 
     <div v-if="problem" class="online__problem" role="alert">
@@ -156,8 +176,13 @@ const locationProblem = computed(() => {
   font: var(--jt-font-title2);
 }
 
-.online.is-on .online__title {
+.online.is-online .online__title {
   color: var(--jt-color-green-text);
+}
+
+.online.is-offline .online__title,
+.online.is-pending .online__title {
+  color: var(--jt-color-label-secondary);
 }
 
 .online__hint {

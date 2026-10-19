@@ -155,11 +155,13 @@ func (g *TwoGIS) get(ctx context.Context, path string, q url.Values) ([]Place, e
 		if it.Point == nil {
 			continue
 		}
-		var city, region string
+		var city, district, region string
 		for _, d := range it.AdmDiv {
 			switch d.Type {
 			case "city", "settlement":
 				city = firstNonEmpty(city, d.Name)
+			case "district_area", "district":
+				district = firstNonEmpty(district, d.Name)
 			case "region":
 				region = firstNonEmpty(region, d.Name)
 			}
@@ -173,6 +175,7 @@ func (g *TwoGIS) get(ctx context.Context, path string, q url.Values) ([]Place, e
 			Subtitle: joinParts([]string{title}, it.AddressName, city, region),
 			Point:    geo.Point{Lat: it.Point.Lat, Lon: it.Point.Lon},
 			Source:   SourceTwoGIS,
+			Locality: firstNonEmpty(city, district),
 		})
 	}
 	return out, nil

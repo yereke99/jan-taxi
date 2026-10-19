@@ -14,6 +14,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/pkg/telegram"
 )
@@ -46,6 +48,33 @@ var categoryLabels = map[string]map[string]string{
 	"parcel": labels("Сәлемдеме", "Посылка", "Parcel"),
 	"other":  labels("Басқа жеткізу", "Другая доставка", "Other delivery"),
 }
+
+// paymentLabels localises the payment param.
+var paymentLabels = map[string]map[string]string{
+	"cash":          labels("Қолма-қол", "Наличные", "Cash"),
+	"bank_transfer": labels("Аударым", "Перевод", "Bank transfer"),
+}
+
+// cargoSizeLabels localises the cargo_size param (§21).
+var cargoSizeLabels = map[string]map[string]string{
+	"s":  labels("Кішкентай (S)", "Маленький (S)", "Small (S)"),
+	"m":  labels("Орташа (M)", "Средний (M)", "Medium (M)"),
+	"l":  labels("Үлкен (L)", "Большой (L)", "Large (L)"),
+	"xl": labels("Өте үлкен (XL)", "Очень большой (XL)", "Extra large (XL)"),
+}
+
+// mapPointLabel replaces an address that is empty or only coordinates.
+var mapPointLabel = labels("Картадағы нүкте", "Точка на карте", "Point on the map")
+
+var (
+	// coordsRe matches an address that is only "lat, lon".
+	coordsRe = regexp.MustCompile(`^\s*-?\d{1,3}(\.\d+)?\s*,\s*-?\d{1,3}(\.\d+)?\s*$`)
+	// linkRe is the Telegram profile link of a person: a public username or
+	// a mention by id.
+	linkRe = regexp.MustCompile(`^(https://t\.me/[A-Za-z][A-Za-z0-9_]{3,31}|tg://user\?id=[1-9][0-9]{0,19})$`)
+	// callbackDataRe is the callback data a template may produce.
+	callbackDataRe = regexp.MustCompile(`^[a-z_]{1,16}:[A-Za-z0-9_-]{1,47}$`)
+)
 
 // Placeholders returns the param names referenced by body in order of
 // appearance, or an error for malformed placeholders ("{{ x }}", "{{", "}}").
@@ -102,7 +131,8 @@ func (t *Template) ValidateParams(params map[string]any) error {
 		}
 	}
 	for _, p := range t.Params {
-		if !p.Optional && isEmpty(params[p.Name]) {
+		// An unknown place is shown as "point on the map".
+		if !p.Optional && p.Kind != KindPlace && isEmpty(params[p.Name]) {
 			return fmt.Errorf("template %s requires param %s", t.Key, p.Name)
 		}
 	}
@@ -125,6 +155,34 @@ func checkValue(p Param, v any) error {
 		if _, ok := categoryLabels[s]; !ok {
 			return errors.New("must be taxi, parcel or other")
 		}
+	case KindPayment:
+		s, _ := toString(v)
+		if _, ok := paymentLabels[s]; !ok {
+			return errors.New("must be cash or bank_transfer")
+		}
+	case KindCargoSize:
+		s, _ := toString(v)
+		if _, ok := cargoSizeLabels[s]; !ok {
+			return errors.New("must be s, m, l or xl")
+		}
+	case KindDistance, KindDuration:
+		if n, ok := toInt64(v); !ok || n < 0 {
+			return errors.New("must be a non-negative integer")
+		}
+	case KindLocalized:
+		if _, ok := localized(v); !ok {
+			return errors.New("must be an object with kk, ru and en texts")
+		}
+	case KindLink:
+		s, _ := toString(v)
+		if !linkRe.MatchString(s) {
+			return errors.New("must be https://t.me/<username> or tg://user?id=<id>")
+		}
+	case KindFile:
+		s, _ := toString(v)
+		if _, err := uuid.Parse(s); err != nil {
+			return errors.New("must be a file id (UUID)")
+		}
 	default:
 		if _, ok := toString(v); !ok {
 			return errors.New("must be a string")
@@ -134,9 +192,11 @@ func checkValue(p Param, v any) error {
 }
 
 // Message is a rendered notification ready for the Bot API (HTML parse mode).
+// Photo is set when the template sends a stored image with Text as caption.
 type Message struct {
 	Text   string
 	Markup *telegram.InlineKeyboardMarkup
+	Photo  *uuid.UUID
 }
 
 // Render renders body (an override or the template default) in lang with
@@ -151,6 +211,9 @@ func (t *Template) Render(lang, body string, params map[string]any, miniAppURL s
 	empty := make(map[string]bool)
 	for _, p := range t.Params {
 		v, ok := formatValue(p, params[p.Name], lang)
+		if !ok && p.Kind == KindPlace && !p.Optional {
+			v, ok = html.EscapeString(mapPointLabel[lang]), true
+		}
 		if !ok {
 			if !p.Optional {
 				return Message{}, fmt.Errorf("template %s: missing param %s", t.Key, p.Name)
@@ -187,18 +250,46 @@ func (t *Template) Render(lang, body string, params map[string]any, miniAppURL s
 	}
 
 	msg := Message{Text: text}
-	if t.Button != nil && miniAppURL != "" {
-		if link, ok := buttonURL(miniAppURL, t.Button.StartParam, params); ok {
-			label := t.Button.Label[lang]
-			if label == "" {
-				label = t.Button.Label[DefaultLanguage]
+	if t.Photo != "" {
+		if s, ok := toString(params[t.Photo]); ok {
+			if id, err := uuid.Parse(s); err == nil {
+				msg.Photo = &id
 			}
-			msg.Markup = &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{{
-				{Text: label, WebApp: &telegram.WebAppInfo{URL: link}},
-			}}}
 		}
 	}
+	var rows [][]telegram.InlineKeyboardButton
+	if t.Callback != nil {
+		if data, ok := callbackData(t.Callback.Data, params); ok {
+			rows = append(rows, []telegram.InlineKeyboardButton{{Text: pickLabel(t.Callback.Label, lang), CallbackData: data}})
+		}
+	}
+	if t.Button != nil && miniAppURL != "" {
+		if link, ok := buttonURL(miniAppURL, t.Button.StartParam, params); ok {
+			rows = append(rows, []telegram.InlineKeyboardButton{{Text: pickLabel(t.Button.Label, lang),
+				WebApp: &telegram.WebAppInfo{URL: link}}})
+		}
+	}
+	if len(rows) > 0 {
+		msg.Markup = &telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+	}
 	return msg, nil
+}
+
+func pickLabel(l map[string]string, lang string) string {
+	if s := l[lang]; s != "" {
+		return s
+	}
+	return l[DefaultLanguage]
+}
+
+// callbackData fills the {{param}} placeholders of a callback button's data;
+// the result must match callbackDataRe.
+func callbackData(pattern string, params map[string]any) (string, bool) {
+	data := placeholderRe.ReplaceAllStringFunc(pattern, func(m string) string {
+		s, _ := toString(params[m[2:len(m)-2]])
+		return s
+	})
+	return data, callbackDataRe.MatchString(data)
 }
 
 // buttonURL builds <miniAppURL>?startapp=<param> (ARCHITECTURE §18). Telegram
@@ -246,6 +337,55 @@ func formatValue(p Param, v any, lang string) (string, bool) {
 			return l, true
 		}
 		return html.EscapeString(s), true
+	case KindPayment:
+		s, _ := toString(v)
+		if l, ok := paymentLabels[s][lang]; ok {
+			return l, true
+		}
+		return html.EscapeString(s), true
+	case KindCargoSize:
+		s, _ := toString(v)
+		if l, ok := cargoSizeLabels[s][lang]; ok {
+			return l, true
+		}
+		return html.EscapeString(s), true
+	case KindDistance:
+		n, ok := toInt64(v)
+		if !ok || n < 0 {
+			return "", false
+		}
+		return FormatDistance(n, lang), true
+	case KindDuration:
+		n, ok := toInt64(v)
+		if !ok || n < 0 {
+			return "", false
+		}
+		return FormatDuration(n, lang), true
+	case KindLocalized:
+		l, ok := localized(v)
+		if !ok {
+			return "", false
+		}
+		s := cleanParam(pickLabel(l, lang))
+		return html.EscapeString(s), s != ""
+	case KindPlace:
+		s, ok := toString(v)
+		if !ok {
+			return "", false
+		}
+		switch s = cleanParam(s); {
+		case s == "":
+			return "", false
+		case coordsRe.MatchString(s):
+			return html.EscapeString(mapPointLabel[lang]), true
+		}
+		return html.EscapeString(s), true
+	case KindLink:
+		s, ok := toString(v)
+		if !ok || !linkRe.MatchString(s) {
+			return "", false
+		}
+		return html.EscapeString(s), true
 	default:
 		s, ok := toString(v)
 		if !ok {
@@ -279,6 +419,59 @@ func FormatMoney(n int64) string {
 	}
 	b.WriteString(nbsp + tenge)
 	return b.String()
+}
+
+// FormatDistance renders metres as "850 м" or "1,2 км" ("1.2 km" in English).
+func FormatDistance(m int64, lang string) string {
+	unitM, unitKM, sep := "м", "км", ","
+	if lang == LangEN {
+		unitM, unitKM, sep = "m", "km", "."
+	}
+	if m < 1000 {
+		return strconv.FormatInt(max(m, 0), 10) + nbsp + unitM
+	}
+	tenths := (m + 50) / 100
+	whole, frac := tenths/10, tenths%10
+	if whole >= 100 || frac == 0 {
+		return strconv.FormatInt((m+500)/1000, 10) + nbsp + unitKM
+	}
+	return strconv.FormatInt(whole, 10) + sep + strconv.FormatInt(frac, 10) + nbsp + unitKM
+}
+
+// FormatDuration renders seconds as whole minutes rounded up, at least one:
+// "~12 мин" ("~12 min" in English).
+func FormatDuration(s int64, lang string) string {
+	unit := "мин"
+	if lang == LangEN {
+		unit = "min"
+	}
+	return "~" + strconv.FormatInt(max((s+59)/60, 1), 10) + nbsp + unit
+}
+
+// localized reads a {"kk","ru","en"} param.
+func localized(v any) (map[string]string, bool) {
+	out := map[string]string{}
+	switch x := v.(type) {
+	case map[string]string:
+		for k, s := range x {
+			out[k] = s
+		}
+	case map[string]any:
+		for k, raw := range x {
+			if s, ok := raw.(string); ok {
+				out[k] = s
+			}
+		}
+	case nil:
+		return nil, false
+	default:
+		// A struct with kk/ru/en JSON fields (e.g. a class name).
+		b, err := json.Marshal(v)
+		if err != nil || json.Unmarshal(b, &out) != nil {
+			return nil, false
+		}
+	}
+	return out, strings.TrimSpace(out[DefaultLanguage]) != ""
 }
 
 // cleanParam collapses whitespace (so a value cannot break the line structure),

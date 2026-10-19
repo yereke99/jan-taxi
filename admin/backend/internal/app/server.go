@@ -62,6 +62,8 @@ func (a *App) buildRouters() {
 	a.AnyApp = api.With(a.MW.AnyApp)
 
 	admin := chi.NewRouter()
+	// Mux-level, so unknown admin paths are hidden on the Mini App host too.
+	admin.Use(adminHostGuard(a.Cfg))
 	setJSONFallbacks(admin)
 	a.AdminPublic = admin.With()
 	a.Admin = admin.With(a.MW.Admin)

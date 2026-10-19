@@ -231,3 +231,118 @@ in `compose.override.example.yaml`: `APP_DOMAIN=http://localhost:8088`,
 `http://localhost` URLs. Caddy then serves `http://localhost:8088/passenger/`,
 `http://localhost:8088/driver/` and `http://localhost:8089/`. On Apple Silicon
 set `POSTGIS_IMAGE=imresamu/postgis:17-3.5-alpine`.
+
+To publish the plain-HTTP edge to Telegram through a temporary HTTPS tunnel,
+use the local live stack below instead.
+
+## 10. Local live stack (Docker + Cloudflare quick tunnel)
+
+A development setup that runs the complete platform on one machine with the real
+test bots: every service in Docker, the Mini Apps reachable from Telegram over
+HTTPS through a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
+(`https://<random>.trycloudflare.com`). Quick tunnels have no uptime guarantee
+and get a new host name every time `cloudflared` starts, so this is never a
+production setup (production needs a domain and a server in Kazakhstan, §1–§5).
+
+**Pieces.**
+
+| File | Role |
+|---|---|
+| `compose.local.yaml` | overlay on `compose.yaml`: `web` publishes `127.0.0.1:8088` (Mini Apps + their `/api`, no `/api/v1/admin*`) and `127.0.0.1:8089` (admin panel + the whole `/api`); bot health on `127.0.0.1:18091` / `:18092`; `tunnel` service (`cloudflared --protocol http2 --url http://web:8088`, metrics on `127.0.0.1:20241`) |
+| `deploy/local/stack.sh` | the only entry point: `env`, `up`, `rebuild`, `retunnel`, `status`, `verify`, `logs`, `down`, `menus`, `watchdog`, `import-devdb`, `psql` (`stack.sh help`) |
+| `deploy/local/watchdog.sh` | background loop started by `stack.sh up` (see below) |
+| `<state>/compose.env` | static settings written by `stack.sh env` from the repository `.env` (bot tokens, secrets, Kaspi, map and routing settings) plus local values: `APP_ENV=development`, `APP_DOMAIN=:8088`, `ADMIN_DOMAIN=:8089`, `CADDY_GLOBAL_OPTIONS="auto_https off"`, `CADDY_SERVER_OPTIONS="trusted_proxies static private_ranges"`, `ADMIN_FRONTEND_URL=http://localhost:8089/`, `ADMIN_COOKIE_SECURE=false`, a random `POSTGRES_PASSWORD`, `POSTGIS_IMAGE=imresamu/postgis:17-3.5-alpine` on Apple Silicon, laptop-sized memory limits, backups in `<state>/backups` |
+| `<state>/tunnel.env` | the current tunnel: `TUNNEL_URL`, `PASSENGER_MINIAPP_URL=<url>/passenger/`, `DRIVER_MINIAPP_URL=<url>/driver/`, `API_PUBLIC_URL=<url>`, `CORS_ALLOWED_ORIGINS=<url>,http://localhost:8088`; rewritten by the script only |
+
+`<state>` is a directory **outside the repository** (it holds secrets), given as
+`JT_STACK_DIR` or `make local-* STACK_DIR=...`. The Compose project is
+`jantaxi-local` (volumes `jantaxi-local_pgdata`, `jantaxi-local_files`); it does
+not touch the test database container `jantaxi-devdb` on port 55432.
+
+**Start.**
+
+```sh
+export JT_STACK_DIR=$HOME/jan-taxi-local          # any directory outside the repo
+deploy/local/stack.sh env                         # compose.env from ./.env (real test bot tokens)
+deploy/local/stack.sh up                          # or: make local-up STACK_DIR=$HOME/jan-taxi-local
+deploy/local/stack.sh status
+deploy/local/stack.sh verify
+```
+
+`up` builds missing images, starts the database, `web` and the tunnel, reads the
+tunnel URL from cloudflared (`/quicktunnel` on the metrics port), waits until the
+URL answers, writes `tunnel.env`, then starts migrations, the API, both bots and
+the backup service. The bots publish their **default** menu buttons with the
+Mini App URLs when they take the polling lease; the script checks them, sets
+them itself if Telegram still reports the old value, and resets every known
+user's per-chat button to `{"type":"default"}`. Finally it starts the watchdog
+and prints the URLs:
+
+- Mini Apps: `<tunnel>/passenger/` and `<tunnel>/driver/` (deep links such as
+  `<tunnel>/driver/orders` serve the app; missing assets stay 404).
+- Admin panel: `http://localhost:8089/` (bound to 127.0.0.1, never behind the
+  tunnel). The admin API answers only there: on the Mini App site (`:8088`, the
+  tunnel) `/api/v1/admin*` is 404 in Caddy, and the API itself refuses admin
+  routes whose `Host` is the Mini App host. The first super admin comes from `ADMIN_BOOTSTRAP_EMAIL` /
+  `ADMIN_BOOTSTRAP_PASSWORD` when the database has no admins.
+- WebSocket: `wss://<tunnel>/api/v1/ws` (Mini Apps) and
+  `ws://localhost:8089/api/v1/ws` (admin), proxied by Caddy.
+
+**Commands.**
+
+| Command | What it does |
+|---|---|
+| `rebuild` | rebuilds the api, bot and web images from the working tree, runs the migrations (`migrate` one-shot), recreates api, then bots and web. The database and the tunnel are not touched, so the URL stays. A failed build or migration leaves the running containers as they were; when the new api (or bots/web) does not become healthy, its log is printed and the previous image (`<image>-previous`) is started again. |
+| `retunnel` | recreates the tunnel container (new URL), waits for it to answer, moves api, bots and menu buttons to it |
+| `status` | container states and health, tunnel URL (and whether cloudflared still serves it), public probes of `/passenger/`, `/driver/`, deep links and `public/config` (200) and of `/api/v1/admin/auth/*` (404: no admin API through the tunnel), API `/readyz`, both bots' health JSON (`role` `leader`, `last_poll_age_s`), the bots' default menu buttons, the admin panel, the watchdog; exits 1 when anything is off |
+| `verify` | SPA deep links and a WebSocket upgrade through the tunnel (101; 403 for a foreign `Origin`), the client IP seen by the API (must be the caller's public address), admin login → `me` → logout with the bootstrap credentials (never printed) |
+| `logs <service>` / `logs watchdog` | follow a service's logs / the watchdog log |
+| `down` | stops the watchdog and removes the containers; volumes, backups and `compose.env` stay. The next `up` gets a new tunnel URL. |
+| `import-devdb [--replace]` | one-time copy of another PostgreSQL container's database (default `jantaxi-devdb`/`jantaxi`, read-only `pg_dump`, restored in one transaction) and of a files directory (`JT_IMPORT_FILES_DIR`) into the stack; refuses to overwrite a database that has a schema unless `--replace` |
+
+**Watchdog** (`<state>/logs/watchdog.log`, every 30 s; `stack.sh watchdog
+start|stop|status`): starts a stopped api/bot/web/db container again, restarts
+an `unhealthy` one (at most once per 3 minutes), follows a changed tunnel URL
+(cloudflared restarted, e.g. after Docker Desktop restarted) by moving api, bots
+and menu buttons, and recreates the tunnel only after about 10 minutes
+(`JT_TUNNEL_FAIL_LIMIT=20` probes) of Cloudflare answering 530 / error 1033.
+Other failures, such as this machine being offline, neither count nor reset.
+Each cycle runs a private copy of `stack.sh` (`<state>/run/`) that is refreshed
+only from a version passing `sh -n`, so editing the script never runs half a
+file. The watchdog does not survive a reboot of the machine: run `stack.sh up`
+again (it keeps a running tunnel and its URL, or follows a new one).
+
+**Migrations being written.** The script keeps a copy of every migration file it
+has applied (`<state>/migrations-applied`); `up`, `rebuild` and `status` report an
+applied migration that was edited in the tree since. The stack holds real users'
+orders, so nothing is rolled back by default: put a schema change into a new
+migration. Only with `JT_AUTO_REDO_MIGRATIONS=1` does `rebuild` redo edited
+versions from `JT_REDO_MIN_VERSION` (default 7) on: it first writes a
+`pg_dump -Fc` of the database to `<state>/backups/pre-redo/pre-redo-<time>.dump`
+(and stops if that fails), then rolls the applied versions back with their own
+`-- +goose Down` sections (newest first, one transaction each) and applies the
+edited files. Versions 1–6 are never rolled back automatically. `make local-test`
+(`deploy/local/stack_test.sh`) checks this without Docker.
+
+**Details and pitfalls.**
+
+- Every start of the tunnel container — including `docker restart` — gets a new
+  URL. Never recreate it by hand; `stack.sh` and the watchdog keep `tunnel.env`,
+  the API, the bots and the menu buttons in step.
+- A new `trycloudflare.com` name does not resolve for its first seconds. A lookup
+  through the local network at that moment is cached as "no such name" by macOS
+  and by home routers, sometimes for many minutes, and then browsers, Telegram
+  Desktop and phones on the same Wi-Fi cannot open the Mini Apps. The script's
+  probes therefore resolve the name through public resolvers only (`dig @1.1.1.1`
+  etc. + `curl --resolve`), and the bots get the URL only after it answers. If it
+  happens anyway: on macOS `sudo dscacheutil -flushcache; sudo killall -HUP
+  mDNSResponder`, or `stack.sh retunnel` for a fresh name.
+- `getChatMenuButton` can report the previous default button for a few minutes
+  after it was changed.
+- Caddy trusts `X-Forwarded-For` from private networks only on this stack
+  (`CADDY_SERVER_OPTIONS`), so rate limits see each Telegram user's own address
+  instead of the tunnel container's.
+- Development data only: public OSRM and Photon servers, `APP_ENV=development`.
+  Telegram direct links `t.me/<bot>?startapp=…` need the Main Mini App URL in
+  @BotFather, which a changing quick-tunnel URL cannot keep current; the menu
+  buttons and the bots' inline `web_app` buttons always use the current URL.

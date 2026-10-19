@@ -166,7 +166,9 @@ func TestAdminTemplates(t *testing.T) {
 		t.Fatalf("template items = %d", len(list.Items))
 	}
 	for _, it := range list.Items {
-		if it.Body == "" || it.Body != it.DefaultBody || it.IsCustom || it.UpdatedAt != nil || it.Button == nil || it.Button.Label == "" {
+		tpl, _ := Lookup(it.Key)
+		if it.Body == "" || it.Body != it.DefaultBody || it.IsCustom || it.UpdatedAt != nil ||
+			(!tpl.Edit && (it.Button == nil || it.Button.Label == "")) {
 			t.Fatalf("%s/%s item %+v", it.Key, it.Language, it)
 		}
 	}

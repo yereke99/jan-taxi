@@ -48,11 +48,32 @@ type OrderSummary struct {
 	Number             int64     `json:"number"`
 	Status             string    `json:"status"`
 	Category           string    `json:"category"`
+	VehicleClass       string    `json:"vehicle_class"`
+	VehicleClassName   Localized `json:"vehicle_class_name"`
+	PassengerCount     *int      `json:"passenger_count"`
+	CargoSize          *string   `json:"cargo_size"`
 	Fare               int64     `json:"fare"`
 	Currency           string    `json:"currency"`
 	PickupAddress      string    `json:"pickup_address"`
 	DestinationAddress string    `json:"destination_address"`
-	CreatedAt          time.Time `json:"created_at"`
+	// Locality is the settlement of the pickup (nil when unknown).
+	Locality     *string       `json:"locality"`
+	TariffRegion *TariffRegion `json:"tariff_region"`
+	CreatedAt    time.Time     `json:"created_at"`
+}
+
+// TariffRegion is the city or nationwide region whose tariff priced an order.
+type TariffRegion struct {
+	Code string    `json:"code"`
+	Name Localized `json:"name"`
+}
+
+// LocalityOf returns the locality text, "" when unknown.
+func LocalityOf(l *string) string {
+	if l == nil {
+		return ""
+	}
+	return *l
 }
 
 // Wallet is a driver wallet.
@@ -74,10 +95,14 @@ type CorrectionItem struct {
 
 // Vehicle is the driver's current vehicle.
 type Vehicle struct {
-	Make  string `json:"make"`
-	Model string `json:"model"`
-	Color string `json:"color"`
-	Plate string `json:"plate"`
+	Make             string     `json:"make"`
+	Model            string     `json:"model"`
+	Color            string     `json:"color"`
+	Plate            string     `json:"plate"`
+	VehicleClass     *string    `json:"vehicle_class"`
+	VehicleClassName *Localized `json:"vehicle_class_name"`
+	Seats            *int       `json:"seats"`
+	CargoVolumeL     *int       `json:"cargo_volume_l"`
 }
 
 // DriverSummary is the driver state for the bot menu.
@@ -149,6 +174,13 @@ type OrderCard struct {
 	Category          string        `json:"category"`
 	ServiceType       string        `json:"service_type"`
 	CargoType         string        `json:"cargo_type"`
+	VehicleClass      string        `json:"vehicle_class"`
+	VehicleClassName  Localized     `json:"vehicle_class_name"`
+	PassengerCount    *int          `json:"passenger_count"`
+	CargoSize         *string       `json:"cargo_size"`
+	CargoVolumeL      int           `json:"cargo_volume_l"`
+	Locality          *string       `json:"locality"`
+	TariffRegion      *TariffRegion `json:"tariff_region"`
 	Stops             []StopSummary `json:"stops"`
 	StopCount         int           `json:"stop_count"`
 	Comment           *string       `json:"comment"`
@@ -244,4 +276,48 @@ type TopUpReceiptResult struct {
 	Reasons []string     `json:"reasons"`
 	TopUp   ReceiptTopUp `json:"topup"`
 	Balance *int64       `json:"balance"`
+}
+
+// TripPassenger is the passenger as shown to the driver who took the order.
+type TripPassenger struct {
+	FirstName        string  `json:"first_name"`
+	Phone            *string `json:"phone"`
+	PhoneVerified    bool    `json:"phone_verified"`
+	TelegramUsername *string `json:"telegram_username"`
+	TelegramURL      string  `json:"telegram_url"`
+}
+
+// TripOrder is the part of the driver's order view the bot shows after «Алу».
+type TripOrder struct {
+	ID               string         `json:"id"`
+	Number           int64          `json:"number"`
+	Status           string         `json:"status"`
+	IsMine           bool           `json:"is_mine"`
+	Category         string         `json:"category"`
+	VehicleClass     string         `json:"vehicle_class"`
+	VehicleClassName Localized      `json:"vehicle_class_name"`
+	PassengerCount   *int           `json:"passenger_count"`
+	CargoSize        *string        `json:"cargo_size"`
+	CargoDescription *string        `json:"cargo_description"`
+	RecipientPhone   *string        `json:"recipient_phone"`
+	Comment          *string        `json:"comment"`
+	Fare             int64          `json:"fare"`
+	CommissionAmount int64          `json:"commission_amount"`
+	PaymentMethod    string         `json:"payment_method"`
+	DistanceM        int            `json:"distance_m"`
+	DurationS        int            `json:"duration_s"`
+	Locality         *string        `json:"locality"`
+	TariffRegion     *TariffRegion  `json:"tariff_region"`
+	Stops            []StopSummary  `json:"stops"`
+	Passenger        *TripPassenger `json:"passenger"`
+}
+
+// AcceptResult is the outcome of «Алу»: the order with the passenger's
+// contact, whether the driver already held it, the commission charged and
+// the wallet afterwards.
+type AcceptResult struct {
+	Order    TripOrder `json:"order"`
+	Replayed bool      `json:"replayed"`
+	Charged  int64     `json:"charged"`
+	Wallet   *Wallet   `json:"wallet"`
 }

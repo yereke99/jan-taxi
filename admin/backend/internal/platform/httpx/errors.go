@@ -3,6 +3,7 @@
 package httpx
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -99,14 +100,20 @@ func AsError(err error) *Error {
 // WriteError writes err as a JSON error response and logs server-side failures.
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	e := AsError(err)
-	if e.Status >= 500 {
+	switch {
+	case e.Status >= 500 && errors.Is(err, context.Canceled) && r.Context().Err() != nil:
+		// The client went away (e.g. the app replaced an in-flight request):
+		// nothing failed on this side.
+		Logger(r.Context()).Debug("request cancelled by the client",
+			slog.String("method", r.Method), slog.String("path", r.URL.Path))
+	case e.Status >= 500:
 		Logger(r.Context()).Error("request failed",
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.String("code", e.Code),
 			slog.Any("err", err),
 		)
-	} else if e.Err != nil {
+	case e.Err != nil:
 		Logger(r.Context()).Debug("request rejected", slog.String("code", e.Code), slog.Any("err", e.Err))
 	}
 	WriteJSON(w, e.Status, map[string]any{"error": e})

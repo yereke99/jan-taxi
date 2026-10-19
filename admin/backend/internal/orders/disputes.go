@@ -2,7 +2,6 @@ package orders
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -90,10 +89,11 @@ type resolveResult struct {
 }
 
 // resolveDispute closes an open dispute and moves the order to the chosen
-// outcome. Commission: a dispute opened while in progress is settled when
-// resolved completed and released when resolved cancelled; a commission
-// already charged is refunded once when resolved cancelled with
-// refund_commission.
+// outcome. Commission: it was charged when the driver took the order
+// (§22.2) and is refunded once only when resolved cancelled with
+// refund_commission. An order accepted under the earlier model that was
+// disputed while in progress is settled when resolved completed and released
+// when resolved cancelled.
 func resolveDispute(ctx context.Context, tx pgx.Tx, in resolveInput) (resolveResult, error) {
 	before, err := loadDispute(ctx, tx, in.DisputeID, true)
 	if err != nil {
@@ -149,9 +149,9 @@ func resolveDispute(ctx context.Context, tx pgx.Tx, in resolveInput) (resolveRes
 				return resolveResult{}, err
 			}
 		}
-		if wasCompleted && in.RefundCommission {
-			res.Refunded, err = wallets.RefundCommission(ctx, tx, o.ID, in.AdminID)
-			if err != nil && !errors.Is(err, wallets.ErrNotFound) {
+		if in.RefundCommission && cres.After.DriverID != nil {
+			res.Refunded, err = wallets.RefundCommission(ctx, tx, o.ID, *cres.After.DriverID, in.AdminID)
+			if err != nil {
 				return resolveResult{}, lifecycle.DBError(err)
 			}
 			if res.Refunded > 0 && cres.After.DriverID != nil {

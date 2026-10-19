@@ -1,15 +1,26 @@
-<!-- Profile and menu: who is signed in, and the passenger's sections. -->
+<!--
+  Profile and menu: who is signed in, the phone (shared through Telegram so
+  drivers can call, §22.5) and the passenger's sections.
+-->
 <script setup lang="ts">
 import { Car, Headset, Languages, ListOrdered } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ScrollPage from '../components/ScrollPage.vue'
-import { JListGroup, JListRow } from '../components/ui'
+import { JListGroup, JListRow, JSpinner, toast } from '../components/ui'
 import { ROUTE } from '../router/names'
+import { usePhoneStore } from '../stores/phone'
 import { useSessionStore } from '../stores/session'
 
 const { t } = useI18n()
 const session = useSessionStore()
+const phone = usePhoneStore()
+
+async function sharePhone(): Promise<void> {
+  const outcome = await phone.share()
+  if (outcome === 'verified') toast.success(t('phone.saved'))
+  else if (outcome === 'timeout') toast.show(t('phone.not_confirmed'))
+}
 
 const me = computed(() => session.me)
 const name = computed(() => [me.value?.first_name, me.value?.last_name].filter(Boolean).join(' '))
@@ -28,6 +39,9 @@ const initial = computed(() => (me.value?.first_name ?? '').trim().charAt(0).toU
 
     <JListGroup v-if="me" :footer="me.phone_masked ? '' : t('menu.phone_hint')">
       <JListRow :title="t('menu.phone')" :value="me.phone_masked ?? t('menu.phone_none')" />
+      <JListRow v-if="!me.phone_verified" :title="t('menu.phone_share')" clickable :chevron="false" :disabled="phone.flow !== 'idle'" @click="sharePhone">
+        <template v-if="phone.flow !== 'idle'" #accessory><JSpinner size="small" /></template>
+      </JListRow>
     </JListGroup>
 
     <JListGroup>

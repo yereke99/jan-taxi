@@ -146,6 +146,12 @@ func RecordLocation(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID,
 		if active {
 			data["order_id"] = order.ID
 			scopes = append(scopes, realtime.UserScope(order.PassengerID))
+			// The latest arrival estimate (§22.6) while the driver is on the way.
+			var eta *int
+			if err := tx.QueryRow(ctx, `SELECT driver_eta_s FROM orders WHERE id = $1 AND status = 'accepted'`, order.ID).
+				Scan(&eta); err == nil && eta != nil {
+				data["driver_eta_s"] = *eta
+			}
 		}
 		return realtime.Publish(ctx, tx, realtime.Event{Type: realtime.DriverLocationUpdated, Scopes: scopes, Data: data})
 	})

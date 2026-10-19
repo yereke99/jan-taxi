@@ -22,6 +22,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
+	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 )
 
 // Limits enforced on new tariff versions (in addition to the database checks).
@@ -65,6 +66,12 @@ func (h *AdminHandler) list(w http.ResponseWriter, r *http.Request) error {
 		}
 		f.Category = c
 	}
+	if c := strings.TrimSpace(query.Get("vehicle_class")); c != "" {
+		if !vehicleclasses.ValidCode(c) {
+			return httpx.Validation(map[string]string{"vehicle_class": "invalid"})
+		}
+		f.VehicleClass = c
+	}
 	if v := strings.TrimSpace(query.Get("include_inactive")); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
@@ -95,6 +102,7 @@ func (h *AdminHandler) get(w http.ResponseWriter, r *http.Request) error {
 type tariffRequest struct {
 	CityID        *string         `json:"city_id"`
 	Category      *string         `json:"category"`
+	VehicleClass  *string         `json:"vehicle_class"` // default sedan
 	MinFare       *int64          `json:"min_fare"`
 	MaxFare       *int64          `json:"max_fare"`
 	FareStep      *int64          `json:"fare_step"`
@@ -142,25 +150,30 @@ func (h *AdminHandler) create(w http.ResponseWriter, r *http.Request) error {
 	return httpx.Created(w, created)
 }
 
-// PublishTariff stores t as the next version for (t.CityID, t.Category), makes
-// it the active one, deactivates the previous active version and writes an
-// audit row — all inside tx. r may be nil for non-HTTP callers.
+// PublishTariff stores t as the next version for (t.CityID, t.Category,
+// t.VehicleClass), makes it the active one, deactivates the previous active
+// version and writes an audit row — all inside tx. r may be nil for non-HTTP
+// callers. An empty VehicleClass means the default class.
 func PublishTariff(ctx context.Context, tx pgx.Tx, r *http.Request, t Tariff, adminID uuid.UUID) (Tariff, error) {
-	// Serialise publishers of the same city and category.
+	if t.VehicleClass == "" {
+		t.VehicleClass = vehicleclasses.Default
+	}
+	// Serialise publishers of the same city, category and class.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
-		db.LockKey("tariff:"+t.CityID.String()+":"+t.Category)); err != nil {
+		db.LockKey("tariff:"+t.CityID.String()+":"+t.Category+":"+t.VehicleClass)); err != nil {
 		return Tariff{}, fmt.Errorf("lock tariff: %w", err)
 	}
 	var before *Tariff
-	prev, err := ActiveTariff(ctx, tx, t.CityID, t.Category)
+	prev, err := ActiveTariff(ctx, tx, t.CityID, t.Category, t.VehicleClass)
 	switch {
 	case err == nil:
 		before = &prev
 	case !errors.Is(err, ErrNoActiveTariff):
 		return Tariff{}, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE tariffs SET is_active = false WHERE city_id = $1 AND category = $2 AND is_active`,
-		t.CityID, t.Category); err != nil {
+	if _, err := tx.Exec(ctx, `
+		UPDATE tariffs SET is_active = false WHERE city_id = $1 AND category = $2 AND vehicle_class = $3 AND is_active`,
+		t.CityID, t.Category, t.VehicleClass); err != nil {
 		return Tariff{}, fmt.Errorf("deactivate tariff: %w", err)
 	}
 	fees, err := json.Marshal(t.ExtraFees)
@@ -173,13 +186,14 @@ func PublishTariff(ctx context.Context, tx pgx.Tx, r *http.Request, t Tariff, ad
 	}
 	var id uuid.UUID
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tariffs (city_id, category, version, is_active, min_fare, max_fare, fare_step, base_fare, per_km,
-		                     per_minute, extra_stop_fee, extra_fees, commission_bps, created_by)
-		VALUES ($1, $2, (SELECT COALESCE(max(version), 0) + 1 FROM tariffs WHERE city_id = $1 AND category = $2),
+		INSERT INTO tariffs (city_id, category, vehicle_class, version, is_active, min_fare, max_fare, fare_step,
+		                     base_fare, per_km, per_minute, extra_stop_fee, extra_fees, commission_bps, created_by)
+		VALUES ($1, $2, $13, (SELECT COALESCE(max(version), 0) + 1 FROM tariffs
+		                      WHERE city_id = $1 AND category = $2 AND vehicle_class = $13),
 		        true, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id`,
 		t.CityID, t.Category, t.MinFare, t.MaxFare, t.FareStep, t.BaseFare, t.PerKm, t.PerMinute, t.ExtraStopFee,
-		fees, t.CommissionBps, createdBy).Scan(&id)
+		fees, t.CommissionBps, createdBy, t.VehicleClass).Scan(&id)
 	switch {
 	case db.IsUniqueViolation(err, ""):
 		return Tariff{}, httpx.Conflict("conflict", "a tariff version was published concurrently").WithCause(err)
@@ -227,6 +241,30 @@ func (req tariffRequest) validate(ctx context.Context, q db.Querier) (Tariff, uu
 		fields["category"] = "invalid"
 	default:
 		t.Category = *req.Category
+	}
+
+	t.VehicleClass = vehicleclasses.Default
+	if req.VehicleClass != nil {
+		switch c := strings.TrimSpace(*req.VehicleClass); {
+		case c == "":
+			fields["vehicle_class"] = "required"
+		case !vehicleclasses.ValidCode(c):
+			fields["vehicle_class"] = "invalid"
+		default:
+			t.VehicleClass = c
+		}
+	}
+	if fields["vehicle_class"] == "" {
+		class, err := vehicleclasses.Get(ctx, q, t.VehicleClass)
+		switch {
+		case errors.Is(err, vehicleclasses.ErrNotFound):
+			fields["vehicle_class"] = "not_found"
+		case err != nil:
+			return Tariff{}, uuid.Nil, err
+		case t.Category != "" && !class.CanCarry(t.Category, 1, 0):
+			// A taxi tariff needs a passenger class, a delivery tariff a cargo class.
+			fields["vehicle_class"] = "not_allowed"
+		}
 	}
 
 	t.MinFare = money(fields, "min_fare", req.MinFare, 1, true)

@@ -192,6 +192,10 @@ func (h *AdminHandler) updateCity(w http.ResponseWriter, r *http.Request) error 
 		if len(fields) > 0 {
 			return httpx.Validation(fields)
 		}
+		// The nationwide region prices every order outside the city zones.
+		if before.IsDefaultRegion && !c.IsActive {
+			return ErrDefaultRegionLocked
+		}
 		row := tx.QueryRow(ctx, `
 			UPDATE cities AS c SET name_kk = $2, name_ru = $3, name_en = $4, center_lat = $5, center_lon = $6,
 			       default_zoom = $7, timezone = $8, is_active = $9, dispatch_radius_m = $10,

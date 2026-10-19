@@ -47,8 +47,12 @@ export function parseStartParam(param: string | null | undefined): DriverStartIn
   return { kind: 'home' }
 }
 
-/** Route for an intent; unknown route names fall back to home. */
-export function intentLocation(intent: DriverStartIntent, router: Pick<Router, 'hasRoute'>): RouteLocationRaw {
+/**
+ * Route for an intent; unknown route names fall back to home. `activeOrderId`
+ * is the driver's current trip: the bot's «Тапсырысты ашу» button after «Алу»
+ * sends order_<id> of that trip, which then opens the trip screen directly.
+ */
+export function intentLocation(intent: DriverStartIntent, router: Pick<Router, 'hasRoute'>, activeOrderId: string | null = null): RouteLocationRaw {
   const home: RouteLocationRaw = { name: ROUTE.home }
   const to = (name: string, params?: Record<string, string>): RouteLocationRaw =>
     router.hasRoute(name) ? (params ? { name, params } : { name }) : home
@@ -60,6 +64,7 @@ export function intentLocation(intent: DriverStartIntent, router: Pick<Router, '
     case 'orders':
       return to(ROUTE.orders)
     case 'order':
+      if (activeOrderId && activeOrderId.toLowerCase() === intent.orderId) return to(ROUTE.trip)
       return to(ROUTE.order, { id: intent.orderId })
     case 'trip':
       return to(ROUTE.trip)

@@ -18,6 +18,22 @@ export interface CityRef {
   name: LocalizedText
 }
 
+/** The city or the nationwide region (code KAZ) whose tariff priced an order. */
+export interface TariffRegion {
+  code: string
+  name: LocalizedText
+}
+
+/**
+ * Where an order happens: the settlement of pickup A from reverse geocoding
+ * (city, town or village, else district), null when unknown; and the region
+ * whose tariff applied. Never coordinates.
+ */
+export interface OrderPlace {
+  locality: string | null
+  tariff_region: TariffRegion | null
+}
+
 export interface CursorList<T> {
   items: T[]
   next_cursor: string | null
@@ -52,6 +68,7 @@ export const REGISTRATION_FIELDS = [
   'phone',
   'id_front',
   'id_back',
+  'vehicle_class',
   'vehicle_make_model',
   'vehicle_color',
   'vehicle_plate',
@@ -77,7 +94,18 @@ export interface CorrectionItem {
   comment: string | null
 }
 
-export interface RegistrationVehicle {
+/**
+ * The vehicle class fields (ARCHITECTURE §21) of the driver's vehicle: all
+ * null until the driver chose a class.
+ */
+export interface VehicleClassFields {
+  vehicle_class: string | null
+  vehicle_class_name: LocalizedText | null
+  seats: number | null
+  cargo_volume_l: number | null
+}
+
+export interface RegistrationVehicle extends VehicleClassFields {
   make: string
   model: string
   color: string
@@ -124,12 +152,24 @@ export interface VehicleInput {
   model: string
   color: string
   plate: string
+  /** Omitted: the stored class stays. A new class takes its own seat/cargo defaults unless sent. */
+  vehicle_class?: string
+  /** 1..class seats_max; omitted keeps the stored value. */
+  seats?: number
+  /** 0..100000 litres; omitted keeps the stored value. */
+  cargo_volume_l?: number
 }
 
 export interface DriverRegistrationUpdate {
   first_name: string
   last_name: string
   vehicle: VehicleInput
+  /**
+   * Device position, sent only with the save that creates the profile: the
+   * server takes the driver's city (and code prefix) from it, the nationwide
+   * region (KAZ) outside every city zone.
+   */
+  location?: { lat: number; lon: number }
 }
 
 export interface PlateCheck {
@@ -142,7 +182,7 @@ export interface PlateCheck {
 
 // --- Profile and availability ----------------------------------------------
 
-export interface Vehicle {
+export interface Vehicle extends VehicleClassFields {
   make: string
   model: string
   color: string
@@ -193,6 +233,25 @@ export interface LocationInput {
 
 // --- Orders -----------------------------------------------------------------
 
+export const CARGO_SIZES = ['s', 'm', 'l', 'xl'] as const
+export type CargoSize = (typeof CARGO_SIZES)[number]
+
+/**
+ * What an order asks for (ARCHITECTURE §21): the vehicle class, the
+ * passenger count of a taxi order and the cargo size/volume of a parcel or
+ * "other" order. The driver only sees orders their vehicle fits.
+ */
+export interface OrderLoad {
+  vehicle_class: string
+  vehicle_class_name: LocalizedText | null
+  /** Taxi only, otherwise null. */
+  passenger_count: number | null
+  /** Parcel/other only, otherwise null. */
+  cargo_size: CargoSize | null
+  /** Litres; 0 for taxi. */
+  cargo_volume_l: number
+}
+
 export type StopKind = 'pickup' | 'intermediate' | 'destination'
 
 export interface StopSummary {
@@ -222,7 +281,7 @@ export interface Eligibility {
   reason: EligibilityReason | null
 }
 
-export interface DriverOrderCard {
+export interface DriverOrderCard extends OrderLoad, OrderPlace {
   id: string
   number: number
   category: Category
@@ -261,10 +320,19 @@ export interface RouteSnapshot {
   duration_s: number
 }
 
+/**
+ * The passenger as the assigned driver sees them while the order is active
+ * (§22.4/§22.5): the phone only when they shared it through Telegram, and a
+ * Telegram link (https://t.me/<username> or tg://user?id=<id>).
+ */
 export interface OrderPassenger {
   first_name: string
-  /** E.164 while the order is active, otherwise null. */
+  /** E.164, only when verified through Telegram. */
   phone: string | null
+  phone_verified: boolean
+  telegram_username: string | null
+  /** Validated: https://t.me/<username> or tg://user?id=<digits>; null otherwise. */
+  telegram_url: string | null
 }
 
 export type ActorType = 'passenger' | 'driver' | 'admin' | 'system'
@@ -277,7 +345,7 @@ export interface OrderEvent {
   created_at: string
 }
 
-export interface DriverOrderDetail {
+export interface DriverOrderDetail extends OrderLoad, OrderPlace {
   id: string
   number: number
   status: OrderStatus
@@ -292,6 +360,8 @@ export interface DriverOrderDetail {
   currency: 'KZT'
   commission_bps: number
   commission_amount: number
+  /** What the wallet paid for this order (charges minus refunds); kept when the passenger cancels (§22.2). */
+  commission_charged: number
   payment_method: PaymentMethod
   distance_m: number
   duration_s: number
@@ -309,6 +379,7 @@ export interface DriverOrderDetail {
   can_arrive: boolean
   can_start: boolean
   can_complete: boolean
+  /** Always false: drivers cannot cancel (§22.3); they contact support. */
   can_cancel: boolean
   version: number
   created_at: string
@@ -320,7 +391,7 @@ export interface DriverOrderDetail {
   cancelled_at: string | null
 }
 
-export interface DriverOrderSummary {
+export interface DriverOrderSummary extends OrderLoad, OrderPlace {
   id: string
   number: number
   status: OrderStatus
@@ -328,6 +399,8 @@ export interface DriverOrderSummary {
   fare: number
   currency: 'KZT'
   commission_amount: number
+  /** What the wallet paid for this order (charges minus refunds). */
+  commission_charged: number
   payment_method: PaymentMethod
   pickup: StopSummary
   destination: StopSummary
@@ -359,6 +432,8 @@ export type LedgerEntryType =
   | 'commission_refund'
   | 'adjustment_credit'
   | 'adjustment_debit'
+  /** Welcome bonus on first approval or a manual bonus from Jan Taxi (§22.1, §22.7). */
+  | 'bonus_credit'
 
 export interface LedgerEntry {
   id: number

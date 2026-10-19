@@ -68,13 +68,32 @@ type VehiclePhotoView struct {
 // RegistrationVehicleView is the vehicle as entered (OpenAPI RegistrationVehicle).
 // PlateKind is only filled for administrators.
 type RegistrationVehicleView struct {
-	Make            string             `json:"make"`
-	Model           string             `json:"model"`
-	Color           string             `json:"color"`
-	Plate           string             `json:"plate"`
-	PlateNormalized *string            `json:"plate_normalized"`
-	PlateKind       *string            `json:"plate_kind,omitempty"`
-	Photos          []VehiclePhotoView `json:"photos"`
+	Make            string  `json:"make"`
+	Model           string  `json:"model"`
+	Color           string  `json:"color"`
+	Plate           string  `json:"plate"`
+	PlateNormalized *string `json:"plate_normalized"`
+	PlateKind       *string `json:"plate_kind,omitempty"`
+	VehicleClassFields
+	Photos []VehiclePhotoView `json:"photos"`
+}
+
+// VehicleClassFields are the vehicle's class, its localized name, seats and
+// cargo volume (ARCHITECTURE §21); all null until the driver chose a class.
+type VehicleClassFields struct {
+	VehicleClass     *string             `json:"vehicle_class"`
+	VehicleClassName *vehicles.ClassName `json:"vehicle_class_name"`
+	Seats            *int                `json:"seats"`
+	CargoVolumeL     *int                `json:"cargo_volume_l"`
+}
+
+// NewVehicleClassFields converts the class fields of v (nil v: all null).
+func NewVehicleClassFields(v *vehicles.Vehicle) VehicleClassFields {
+	if v == nil || !v.HasClass() {
+		return VehicleClassFields{}
+	}
+	code, name, seats, cargo := v.ClassCode, v.ClassName, v.Seats, v.CargoVolumeL
+	return VehicleClassFields{VehicleClass: &code, VehicleClassName: &name, Seats: &seats, CargoVolumeL: &cargo}
 }
 
 // NewRegistrationVehicleView converts the vehicle and its photos; a missing
@@ -85,6 +104,7 @@ func NewRegistrationVehicleView(v *vehicles.Vehicle, photos []vehicles.Photo, ba
 		return out
 	}
 	out.Make, out.Model, out.Color, out.Plate = v.Make, v.Model, v.Color, v.PlateDisplay()
+	out.VehicleClassFields = NewVehicleClassFields(v)
 	if v.PlateNormalized != "" {
 		n := v.PlateNormalized
 		out.PlateNormalized = &n
@@ -107,6 +127,7 @@ type VehicleView struct {
 	Model string `json:"model"`
 	Color string `json:"color"`
 	Plate string `json:"plate"`
+	VehicleClassFields
 }
 
 // NewVehicleView converts a vehicle; nil stays nil.
@@ -114,7 +135,8 @@ func NewVehicleView(v *vehicles.Vehicle) *VehicleView {
 	if v == nil {
 		return nil
 	}
-	return &VehicleView{Make: v.Make, Model: v.Model, Color: v.Color, Plate: v.PlateDisplay()}
+	return &VehicleView{Make: v.Make, Model: v.Model, Color: v.Color, Plate: v.PlateDisplay(),
+		VehicleClassFields: NewVehicleClassFields(v)}
 }
 
 // HistoryItem is a moderation event as shown to the driver (no admin identity).

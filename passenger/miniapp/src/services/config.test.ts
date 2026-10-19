@@ -23,6 +23,17 @@ const passenger = {
   delivery: { prohibited_items: ['weapons', 'drugs'] },
   navigation: { twogis_base_url: 'https://2gis.kz' },
   fare: { min: 500, max: 1500, step: 50 },
+  vehicle_classes: [
+    { code: 'sedan', name: { kk: 'Седан', ru: 'Седан', en: 'Sedan' }, examples: 'Toyota Camry', icon: 'sedan', seats_default: 4, seats_max: 4, cargo_volume_l_default: 400, passenger_capable: true, cargo_capable: true },
+    { code: 'minivan', name: { kk: 'Минивэн', ru: 'Минивэн', en: 'Minivan' }, examples: 'Alphard', icon: 'minivan', seats_default: 7, seats_max: 8, cargo_volume_l_default: 800, passenger_capable: true, cargo_capable: true },
+    { code: 'truck', name: { kk: 'Жүк көлігі', ru: 'Грузовик', en: 'Truck' }, examples: '', icon: 'truck', seats_default: 2, seats_max: 2, cargo_volume_l_default: 15000, passenger_capable: false, cargo_capable: true },
+  ],
+  cargo_sizes: [{ code: 's', volume_l: 10 }, { code: 'm', volume_l: 60 }, { code: 'l', volume_l: 400 }, { code: 'xl', volume_l: 1500 }],
+  max_passenger_count: 15,
+  cancel_reasons: [
+    { code: 'long_wait', label: { kk: 'Ұзақ күттім', ru: 'Долго ждать', en: 'Waited too long' }, comment_required: false },
+    { code: 'other', label: { kk: 'Басқа себеп', ru: 'Другое', en: 'Other' }, comment_required: true },
+  ],
 }
 
 describe('normalizePublicConfig', () => {
@@ -38,6 +49,18 @@ describe('normalizePublicConfig', () => {
     expect(c.fare).toEqual({ min: 500, max: 1500, step: 50 })
     expect(c.kaspi).toBeNull()
     expect(c.topup).toBeNull()
+    expect(c.vehicle_classes.map((v) => v.code)).toEqual(['sedan', 'minivan', 'truck'])
+    expect(c.vehicle_classes[1]).toMatchObject({ icon: 'minivan', seats_default: 7, seats_max: 8, passenger_capable: true })
+    expect(c.vehicle_classes[2]?.passenger_capable).toBe(false)
+    expect(c.cargo_sizes.map((s) => s.volume_l)).toEqual([10, 60, 400, 1500])
+    expect(c.max_passenger_count).toBe(15)
+    expect(c.cancel_reasons.map((r) => [r.code, r.comment_required])).toEqual([
+      ['long_wait', false],
+      ['other', true],
+    ])
+    expect(pickLocalized(c.cancel_reasons[0]?.label, 'ru')).toBe('Долго ждать')
+    expect(c.commission).toBeNull()
+    expect(c.welcome_bonus).toBeNull()
   })
 
   it('maps the driver sections', () => {
@@ -47,11 +70,55 @@ describe('normalizePublicConfig', () => {
       fare: undefined,
       kaspi: { payment_url: 'https://pay.kaspi.kz/pay/x', recipient_name: 'Jan Taxi', instructions: { kk: 'Төлеңіз', ru: 'Оплатите', en: 'Pay' } },
       topup: { min: 500, max: 100000, presets: [1000, 2000, 200000] },
+      cancel_reasons: undefined,
+      commission: { mode: 'fixed', fixed_amount: 50 },
+      welcome_bonus: 500,
     })
     expect(c.fare).toBeNull()
     expect(c.kaspi?.recipient_name).toBe('Jan Taxi')
     expect(pickLocalized(c.kaspi?.instructions, 'ru')).toBe('Оплатите')
     expect(c.topup).toEqual({ min: 500, max: 100000, presets: [1000, 2000] })
+    expect(c.cancel_reasons).toEqual([])
+    expect(c.commission).toEqual({ mode: 'fixed', fixed_amount: 50 })
+    expect(c.welcome_bonus).toBe(500)
+  })
+
+  it('keeps only well-formed vehicle classes, cargo sizes and reasons', () => {
+    const c = normalizePublicConfig({
+      vehicle_classes: [
+        { code: 'sedan', seats_max: 4, seats_default: 9, icon: 'rocket' },
+        { code: 'sedan', seats_max: 5 },
+        { code: '', seats_max: 4 },
+        { code: 'van', seats_max: -1 },
+      ],
+      cargo_sizes: [{ code: 'm', volume_l: 80 }, { code: 'xl', volume_l: 0 }],
+      max_passenger_count: 0,
+      cancel_reasons: [{ code: 'x' }, { code: 'other', label: { ru: 'Другое' }, comment_required: true }],
+      welcome_bonus: -5,
+    })
+    expect(c.vehicle_classes).toEqual([
+      {
+        code: 'sedan',
+        name: { kk: 'sedan', ru: 'sedan', en: 'sedan' },
+        examples: '',
+        icon: 'sedan',
+        seats_default: 4,
+        seats_max: 4,
+        cargo_volume_l_default: 0,
+        passenger_capable: false,
+        cargo_capable: false,
+      },
+    ])
+    expect(c.cargo_sizes).toEqual([
+      { code: 's', volume_l: 10 },
+      { code: 'm', volume_l: 80 },
+      { code: 'l', volume_l: 400 },
+      { code: 'xl', volume_l: 1500 },
+    ])
+    expect(c.max_passenger_count).toBe(15)
+    expect(c.cancel_reasons.map((r) => r.code)).toEqual(['other'])
+    expect(pickLocalized(c.cancel_reasons[0]?.label, 'kk')).toBe('Другое')
+    expect(c.welcome_bonus).toBeNull()
   })
 
   it('falls back to safe defaults for missing or invalid fields', () => {

@@ -33,6 +33,19 @@ type Sender interface {
 	Send(ctx context.Context, bot Bot, chatID int64, text string, markup *telegram.InlineKeyboardMarkup) (messageID int64, err error)
 }
 
+// Editor rewrites a message sent earlier (outbox rows of kind "edit"); a nil
+// markup removes the inline keyboard. Senders without it cannot apply edits,
+// which then end as dead.
+type Editor interface {
+	Edit(ctx context.Context, bot Bot, chatID, messageID int64, text string, markup *telegram.InlineKeyboardMarkup) error
+}
+
+// errNoEditor is recorded for edit rows when the Sender cannot edit.
+var errNoEditor = errors.New("notifications: sender cannot edit messages")
+
+// editRetryDelay is how long an edit waits for its original message to be sent.
+const editRetryDelay = 2 * time.Second
+
 // Options configure a Worker. Zero values take the defaults in brackets.
 type Options struct {
 	InstanceID          string // lease owner name [hostname-random]
@@ -49,6 +62,9 @@ type Options struct {
 	MaxBackoff          time.Duration // retry delay cap [10m]
 	MaxAge              time.Duration // older messages are not retried any more [24h]
 	PollInterval        time.Duration // idle sleep in Run [1s]
+	// Photos reads stored images for photo messages (§22.6); without it
+	// such messages are sent as text.
+	Photos PhotoStore
 }
 
 func (o *Options) defaults() {
@@ -163,6 +179,8 @@ func (w *Worker) Drain(ctx context.Context, budget time.Duration) error {
 // outboxRow is a claimed notification.
 type outboxRow struct {
 	id          uuid.UUID
+	kind        string
+	refID       *uuid.UUID
 	bot         Bot
 	userID      *uuid.UUID
 	chatID      int64
@@ -171,6 +189,14 @@ type outboxRow struct {
 	attempts    int
 	maxAttempts int
 	createdAt   time.Time
+}
+
+// editTarget is the original message of an edit row.
+type editTarget struct {
+	status    string
+	messageID *int64
+	template  string
+	params    map[string]any
 }
 
 // RunOnce claims one batch, sends it and records the outcomes. It returns the
@@ -194,7 +220,30 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 			w.reschedule(ctx, m, 0)
 			continue
 		}
-		msg, err := w.render(m, langs, overrides)
+		var (
+			msg    Message
+			target *editTarget
+			err    error
+		)
+		if m.kind == KindEdit {
+			target, err = w.editTarget(ctx, m)
+			switch {
+			case err != nil:
+				w.reschedule(ctx, m, editRetryDelay)
+				continue
+			case (target.status == StatusPending || target.status == StatusSending) && now.Sub(m.createdAt) < w.opt.MaxAge:
+				// The original is not out yet: edit it once it is.
+				w.reschedule(ctx, m, editRetryDelay)
+				continue
+			case target.status != StatusSent || target.messageID == nil:
+				w.finish(ctx, m, now, outcome{kind: "fatal", status: StatusCancelled,
+					errText: "original message was not delivered (" + target.status + ")"})
+				continue
+			}
+			msg, err = w.renderEdit(m, *target, langs, overrides)
+		} else {
+			msg, err = w.render(m, langs, overrides)
+		}
 		if err != nil {
 			w.finish(ctx, m, now, outcome{kind: "fatal", status: StatusDead, errText: err.Error()})
 			continue
@@ -209,11 +258,11 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 		}
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(m outboxRow, msg Message) {
+		go func(m outboxRow, msg Message, target *editTarget) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			w.deliver(ctx, m, msg, deadline)
-		}(m, msg)
+			w.deliver(ctx, m, msg, target, deadline)
+		}(m, msg, target)
 	}
 	wg.Wait()
 	return len(rows), nil
@@ -235,7 +284,8 @@ func (w *Worker) claim(ctx context.Context) ([]outboxRow, error) {
 		    locked_by = $2,
 		    attempts = o.attempts + 1
 		FROM due WHERE o.id = due.id
-		RETURNING o.id, o.bot, o.user_id, o.chat_id, o.template, o.params, o.attempts, o.max_attempts, o.created_at`,
+		RETURNING o.id, o.kind, o.ref_outbox_id, o.bot, o.user_id, o.chat_id, o.template, o.params, o.attempts,
+		          o.max_attempts, o.created_at`,
 		w.opt.BatchSize, w.opt.InstanceID, w.opt.LeaseDuration.Milliseconds())
 	if err != nil {
 		return nil, fmt.Errorf("notifications: claim: %w", err)
@@ -248,15 +298,12 @@ func (w *Worker) claim(ctx context.Context) ([]outboxRow, error) {
 			bot string
 			raw []byte
 		)
-		if err := rows.Scan(&m.id, &bot, &m.userID, &m.chatID, &m.template, &raw, &m.attempts, &m.maxAttempts, &m.createdAt); err != nil {
+		if err := rows.Scan(&m.id, &m.kind, &m.refID, &bot, &m.userID, &m.chatID, &m.template, &raw, &m.attempts,
+			&m.maxAttempts, &m.createdAt); err != nil {
 			return nil, fmt.Errorf("notifications: claim scan: %w", err)
 		}
 		m.bot = Bot(bot)
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		if err := dec.Decode(&m.params); err != nil {
-			m.params = nil // rendered as missing params → dead with a clear error
-		}
+		m.params = decodeParams(raw) // nil is rendered as missing params → dead with a clear error
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -270,6 +317,60 @@ func (w *Worker) claim(ctx context.Context) ([]outboxRow, error) {
 		return out[i].createdAt.Before(out[j].createdAt)
 	})
 	return out, nil
+}
+
+func decodeParams(raw []byte) map[string]any {
+	var params map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&params); err != nil {
+		return nil
+	}
+	return params
+}
+
+// editTarget loads the original message of an edit row.
+func (w *Worker) editTarget(ctx context.Context, m outboxRow) (*editTarget, error) {
+	if m.refID == nil {
+		return &editTarget{status: StatusDead}, nil
+	}
+	var (
+		t   editTarget
+		raw []byte
+	)
+	err := w.pool.QueryRow(ctx, `
+		SELECT status, telegram_message_id, template, params FROM notification_outbox WHERE id = $1`, *m.refID).
+		Scan(&t.status, &t.messageID, &t.template, &raw)
+	if db.IsNoRows(err) {
+		return &editTarget{status: StatusDead}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("notifications: load edit target: %w", err)
+	}
+	t.params = decodeParams(raw)
+	return &t, nil
+}
+
+// maxMessageRunes is Telegram's message length limit.
+const maxMessageRunes = 4096
+
+// renderEdit renders an edit: the edit template's text above the original
+// message, and the edit template's keyboard (none removes the original one).
+func (w *Worker) renderEdit(m outboxRow, target editTarget, langs map[uuid.UUID]string, overrides map[overrideKey]string) (Message, error) {
+	status, err := w.render(m, langs, overrides)
+	if err != nil {
+		return Message{}, err
+	}
+	orig, err := w.render(outboxRow{bot: m.bot, userID: m.userID, template: target.template, params: target.params},
+		langs, overrides)
+	if err != nil {
+		return status, nil // the status line alone still tells the driver
+	}
+	text := status.Text + "\n\n" + orig.Text
+	if utf8.RuneCountInString(text) > maxMessageRunes {
+		text = status.Text
+	}
+	return Message{Text: text, Markup: status.Markup}, nil
 }
 
 func (w *Worker) languages(ctx context.Context, rows []outboxRow) map[uuid.UUID]string {
@@ -308,6 +409,11 @@ func (w *Worker) overrides(ctx context.Context, rows []outboxRow) map[overrideKe
 			keys = append(keys, m.template)
 		}
 	}
+	// Edits re-render the message they change; its template is not known
+	// here, so the offer template is always loaded.
+	if !seen[TplOrderAvailableDriver] {
+		keys = append(keys, TplOrderAvailableDriver)
+	}
 	ov, err := loadOverrides(ctx, w.pool, keys)
 	if err != nil {
 		w.log.Warn("load template overrides failed; using defaults", slog.Any("err", err))
@@ -342,7 +448,7 @@ func (w *Worker) render(m outboxRow, langs map[uuid.UUID]string, overrides map[o
 	return t.Render(lang, body, m.params, url)
 }
 
-func (w *Worker) deliver(ctx context.Context, m outboxRow, msg Message, deadline time.Time) {
+func (w *Worker) deliver(ctx context.Context, m outboxRow, msg Message, target *editTarget, deadline time.Time) {
 	if err := w.lim.waitBot(ctx, m.bot); err != nil {
 		w.reschedule(ctx, m, 0)
 		return
@@ -358,9 +464,67 @@ func (w *Worker) deliver(ctx context.Context, m outboxRow, msg Message, deadline
 		return
 	}
 	sctx, cancel := context.WithTimeout(ctx, w.opt.SendTimeout)
-	msgID, err := w.sender.Send(sctx, m.bot, m.chatID, msg.Text, msg.Markup)
+	var (
+		msgID int64
+		err   error
+	)
+	if target != nil {
+		msgID = *target.messageID
+		if ed, ok := w.sender.(Editor); ok {
+			err = ed.Edit(sctx, m.bot, m.chatID, msgID, msg.Text, msg.Markup)
+			if telegram.IsMessageNotModified(err) {
+				err = nil // already shows this text (e.g. the bot edited it first)
+			}
+		} else {
+			err = errNoEditor
+		}
+	} else if photo, ok := w.photo(sctx, m, msg); ok {
+		msgID, err = w.sendPhoto(sctx, m, msg, photo)
+	} else {
+		msgID, err = w.sender.Send(sctx, m.bot, m.chatID, msg.Text, msg.Markup)
+	}
 	cancel()
 	w.finish(ctx, m, now, w.classify(ctx, m, msgID, err))
+}
+
+// photo returns the photo to send with msg when photos can be sent.
+func (w *Worker) photo(ctx context.Context, m outboxRow, msg Message) (telegram.InputPhoto, bool) {
+	if msg.Photo == nil || w.opt.Photos == nil || utf8.RuneCountInString(msg.Text) > maxCaptionRunes {
+		return telegram.InputPhoto{}, false
+	}
+	if _, ok := w.sender.(PhotoSender); !ok {
+		return telegram.InputPhoto{}, false
+	}
+	if id, err := w.opt.Photos.TelegramFileID(ctx, *msg.Photo, m.bot); err == nil && id != "" {
+		return telegram.InputPhoto{FileID: id}, true
+	}
+	data, err := w.opt.Photos.ReadPhoto(ctx, *msg.Photo)
+	if err != nil {
+		w.log.Warn("photo unavailable; sending text", slog.String("outbox_id", m.id.String()), slog.Any("err", err))
+		return telegram.InputPhoto{}, false
+	}
+	return telegram.InputPhoto{Data: data, FileName: "photo.jpg"}, true
+}
+
+// sendPhoto sends msg as a photo with its text as the caption and caches an
+// uploaded photo's file id. A photo Telegram refuses (a 4xx other than rate
+// limiting or a blocked chat) does not cost the message: it goes out as text.
+func (w *Worker) sendPhoto(ctx context.Context, m outboxRow, msg Message, photo telegram.InputPhoto) (int64, error) {
+	msgID, fileID, err := w.sender.(PhotoSender).SendPhoto(ctx, m.bot, m.chatID, photo, msg.Text, msg.Markup)
+	if err == nil {
+		if photo.FileID == "" && fileID != "" {
+			if rerr := w.opt.Photos.RememberTelegramFileID(context.WithoutCancel(ctx), *msg.Photo, m.bot, fileID); rerr != nil {
+				w.log.Warn("cache photo file id failed", slog.Any("err", rerr))
+			}
+		}
+		return msgID, nil
+	}
+	var ae *telegram.APIError
+	if errors.As(err, &ae) && ae.Code >= 400 && ae.Code < 500 && !telegram.IsBlocked(err) && !isRetryAfter(err) {
+		w.log.Warn("photo refused; sending text", slog.String("outbox_id", m.id.String()), slog.String("err", sanitizeError(err)))
+		return w.sender.Send(ctx, m.bot, m.chatID, msg.Text, msg.Markup)
+	}
+	return 0, err
 }
 
 // outcome is the result of one attempt.
@@ -481,6 +645,11 @@ func (w *Worker) finish(ctx context.Context, m outboxRow, started time.Time, o o
 				    attempts = GREATEST(attempts - $4, 0), last_error = $5, locked_until = NULL, locked_by = NULL
 				WHERE id = $1 AND locked_by = $2 AND status = 'sending'`,
 				m.id, w.opt.InstanceID, o.delay.Milliseconds(), refund, errText)
+		case StatusCancelled:
+			tag, err = tx.Exec(ctx, `
+				UPDATE notification_outbox
+				SET status = 'cancelled', last_error = $3, locked_until = NULL, locked_by = NULL
+				WHERE id = $1 AND locked_by = $2 AND status = 'sending'`, m.id, w.opt.InstanceID, errText)
 		default:
 			tag, err = tx.Exec(ctx, `
 				UPDATE notification_outbox

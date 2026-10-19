@@ -229,3 +229,24 @@ access leaves.
 - Telegram outage or blocked API: orders still work in the Mini Apps already
   open; notifications queue in the outbox and are sent when Telegram is reachable
   (up to 8 attempts with backoff; retry `dead` rows from the admin panel).
+
+## Local live stack (development machine)
+
+The Docker stack behind a Cloudflare quick tunnel ([DEPLOYMENT.md §10](DEPLOYMENT.md#10-local-live-stack-docker--cloudflare-quick-tunnel))
+is run with `deploy/local/stack.sh` and a state directory outside the repository
+(`JT_STACK_DIR`). Day to day:
+
+```sh
+deploy/local/stack.sh status          # everything at a glance; exit 1 if something is off
+deploy/local/stack.sh verify          # WebSocket and deep links through the tunnel, admin login
+deploy/local/stack.sh rebuild         # deploy the current working tree (tunnel URL kept)
+deploy/local/stack.sh logs api        # or passenger-bot, driver-bot, web, tunnel, db, watchdog
+```
+
+| Symptom | Check | Fix |
+|---|---|---|
+| Mini App does not open in Telegram | `status`: tunnel probes and menu buttons | `stack.sh up` (follows a new URL); after ~10 min of 530/1033 the watchdog runs `retunnel` itself |
+| Mini App opens elsewhere but not on this Wi-Fi / Mac | `dig <host> @<router>` answers NXDOMAIN | DNS negative cache: flush it (macOS `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) or `stack.sh retunnel` |
+| Bot silent | `status`: bot health JSON (`role`, `last_poll_age_s`, `last_error`) | the watchdog restarts an unhealthy bot; `stack.sh logs driver-bot` |
+| API errors after `rebuild` | `status` NOTE about edited migrations; `logs api` | `stack.sh rebuild` again after the migration is final |
+| Nothing runs after a reboot | `stack.sh status` | `stack.sh up` (the watchdog is not a system service) |

@@ -12,6 +12,7 @@ import { Card, StateView, StatusBadge } from '../../components'
 import { useFormat } from '../../composables/useFormat'
 import { useRealtimeEvents, useResync } from '../../composables/useRealtime'
 import { useResource } from '../../composables/useResource'
+import { useVehicleClasses } from '../../composables/useVehicleClasses'
 import DriverActions from './DriverActions.vue'
 import DriverReview from './DriverReview.vue'
 
@@ -19,6 +20,7 @@ const QUEUE_SIZE = 100
 
 const { t } = useI18n()
 const fmt = useFormat()
+const vc = useVehicleClasses()
 const route = useRoute()
 const router = useRouter()
 
@@ -107,7 +109,7 @@ useResync(() => void queue.reload({ silent: true }))
               <span class="jt-muted queue__wait">{{ waited(d.submitted_at) }}</span>
             </span>
             <span class="queue__name">{{ d.first_name }} {{ d.last_name }}</span>
-            <span class="queue__meta">{{ d.vehicle ? `${d.vehicle.make} ${d.vehicle.model} · ${d.vehicle.plate}` : '—' }}</span>
+            <span class="queue__meta">{{ d.vehicle ? `${d.vehicle.make} ${d.vehicle.model} · ${d.vehicle.plate}${d.vehicle.vehicle_class ? ` · ${vc.name(d.vehicle.vehicle_class, d.vehicle.vehicle_class_name)}` : ''}` : '—' }}</span>
           </button>
         </li>
       </ol>

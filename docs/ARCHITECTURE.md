@@ -83,10 +83,27 @@ fails if the copies drift.
 * Boundary: Natural Earth 1:10m admin-0 (public domain) Kazakhstan incl. Baikonur, stored in
   `country_boundaries` (code `KZ`), checked with `ST_Covers(geom, point)`.
 * Embi (`lat 48.8264, lon 58.1442`) is only the default map centre and the first city.
-* City resolution for an order (`cities.Resolve`): the active city whose active service zone covers
-  the pickup; otherwise the nearest active city centre. The resolved city only selects the **tariff**
-  (and the search timeout `cities.search_timeout_s`); a driver's registered city only prefixes the
-  driver code and groups drivers in the admin panel.
+* Tariff region of an order (`cities.Resolve`): the active city owning the **smallest** active
+  service zone that covers pickup A; otherwise the nationwide default region **KAZ** («Қазақстан» /
+  «Казахстан» / «Kazakhstan», `cities.is_default_region`, migration 00009) whose single zone is the
+  whole country and whose tariffs are the base tariffs. There is **no** nearest-city fallback. The
+  resolved region only selects the **tariff** (and the search timeout `cities.search_timeout_s`).
+  A class or category the zone city has no active tariff for is priced by KAZ, as everywhere outside
+  the zone, so drawing a city zone never switches a service off; each preview option names the
+  region that priced it (`tariff_region`), and the order inherits that region from its quote.
+  KAZ can never be deactivated, and its zone cannot be created, edited or deleted through the admin
+  API (`409 default_region_locked`).
+* Locality: the preview reverse-geocodes pickup A once (≤ 1.5 s): the settlement (city, town or
+  village) whose outline covers it, by its own official name («Ембі», even where nearby addresses
+  say «Эмба»), else the town or district of the nearest address; `null` on failure, never
+  coordinates. It is stored on every quote; the order
+  copies it to `orders.locality`. Every order DTO carries `locality` (where the trip happens) and
+  `tariff_region` `{code, name:{kk,ru,en}}` (whose tariff priced it); UIs and the driver bot show the
+  locality, the admin panel shows the tariff region separately.
+* A driver's city only prefixes the driver code and groups drivers in the admin panel. It is decided
+  once, when the first registration save creates the profile, from the device `location` sent with
+  it: the city whose zone covers it, KAZ elsewhere in Kazakhstan, the configured default city when no
+  (or a foreign) position is sent.
 * **Dispatch never depends on a city.** A passenger anywhere in Kazakhstan (e.g. Almaty) creates an
   order and it is offered to free drivers whose fresh GPS location is within the order's search radius
   of pickup point A (§7), wherever those drivers are registered.
@@ -113,6 +130,11 @@ fails if the copies drift.
 * CSRF: login response returns `csrf_token`; it is also derivable from session; every
   non-GET admin request must send `X-CSRF-Token` equal to `HMAC(SESSION_SECRET, session_id)`.
 * Login rate limit per IP and per email; 5 failures → 15 min lock.
+* The admin API (`/api/v1/admin*`, login included) is served only on the admin host. The public Mini
+  App host answers 404: Caddy before its API proxy, and the API itself for any admin request whose
+  `Host` is the host of `PASSENGER_MINIAPP_URL` / `DRIVER_MINIAPP_URL` (unless `ADMIN_FRONTEND_URL`
+  shares it), so the Mini App URL (and the local quick tunnel) cannot be used to lock out or guess
+  admin accounts.
 * Roles → permissions (enforced server-side on every admin route):
 
 | Permission | super_admin | operator | driver_moderator | finance_manager | auditor |
@@ -722,6 +744,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | POST | /admin/drivers/{id}/restore | drivers.manage | moderation |
 | PATCH | /admin/drivers/{id} `{city_id}` | drivers.manage | moderation |
 | POST | /admin/drivers/{id}/wallet/adjustments `{amount (signed), reason, idempotency_key}` | finance.manage | payments |
+| POST | /admin/drivers/{id}/bonus `{amount, comment?, idempotency_key}` (§22.7; ledger `bonus_credit`, bot message `driver_bonus_granted`) | finance.manage | payments |
 | GET | /admin/topups?status=&q=&page= | finance.view | payments |
 | GET | /admin/topups/{id} | finance.view | payments |
 | GET | /admin/topups/{id}/receipt | finance.view | payments |
@@ -733,7 +756,8 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET/POST | /admin/cities ; PATCH /admin/cities/{id} | dashboard.view (GET) / config.manage | cities |
 | GET/POST | /admin/cities/{id}/zones ; PATCH/DELETE /admin/zones/{id} | config.manage | cities |
 | GET/POST | /admin/places ; PATCH/DELETE /admin/places/{id} | config.manage | cities |
-| GET | /admin/tariffs?city_id= ; POST /admin/tariffs (new version) | dashboard.view / config.manage | pricing |
+| GET | /admin/tariffs?city_id=&vehicle_class= ; POST /admin/tariffs (new version, `vehicle_class`) | dashboard.view / config.manage | pricing |
+| GET/POST | /admin/vehicle-classes ; PATCH /admin/vehicle-classes/{code} (§21) | config.manage | vehicleclasses |
 | GET/PATCH | /admin/settings | config.manage | settings |
 | GET | /admin/notification-templates ; PUT /admin/notification-templates/{key}/{lang} ; DELETE (revert) | config.manage | notifications |
 | GET | /admin/notifications?status=&page= ; POST /admin/notifications/{id}/retry | orders.manage | notifications |
@@ -752,6 +776,8 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | POST | /internal/v1/driver/{tg_id}/availability | botapi | `{online}` same rules as the Mini App |
 | GET | /internal/v1/driver/{tg_id}/orders?limit= | botapi | available orders |
 | POST | /internal/v1/driver/{tg_id}/contact | botapi | `{phone, contact_user_id}`; verifies `contact_user_id == tg_id` |
+| POST | /internal/v1/driver/{tg_id}/orders/{id}/accept | botapi+dispatch | «✅ Алу» (§22.4): the same atomic accept as the Mini App → `{order, replayed, charged, wallet}`; 402/404/409/422 as the Mini App |
+| POST | /internal/v1/passenger/{tg_id}/contact | botapi | `{phone, contact_user_id}` shared with the passenger bot (§22.5); verifies `contact_user_id == tg_id` |
 | POST | /internal/v1/driver/{tg_id}/location | botapi | `{lat, lon, accuracy_m?, live}` |
 | POST | /internal/v1/driver/{tg_id}/topup-receipt | botapi+payments | multipart `file` (Kaspi PDF) → `{outcome: credited\|pending_verification\|duplicate_rejected, reasons[], topup, balance}`; 409 `no_open_topup` / `receipt_already_used`, 413, 422, 429 (§6.1) |
 | GET | /internal/v1/config | botapi | Mini App URLs, bot usernames, support contacts |
@@ -817,7 +843,7 @@ geo.RequireInServiceArea(ctx, q, field string, pts ...geo.Point) error // 422 ou
 geo.DistanceMeters(a, b geo.Point) float64
 
 // cities
-cities.Resolve(ctx, q, p geo.Point) (cities.City, error)  // zone covering p, else nearest active city
+cities.Resolve(ctx, q, p geo.Point) (cities.City, error)  // smallest active zone covering p, else the default region KAZ
 
 // platform/textutil
 textutil.CleanText(s string, max int) (string, error)     // ErrTooLong; NFC, control chars stripped
@@ -856,3 +882,168 @@ audit.Log(ctx, q db.Querier, r *http.Request, audit.Entry{Action, EntityType, En
 
 Wiring: `internal/app` owns construction. Each domain area has a file `internal/app/wire_<area>.go`
 (created as stubs) that only that area's owner edits; `app.go` calls them.
+
+## 21. Vehicle classes (body types)
+
+Product owner requirement (2026-10-19): drivers declare their vehicle body type at registration;
+passengers choose the class they need (e.g. 7–8 people → minivan, not a sedan); parcels go only
+to vehicles whose cargo space fits; admins manage classes, capacities and tariffs.
+
+### 21.1 Classes (seeded, admin-editable — table `vehicle_classes`)
+
+| code | kk / ru / en | passenger seats default / max | cargo volume default (L) | passengers | cargo | serves orders of |
+|---|---|---|---|---|---|---|
+| `sedan` | Седан / Седан / Sedan | 4 / 4 | 400 | ✓ | ✓ | sedan |
+| `universal` | Универсал / Универсал / Estate | 4 / 4 | 600 | ✓ | ✓ | universal, sedan |
+| `minivan` | Минивэн / Минивэн / Minivan (Alphard, Sienna) | 7 / 8 | 800 | ✓ | ✓ | minivan |
+| `microbus` | Микроавтобус / Микроавтобус / Minibus | 15 / 20 | 1500 | ✓ | ✓ | microbus |
+| `cargo_van` | Жүк фургоны / Грузовой фургон / Cargo van | 2 / 2 | 6000 | — | ✓ | cargo_van |
+| `truck` | Жүк көлігі / Грузовик / Truck | 2 / 2 | 15000 | — | ✓ | truck |
+
+Columns: `code` (PK, `^[a-z_]{2,20}$`), `name_kk/ru/en`, `examples` (short text, e.g. "Toyota Camry"),
+`seats_default`, `seats_max`, `cargo_volume_l_default`, `passenger_capable`, `cargo_capable`,
+`serves text[]` (class codes whose orders this class may take; always includes itself), `icon`
+(`sedan|universal|minivan|microbus|cargo_van|truck`), `sort`, `is_active`.
+
+### 21.2 Data model
+- `vehicles`: `class_code` (FK, required at submit), `seats` (1..class.seats_max), `cargo_volume_l`
+  (0..100000). These are moderated registration fields (correction field `vehicle_class`).
+- `tariffs`: gain `vehicle_class`; one active tariff per (city, category, vehicle_class). Existing
+  tariffs become `sedan`; defaults seeded for the other classes (step 50 ₸, 10% commission):
+  universal 600–1800, minivan 1000–3000, microbus 2000–6000, cargo_van 2000–8000, truck 5000–20000.
+- `fare_quotes` and `orders`: `vehicle_class` (required), `passenger_count` (taxi: 1..15),
+  `cargo_size` (`s|m|l|xl` for parcel/other) and `cargo_volume_l` (derived: s=10, m=60, l=400, xl=1500).
+
+### 21.3 API
+- `POST /routes/preview` takes `{category, stops, passenger_count?, cargo_size?}` and returns the
+  route once plus `options[]`: one per active class able to carry the request
+  (`seats_max ≥ passenger_count` for taxi; `cargo_volume_l_default ≥ cargo volume` and cargo-capable
+  for parcel/other), each `{vehicle_class, name{kk,ru,en}, examples, icon, seats_max,
+  cargo_volume_l, quote_id, fare{recommended,min,max,step,options}, tariff_region, eta_s|null}`; classes
+  that cannot carry the request are omitted. `POST /orders` uses the chosen option's `quote_id`.
+  `eta_s` is deliberately coarse so that moving pickup A around cannot locate drivers: the pickup is
+  snapped to a ~500 m grid, each driver's position is shifted by a secret per-driver offset (≤ 500 m,
+  new every hour), only shifted positions inside `dispatch.radius_base_m` count, and the estimate
+  (1 min + 2 min/km) is rounded up to 5-minute steps.
+- `GET /public/config` exposes the active classes (for registration and the passenger UI).
+- Admin: `GET/POST /admin/vehicle-classes`, `PATCH /admin/vehicle-classes/{code}` (config.manage, audited);
+  tariffs endpoints gain `vehicle_class`.
+
+### 21.4 Dispatch
+Eligibility (§7) additionally requires the driver's current vehicle to serve the order's class
+(`order.vehicle_class ∈ class(vehicle).serves`), `vehicle.seats ≥ order.passenger_count`, and
+`vehicle.cargo_volume_l ≥ order.cargo_volume_l`.
+
+### 21.5 UI
+- Driver registration: a "Көлік түрі" step with class cards (icon, name, examples), seat stepper
+  bounded by the class, cargo volume prefilled from the class default (editable).
+- Passenger: after the route, a compact iOS list of class options (icon, name, "4 орын", price),
+  a passenger-count stepper for taxi and a cargo-size segmented control for parcels; changing them
+  re-quotes. The existing passenger flow stays as it is otherwise.
+- Admin: Vehicle classes page, class column on tariffs, class/seats/volume on driver detail.
+
+## 22. Business rules v2 (owner decisions, 2026-10-19)
+
+These rules supersede §5 (driver cancellation), §6 (commission timing/amount) and §8 (driver
+offers) where they conflict.
+
+### 22.1 Welcome balance for new drivers
+- Setting `driver.welcome_bonus` (KZT, default **500**; 0 disables).
+- Granted automatically **once**, when an admin approves a driver for the first time, and only if
+  neither the driver's phone (E.164) nor the vehicle plate (normalised) has ever received it:
+  table `welcome_bonus_grants` with `UNIQUE(driver_id)`, `UNIQUE(phone_e164)`, `UNIQUE(plate_normalized)`.
+- Ledger entry type `bonus_credit`, idempotency key `welcome_bonus:<driver_id>`; audited;
+  notification `driver_welcome_bonus`.
+
+### 22.2 Commission is charged at acceptance
+- Settings `commission.mode` = `fixed` (default) | `percent`; `commission.fixed_amount` (KZT, default **50**);
+  `percent` uses the tariff's `commission_bps`. The amount is snapshotted on the order at creation.
+- The full commission is charged in the **same transaction** as the atomic accept (ledger
+  `commission_charge`, key `charge:<order_id>`); no reservation for new orders.
+  Insufficient available balance → `402 insufficient_balance` and the order stays open for others.
+- **Not refunded** when the passenger cancels. Refund only through an admin action
+  (admin cancel/dispute with `refund_commission=true`, ledger `commission_refund`).
+- A driver whose available balance is below the commission stops receiving offers automatically
+  and gets one `wallet_low_balance` notification with a top-up button.
+
+### 22.3 Only passengers cancel
+- Drivers cannot cancel (no endpoint, no UI); they contact support; admins can cancel or reassign.
+- Passenger cancel (`searching | accepted | driver_arriving`) requires `reason_code` ∈
+  `long_wait | driver_issue | vehicle_issue | changed_plans | other` and `comment`
+  (required for `other`, ≤ 120 code points). Stored as `orders.cancel_reason_code` + `cancel_reason`.
+- Labels — kk / ru / en: `long_wait` Ұзақ күттім / Долго ждать / Waited too long;
+  `driver_issue` Жүргізуші ұнамады / Не понравился водитель / Didn't like the driver;
+  `vehicle_issue` Көлік ұнамады / Не понравилась машина / Didn't like the car;
+  `changed_plans` Жоспарым өзгерді / Планы изменились / My plans changed;
+  `other` Басқа себеп / Другое / Other.
+- Admin dashboard shows cancellation counts by reason.
+- The cancel request carries `expected_status` (the status the passenger saw). If the order moved on
+  meanwhile — a driver accepted a search the passenger was cancelling — nothing changes and the API
+  answers `409 conflict {reason: order_changed, status}`; the app shows the driver and the passenger
+  decides again, so a driver is never charged for a cancellation meant for a search.
+- Creating and cancelling accepted orders cannot drain drivers' wallets: after
+  `orders.passenger_cancels_after_accept_per_day` (default 3, 0 = off) cancellations of
+  driver-accepted orders within 24 hours, `POST /orders` answers `409 conflict
+  {reason: too_many_cancellations, limit}`. Cancelling a search costs nobody and is not counted.
+- The driver is told that the passenger cancelled, never why: driver order views return
+  `cancel_reason: null` when `cancelled_by = passenger`. Driver order views and history carry
+  `commission_charged` (charges minus refunds for that order), so a cancelled trip shows the
+  commission that was kept.
+
+### 22.4 Offers in the driver bot (first tap wins)
+- Each eligible driver receives a bot message: category + vehicle class, A → intermediate → final
+  addresses, distance to pickup, route distance/ETA, price, payment method, passenger count or
+  cargo size, comment; inline buttons **«✅ Алу»** (callback `take:<order_id>`) and
+  **«🗺 Картада ашу»** (web_app → Mini App order detail, fullscreen).
+- «Алу» calls the internal API accept for that driver — the same atomic transaction as the Mini App.
+  Success → the bot edits the message to «✅ Сіз алдыңыз» and sends the trip card with the passenger
+  contact: name, phone (if shared), Telegram link (`https://t.me/<username>` or a `tg://user?id=` mention)
+  and a web_app button «Тапсырысты ашу». Failure → callback alert (taken / insufficient balance with
+  top-up button / offline / location required) and the keyboard is removed.
+- When an order is taken or cancelled, the other drivers' offer messages lose their keyboard and are
+  marked taken/cancelled (edited via the stored `telegram_message_id`).
+
+### 22.5 Passenger phone
+- Before the first order the passenger Mini App asks to share the phone through Telegram
+  (`requestContact`); the passenger bot verifies `contact.user_id == from.id` and stores it.
+  Skippable — then the driver only gets the Telegram link.
+
+### 22.6 Passenger push when a driver takes the order (implement together with 22.4)
+- The moment an accept succeeds (Mini App or the bot «Алу»), the passenger receives a Telegram
+  message from the passenger bot (a push on the phone): the driver's **photo** (driver avatar sent with
+  `sendPhoto`; upload the private file once per bot and cache the returned Telegram `file_id` in a new
+  column), caption: driver name + rating, vehicle make/model/colour, **plate**, driver **phone**, and
+  **«~N минутта келеді»**, plus a web_app button **«Картада қарау»** opening the live trip in the
+  Mini App (fullscreen). Text in the passenger's language (kk/ru/en).
+- ETA: route duration from the driver's **latest GPS fix** to pickup A via OSRM (the free
+  OpenStreetMap router already used; timeout ≤ 2 s); fallback when OSRM fails or the fix is stale:
+  straight-line distance / 30 km/h, rounded up to whole minutes, minimum 1. Computed right after the
+  accept commits (never inside the accept transaction), stored on the order (`driver_eta_s`,
+  `driver_eta_at`) and recomputed from new driver locations at most every 30 s while the order is
+  `accepted`; exposed in the passenger Order DTO and the `order.accepted` / `driver.location_updated`
+  realtime events.
+- Passenger Mini App: the live trip sheet shows "~N мин" next to the existing driver card and the
+  driver car moving on the map — no other design changes.
+
+### 22.7 Admin controls for bonuses and commission (owner, 2026-10-19)
+- `driver.welcome_bonus`: admin can switch it off (0) or change the amount at any time (e.g. 1000 KZT);
+  the value at approval time is what a new driver receives. Admin UI: an on/off switch + amount.
+- `commission.fixed_amount`: admin can change it at any time within **50–100 KZT** (validated range,
+  setting `commission.fixed_min` = 50 / `commission.fixed_max` = 100 enforced by the API); applies to
+  orders created after the change (amount is snapshotted on the order).
+- Manual bonus to a specific driver: `POST /admin/drivers/{id}/bonus {amount, comment, idempotency_key}`
+  (finance.manage; driver found in the UI by driver code like EMB001 or by phone in any format);
+  ledger `bonus_credit` (key `bonus:<idempotency_key>`), audited, realtime `wallet.updated`, and a bot
+  message to the driver: kk «Jan Taxi компаниясынан сізге {{amount}} бонус есептелді», ru «Компания
+  Jan Taxi начислила вам бонус {{amount}}», en «Jan Taxi has credited you a bonus of {{amount}}»
+  (+ comment if given, + button to the wallet). Bonus history visible on driver detail and in the ledger.
+
+### 22.8 Passenger class choice and the nationwide region (owner, 2026-10-19)
+- Every new booking starts on the first preview option (the cheapest class that fits the load). A
+  class picked earlier (abandoned booking, other route, previous order) is never restored; only
+  "order again" repeats the old class.
+- A class row is selected only by a real tap (pointer down and up on the row, < 8 px movement, no
+  scroll in between); scrolling or dragging the sheet never changes the selection.
+- The confirm button names the class and price («Тапсырыс беру · Микроавтобус · 2 150 ₸»). A class
+  with 7+ seats for a party of ≤ 4 asks first with an iOS action sheet.
+- Tariff region and locality: see §3 (KAZ default region, `orders.locality`, driver code prefix).

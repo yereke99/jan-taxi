@@ -3,8 +3,11 @@
   current step lives in the URL (?step=), so the Telegram BackButton walks
   back through the steps. Text is saved to the server draft as the driver
   types (PUT /driver/registration), on every step change and when the Mini
-  App is hidden; photos upload immediately. In changes_requested only the
-  steps with flagged fields are shown and unflagged fields are locked.
+  App is hidden; photos upload immediately. The first "Next" creates the
+  profile and sends the device position with it, so the driver's code takes
+  the prefix of the city (or nationwide region) where they are. The vehicle class step (§21)
+  comes before the vehicle details. In changes_requested only the steps with
+  flagged fields are shown and unflagged fields are locked.
 -->
 <script setup lang="ts">
 import { Headset, Languages } from '@lucide/vue'
@@ -12,6 +15,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import type { RegistrationField } from '../../api/types'
+import { isApiError } from '../../services/http'
 import DriverPage from '../../components/driver/DriverPage.vue'
 import StepConsent from '../../components/driver/registration/StepConsent.vue'
 import StepDocuments from '../../components/driver/registration/StepDocuments.vue'
@@ -20,6 +24,7 @@ import StepPhone from '../../components/driver/registration/StepPhone.vue'
 import StepPhotos from '../../components/driver/registration/StepPhotos.vue'
 import StepReview from '../../components/driver/registration/StepReview.vue'
 import StepVehicle from '../../components/driver/registration/StepVehicle.vue'
+import StepVehicleClass from '../../components/driver/registration/StepVehicleClass.vue'
 import { JButton, JEmptyState, JSkeleton, toast } from '../../components/ui'
 import {
   firstOpenStep,
@@ -53,7 +58,9 @@ const r = computed(() => reg.registration)
 const correction = computed(() => (r.value ? isCorrectionMode(r.value) : false))
 const steps = computed<StepId[]>(() => (r.value ? visibleSteps(r.value, reg.consentRecorded) : []))
 const ctx = computed<StepContext | null>(() =>
-  r.value ? { registration: r.value, form: reg.form, consentGiven: reg.consentGiven || reg.consentRecorded } : null,
+  r.value
+    ? { registration: r.value, form: reg.form, consentGiven: reg.consentGiven || reg.consentRecorded, classes: session.extras.vehicleClasses }
+    : null,
 )
 
 function isStep(v: unknown): v is StepId {
@@ -72,8 +79,14 @@ const stepComplete = computed(() => (step.value && ctx.value ? isStepComplete(st
 
 const saveState = computed(() => {
   if (reg.saving) return t('registration.saving')
-  if (reg.saveError) return t('registration.save_failed')
-  return ''
+  const err = reg.saveError
+  if (!err) return ''
+  // A refused value (taken plate, invalid field) is shown under its field;
+  // "check your connection" is only for requests that did not get through.
+  if (isApiError(err) && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
+    return t('registration.save_rejected')
+  }
+  return t('registration.save_failed')
 })
 
 // A missing or hidden step (fresh open, start parameter, corrections) goes to the first open one.
@@ -96,7 +109,7 @@ watch(step, async () => {
 
 async function saveNow(): Promise<boolean> {
   try {
-    await reg.save()
+    await reg.save(false, true)
     return true
   } catch (err) {
     toast.error(errorText(err))
@@ -163,6 +176,8 @@ onMounted(async () => {
   offActive = tg.onActiveChange((active) => {
     if (!active) flush()
   })
+  // The class step needs the active classes from the public config.
+  if (!session.configLoaded && !session.configLoading) void session.refreshConfig()
   if (!reg.registration) await reg.load()
   else await reg.refresh()
   if (session.me) reg.prefillNames(session.me.first_name, session.me.last_name)
@@ -200,6 +215,7 @@ onBeforeUnmount(() => {
         <StepPersonal v-if="step === 'personal'" :show-errors="showErrors" />
         <StepPhone v-else-if="step === 'phone'" :show-errors="showErrors" />
         <StepDocuments v-else-if="step === 'documents'" :show-errors="showErrors" />
+        <StepVehicleClass v-else-if="step === 'vehicle_class'" :show-errors="showErrors" />
         <StepVehicle v-else-if="step === 'vehicle'" :show-errors="showErrors" />
         <StepPhotos v-else-if="step === 'photos'" :show-errors="showErrors" />
         <StepConsent v-else-if="step === 'consent'" :show-errors="showErrors" />

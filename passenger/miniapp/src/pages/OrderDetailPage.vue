@@ -1,6 +1,7 @@
 <!--
   Order detail from "My orders": a static map of the route, the stops, the
-  trip facts, the driver, rating / dispute actions and the status timeline.
+  trip facts (the place first: the settlement of pickup A), the driver,
+  rating / dispute actions and the status timeline.
 -->
 <script setup lang="ts">
 import type { Map as MapLibreMap } from 'maplibre-gl'
@@ -16,15 +17,19 @@ import OrderTimeline from '../components/order/OrderTimeline.vue'
 import RatingForm from '../components/order/RatingForm.vue'
 import ScrollPage from '../components/ScrollPage.vue'
 import { JBadge, JButton, JEmptyState, JSkeleton } from '../components/ui'
+import VehicleClassIcon from '../components/VehicleClassIcon.vue'
 import { useDriverPhoto } from '../composables/useDriverPhoto'
 import { useLiveOrder } from '../composables/useLiveOrder'
-import { cancelInfo, orderMarkers } from '../domain/orderView'
+import { useVehicleText } from '../composables/useVehicleText'
+import { cancelInfo, orderLocality, orderMarkers } from '../domain/orderView'
 import { placesOfStops } from '../domain/places'
 import { useErrorText } from '../i18n/core'
 import { MapView, useRouteLayer, useStopMarkers } from '../maps'
 import { ROUTE } from '../router/names'
+import { VEHICLE_ICONS, type VehicleIcon } from '../services/config'
 import { isApiError } from '../services/http'
 import { useBookingStore } from '../stores/booking'
+import { useOrdersStore } from '../stores/orders'
 import { useSessionStore } from '../stores/session'
 import { formatDateTime, formatDistance, formatDuration, formatMoney } from '../utils/format'
 import { boundsOf, type LatLon } from '../utils/geo'
@@ -37,6 +42,8 @@ const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const booking = useBookingStore()
+const orders = useOrdersStore()
+const vehicleText = useVehicleText()
 
 const orderId = computed(() => String(route.params.id ?? '').toLowerCase())
 const live = useLiveOrder(orderId)
@@ -50,6 +57,11 @@ const notFound = computed(() => isApiError(live.error.value) && live.error.value
 const title = computed(() => (order.value ? t('order.number', { n: order.value.number }) : t('orders.title')))
 const cancel = computed(() => (order.value?.status === 'cancelled' ? cancelInfo(order.value) : null))
 const disputeOpen = ref(false)
+const className = computed(() => (order.value ? vehicleText.className(order.value.vehicle_class, order.value.vehicle_class_name) : ''))
+const classIcon = computed<VehicleIcon>(() => VEHICLE_ICONS.find((i) => i === order.value?.vehicle_class) ?? (order.value?.category === 'taxi' ? 'sedan' : 'cargo_van'))
+const loadLine = computed(() => (order.value ? vehicleText.loadText(order.value) : ''))
+/** Settlement of pickup A ("Алматы"), or the locality line seen while booking; never coordinates. */
+const locality = computed(() => (order.value ? orderLocality(order.value, orders.pickupSubtitle(order.value.id)) : null))
 
 // --- Static route map ------------------------------------------------------------
 
@@ -82,7 +94,7 @@ function onMapReady(m: MapLibreMap): void {
 function orderAgain(): void {
   const o = order.value
   if (!o) return
-  booking.prefill(o.category, placesOfStops(o.stops))
+  booking.prefill(o.category, placesOfStops(o.stops), { vehicleClass: o.vehicle_class, passengerCount: o.passenger_count, cargoSize: o.cargo_size })
   void router.push({ name: ROUTE.book, query: { category: o.category } })
 }
 
@@ -131,9 +143,21 @@ function onDisputeSent(o: Order): void {
       </section>
 
       <section class="detail-card detail-facts">
+        <div v-if="locality" class="detail-fact">
+          <span class="detail-fact__label">{{ t('order.locality') }}</span>
+          <span class="detail-fact__value">{{ locality }}</span>
+        </div>
         <div class="detail-fact">
           <span class="detail-fact__label">{{ t('confirm.service') }}</span>
           <span class="detail-fact__value detail-fact__service"><CategoryIcon :category="order.category" :size="18" />{{ t(`category.${order.category}`) }}</span>
+        </div>
+        <div class="detail-fact">
+          <span class="detail-fact__label">{{ t('confirm.vehicle_class') }}</span>
+          <span class="detail-fact__value detail-fact__service"><VehicleClassIcon :icon="classIcon" :size="28" />{{ className }}</span>
+        </div>
+        <div v-if="loadLine" class="detail-fact">
+          <span class="detail-fact__label">{{ order.category === 'taxi' ? t('confirm.passengers') : t('confirm.cargo_size') }}</span>
+          <span class="detail-fact__value jt-tabular">{{ order.cargo_size ? vehicleText.cargoText(order.cargo_size, order.cargo_volume_l) : order.passenger_count }}</span>
         </div>
         <div class="detail-fact">
           <span class="detail-fact__label">{{ t('detail.fare') }}</span>
@@ -168,7 +192,8 @@ function onDisputeSent(o: Order): void {
       <section v-if="cancel" class="detail-card detail-text">
         <p v-if="cancel.byKey">{{ t(cancel.byKey) }}</p>
         <p v-if="cancel.reasonKey" :class="{ 'is-secondary': cancel.byKey }">{{ t(cancel.reasonKey) }}</p>
-        <p v-if="cancel.text" class="is-secondary">{{ t('order.reason_text', { reason: cancel.text }) }}</p>
+        <p v-if="cancel.labelKey" class="is-secondary">{{ t('order.reason_text', { reason: t(cancel.labelKey) }) }}</p>
+        <p v-if="cancel.text" class="is-secondary">{{ cancel.labelKey ? cancel.text : t('order.reason_text', { reason: cancel.text }) }}</p>
       </section>
 
       <section v-if="order.driver" class="detail-card">

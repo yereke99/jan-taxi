@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { parseInteger, percentToBps } from './numbers'
-import { validateAdjustment, validateCorrectionForm, validateTariffForm, validateTopUpConfirm, type TariffForm, type TopUpConfirmForm } from './validation'
+import {
+  amountInRange,
+  validateAdjustment,
+  validateBonus,
+  validateCorrectionForm,
+  validateTariffForm,
+  validateTopUpConfirm,
+  validateVehicleClassForm,
+  type TariffForm,
+  type TopUpConfirmForm,
+  type VehicleClassForm,
+} from './validation'
 
 describe('validateCorrectionForm', () => {
   it('requires at least one field', () => {
@@ -81,6 +92,7 @@ describe('validateTariffForm', () => {
   const base: TariffForm = {
     city_id: 'c1',
     category: 'taxi',
+    vehicle_class: 'sedan',
     min_fare: '500',
     max_fare: '1500',
     fare_step: '50',
@@ -95,7 +107,11 @@ describe('validateTariffForm', () => {
   it('builds the API body with commission in basis points', () => {
     const r = validateTariffForm({ ...base, commission_percent: '12,5' })
     expect(r.errors).toEqual({})
-    expect(r.payload).toMatchObject({ min_fare: 500, max_fare: 1500, fare_step: 50, base_fare: 300, per_km: 100, commission_bps: 1250, extra_fees: [] })
+    expect(r.payload).toMatchObject({ vehicle_class: 'sedan', min_fare: 500, max_fare: 1500, fare_step: 50, base_fare: 300, per_km: 100, commission_bps: 1250, extra_fees: [] })
+  })
+
+  it('requires a vehicle class', () => {
+    expect(validateTariffForm({ ...base, vehicle_class: '' }).errors).toEqual({ vehicle_class: 'required' })
   })
 
   it('requires min and max to be multiples of the step', () => {
@@ -136,6 +152,89 @@ describe('validateAdjustment', () => {
   it('signs the amount by direction and requires a reason', () => {
     expect(validateAdjustment({ direction: 'debit', amount: '1 500', reason: 'Қате толтыру' })).toMatchObject({ errors: {}, amount: -1500 })
     expect(validateAdjustment({ direction: 'credit', amount: '0', reason: '' }).errors).toEqual({ amount: 'positive', reason: 'required' })
+  })
+})
+
+describe('validateVehicleClassForm', () => {
+  const base: VehicleClassForm = {
+    code: 'minivan_xl',
+    nameKk: 'Үлкен минивэн',
+    nameRu: 'Большой минивэн',
+    nameEn: 'Large minivan',
+    examples: 'Hyundai Staria',
+    seats_default: '7',
+    seats_max: '9',
+    cargo_volume_l_default: '900',
+    passenger_capable: true,
+    cargo_capable: true,
+    icon: 'minivan',
+    serves: ['minivan', 'minivan_xl', 'minivan'],
+    sort: '',
+    is_active: true,
+  }
+
+  it('builds the create body: code, cleaned names, deduplicated served classes, default sort', () => {
+    const r = validateVehicleClassForm(base, true)
+    expect(r.errors).toEqual({})
+    expect(r.payload).toEqual({
+      code: 'minivan_xl',
+      name: { kk: 'Үлкен минивэн', ru: 'Большой минивэн', en: 'Large minivan' },
+      examples: 'Hyundai Staria',
+      seats_default: 7,
+      seats_max: 9,
+      cargo_volume_l_default: 900,
+      passenger_capable: true,
+      cargo_capable: true,
+      serves: ['minivan'],
+      icon: 'minivan',
+      sort: 100,
+      is_active: true,
+    })
+  })
+
+  it('never sends the code on update', () => {
+    expect(validateVehicleClassForm({ ...base, code: 'whatever' }, false).payload).not.toHaveProperty('code')
+  })
+
+  it('mirrors the API rules', () => {
+    const r = validateVehicleClassForm(
+      { ...base, code: 'Minivan-XL', nameRu: '', seats_default: '10', cargo_volume_l_default: '100001', passenger_capable: false, cargo_capable: false, icon: 'boat', sort: '1001' },
+      true,
+    )
+    expect(r.errors).toEqual({
+      code: 'invalid',
+      'name.ru': 'required',
+      seats_default: 'too_large',
+      cargo_volume_l_default: 'too_large',
+      passenger_capable: 'one_required',
+      cargo_capable: 'one_required',
+      icon: 'invalid',
+      sort: 'out_of_range',
+    })
+    expect(r.payload).toBeNull()
+    expect(validateVehicleClassForm({ ...base, seats_max: '61' }, true).errors).toEqual({ seats_max: 'too_large' })
+    expect(validateVehicleClassForm({ ...base, serves: Array.from({ length: 10 }, (_, i) => `c${'x'.repeat(i + 1)}`) }, true).errors).toEqual({ serves: 'too_many' })
+  })
+})
+
+describe('validateBonus', () => {
+  it('accepts whole tenge up to 1 000 000 with an optional comment', () => {
+    expect(validateBonus({ amount: '1 000', comment: '  Жақсы  жұмыс ' })).toEqual({ errors: {}, amount: 1000, comment: 'Жақсы жұмыс' })
+    expect(validateBonus({ amount: '', comment: '' }).errors).toEqual({ amount: 'required' })
+    expect(validateBonus({ amount: '0', comment: '' }).errors).toEqual({ amount: 'positive' })
+    expect(validateBonus({ amount: '1000001', comment: '' }).errors).toEqual({ amount: 'too_large' })
+    expect(validateBonus({ amount: '500', comment: 'x'.repeat(201) }).errors).toEqual({ comment: 'too_long' })
+  })
+})
+
+describe('amountInRange', () => {
+  it('keeps the fixed commission within its bounds', () => {
+    expect(amountInRange('50', 50, 100)).toBeNull()
+    expect(amountInRange('100', 50, 100)).toBeNull()
+    expect(amountInRange('49', 50, 100)).toBe('out_of_range')
+    expect(amountInRange('101', 50, 100)).toBe('out_of_range')
+    expect(amountInRange('', 50, 100)).toBe('required')
+    expect(amountInRange('7.5', 50, 100)).toBe('integer')
   })
 })
 

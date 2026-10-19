@@ -18,7 +18,7 @@ func TestTariffVersioning(t *testing.T) {
 	ctx := context.Background()
 	c, adminID := newAdminClient(t, pool, auth.RoleSuperAdmin)
 	cityID := testutil.CityID(t, pool, "EMB")
-	v1, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi)
+	v1, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi, "sedan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +51,11 @@ func TestTariffVersioning(t *testing.T) {
 	if err != nil || old.IsActive {
 		t.Fatalf("v1 after publish: %v %+v", err, old)
 	}
-	active, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi)
+	active, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi, "sedan")
 	if err != nil || active.ID.String() != v2["id"] || active.Version != 2 {
 		t.Fatalf("active = %v %+v", err, active)
 	}
-	if p, err := ActiveTariff(ctx, pool, cityID, CategoryParcel); err != nil || p.Version != 1 {
+	if p, err := ActiveTariff(ctx, pool, cityID, CategoryParcel, "sedan"); err != nil || p.Version != 1 {
 		t.Fatalf("parcel = %v %+v", err, p)
 	}
 	// 400 + ceil(100*2.5)=250 + ceil(10*400/60)=67 + 150 + 100 = 967 -> 1000
@@ -79,21 +79,26 @@ func TestTariffVersioning(t *testing.T) {
 	}
 
 	// Lists.
-	code, list := c.do(http.MethodGet, "/tariffs?city_id="+cityID.String(), "")
+	code, list := c.do(http.MethodGet, "/tariffs?city_id="+cityID.String()+"&vehicle_class=sedan", "")
 	if items := list["items"].([]any); code != http.StatusOK || len(items) != 3 {
 		t.Fatalf("active list: %d %v", code, list)
 	}
-	code, list = c.do(http.MethodGet, "/tariffs?city_id="+cityID.String()+"&include_inactive=true", "")
+	code, list = c.do(http.MethodGet, "/tariffs?city_id="+cityID.String()+"&include_inactive=true&vehicle_class=sedan", "")
 	if items := list["items"].([]any); code != http.StatusOK || len(items) != 4 {
 		t.Fatalf("full list: %d %v", code, list)
 	}
-	code, list = c.do(http.MethodGet, "/tariffs?category=taxi&include_inactive=1", "")
+	// Across cities the nationwide region (KAZ, migration 00009) has its own copy.
+	code, list = c.do(http.MethodGet, "/tariffs?category=taxi&include_inactive=1&vehicle_class=sedan", "")
+	if items := list["items"].([]any); code != http.StatusOK || len(items) != 3 {
+		t.Fatalf("taxi versions of every city: %d %v", code, list)
+	}
+	code, list = c.do(http.MethodGet, "/tariffs?city_id="+cityID.String()+"&category=taxi&include_inactive=1&vehicle_class=sedan", "")
 	items := list["items"].([]any)
 	if code != http.StatusOK || len(items) != 2 || items[0].(map[string]any)["version"] != float64(2) ||
 		items[1].(map[string]any)["version"] != float64(1) {
 		t.Fatalf("taxi versions newest first: %d %v", code, list)
 	}
-	for _, bad := range []string{"/tariffs?category=bus", "/tariffs?include_inactive=maybe", "/tariffs?city_id=xyz"} {
+	for _, bad := range []string{"/tariffs?category=bus", "/tariffs?include_inactive=maybe", "/tariffs?city_id=xyz", "/tariffs?vehicle_class=Bus"} {
 		if code, body := c.do(http.MethodGet, bad, ""); code != http.StatusUnprocessableEntity {
 			t.Fatalf("%s: %d %v", bad, code, body)
 		}
@@ -169,7 +174,8 @@ func TestTariffValidation(t *testing.T) {
 		t.Fatalf("unknown city: %d %v", code, body)
 	}
 	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM tariffs`).Scan(&n); err != nil || n != 3 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM tariffs WHERE vehicle_class = 'sedan' AND city_id = $1`,
+		city).Scan(&n); err != nil || n != 3 {
 		t.Fatalf("tariffs after rejected requests = %d, %v", n, err)
 	}
 }
@@ -224,7 +230,7 @@ func TestTariffConcurrentPublish(t *testing.T) {
 	var versions, active, maxV int
 	if err := pool.QueryRow(context.Background(), `
 		SELECT count(DISTINCT version), count(*) FILTER (WHERE is_active), max(version)
-		FROM tariffs WHERE city_id = $1 AND category = 'other'`, city).Scan(&versions, &active, &maxV); err != nil {
+		FROM tariffs WHERE city_id = $1 AND category = 'other' AND vehicle_class = 'sedan'`, city).Scan(&versions, &active, &maxV); err != nil {
 		t.Fatal(err)
 	}
 	if versions != n+1 || active != 1 || maxV != n+1 {

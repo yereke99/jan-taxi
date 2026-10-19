@@ -69,6 +69,7 @@ const kk = {
   preview_max: '(ең үлкені)',
   preview_invalid: 'Алдын ала қарау үшін мәндерді түзетіңіз.',
   open_link: 'Сілтемені ашу',
+  read_only: 'Тек оқу үшін',
 }
 
 export type SettingsMessages = typeof kk
@@ -142,6 +143,7 @@ const ru: SettingsMessages = {
   preview_max: '(максимум)',
   preview_invalid: 'Исправьте значения, чтобы увидеть расчёт.',
   open_link: 'Открыть ссылку',
+  read_only: 'Только чтение',
 }
 
 const en: SettingsMessages = {
@@ -213,6 +215,7 @@ const en: SettingsMessages = {
   preview_max: '(maximum)',
   preview_invalid: 'Fix the values to see the schedule.',
   open_link: 'Open link',
+  read_only: 'Read-only',
 }
 
 export const settingsArea = { kk, ru, en }

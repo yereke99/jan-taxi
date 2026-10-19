@@ -3,6 +3,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { localityText } from '../../api/common'
 import { driversApi, type AdminDriverDetail } from '../../api/drivers'
 import type { AdminOrderListItem } from '../../api/orders'
 import { Card, DataTable, FilterSelect, KeyValueList, Pagination, StateView, StatusBadge, type Column } from '../../components'
@@ -41,6 +42,7 @@ const columns = computed<Column<AdminOrderListItem>[]>(() => [
   { key: 'created_at', label: t('common.created'), format: (v) => fmt.dateTime(v as string) },
   { key: 'status', label: t('common.status') },
   { key: 'category', label: t('orders.category'), format: (v) => t(`category.${String(v)}`) },
+  { key: 'locality', label: t('orders.locality'), value: (r) => localityText(r.locality) ?? '—' },
   { key: 'route', label: t('orders.route'), value: (r) => `${r.pickup.address} → ${r.destination.address}` },
   { key: 'fare', label: t('orders.fare'), align: 'right', format: (v) => fmt.money(v as number) },
   { key: 'commission_amount', label: t('orders.commission'), align: 'right', format: (v) => fmt.money(v as number) },

@@ -87,6 +87,8 @@ func newFixture(t *testing.T) *fixture {
 	}
 	exec(t, pool, `INSERT INTO disputes (order_id, opened_by_type, reason, previous_status, created_at) VALUES ($1, 'passenger', 'late', 'completed', $2)`,
 		f.orders["o8"], b(2, 12, 0))
+	// The passenger said why they cancelled (§22.3).
+	exec(t, pool, `UPDATE orders SET cancel_reason_code = 'long_wait' WHERE id = $1`, f.orders["o3"])
 
 	// Commission ledger: charges at completion, one refund.
 	ledger := []struct {
@@ -139,7 +141,7 @@ func (f *fixture) insertOrder(t *testing.T, s orderSpec) uuid.UUID {
 	}
 	ctx := context.Background()
 	var tariffID uuid.UUID
-	if err := f.pool.QueryRow(ctx, `SELECT id FROM tariffs WHERE city_id = $1 AND category = $2 AND is_active`, f.cityID, s.cat).Scan(&tariffID); err != nil {
+	if err := f.pool.QueryRow(ctx, `SELECT id FROM tariffs WHERE city_id = $1 AND category = $2 AND vehicle_class = 'sedan' AND is_active`, f.cityID, s.cat).Scan(&tariffID); err != nil {
 		t.Fatalf("tariff: %v", err)
 	}
 	var id uuid.UUID
@@ -147,9 +149,12 @@ func (f *fixture) insertOrder(t *testing.T, s orderSpec) uuid.UUID {
 		INSERT INTO orders (passenger_id, city_id, category, service_type, cargo_type, cargo_description, recipient_phone,
 		                    prohibited_items_ack, status, driver_id, fare, commission_bps, commission_amount, payment_method,
 		                    tariff_id, distance_m, duration_s, stop_count, pickup_lat, pickup_lon, idempotency_key,
-		                    created_at, accepted_at, started_at, completed_at, cancelled_at, cancelled_by, cancel_reason)
+		                    created_at, accepted_at, started_at, completed_at, cancelled_at, cancelled_by, cancel_reason,
+		                    vehicle_class, passenger_count, cargo_size, cargo_volume_l)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1000, $12, 'cash',
-		        $13, 3200, 540, 2, 48.8264, 58.1442, $14, $15, $16, $17, $18, $19, $20, $21)
+		        $13, 3200, 540, 2, 48.8264, 58.1442, $14, $15, $16, $17, $18, $19, $20, $21,
+		        'sedan', CASE WHEN $3 = 'taxi' THEN 1 END, CASE WHEN $3 <> 'taxi' THEN 's' END,
+		        CASE WHEN $3 = 'taxi' THEN 0 ELSE 10 END)
 		RETURNING id`,
 		passenger, f.cityID, s.cat, service, cargo, desc, recipient, ack, s.status, s.driver, s.fare, s.fare/10,
 		tariffID, uuid.NewString(), s.created, s.accepted, s.started, s.completed, s.cancelled, cancelledBy, reason).Scan(&id)

@@ -17,6 +17,8 @@ type TelegramAPI interface {
 	runtime.MessageSender
 	runtime.ChatMenuAPI
 	AnswerCallbackQuery(ctx context.Context, p telegram.AnswerCallbackQueryParams) error
+	EditMessageText(ctx context.Context, p telegram.EditMessageTextParams) error
+	EditMessageReplyMarkup(ctx context.Context, chatID, messageID int64, markup *telegram.InlineKeyboardMarkup) error
 	GetFile(ctx context.Context, fileID string) (*telegram.File, error)
 	DownloadFile(ctx context.Context, filePath string, maxBytes int64) ([]byte, error)
 }
@@ -28,6 +30,7 @@ type API interface {
 	DriverSummary(ctx context.Context, tgID int64) (botapi.DriverSummary, error)
 	SetAvailability(ctx context.Context, tgID int64, online bool) (botapi.Availability, error)
 	DriverOrders(ctx context.Context, tgID int64, limit int) (botapi.AvailableOrders, error)
+	AcceptOrder(ctx context.Context, tgID int64, orderID string) (botapi.AcceptResult, error)
 	VerifyContact(ctx context.Context, tgID int64, phone string, contactUserID int64) (botapi.ContactResult, error)
 	ReportLocation(ctx context.Context, tgID int64, in botapi.LocationReport) error
 	UploadTopUpReceipt(ctx context.Context, tgID int64, fileName string, data []byte) (botapi.TopUpReceiptResult, error)

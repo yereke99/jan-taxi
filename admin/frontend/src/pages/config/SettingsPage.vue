@@ -1,8 +1,9 @@
 <!--
   Runtime settings built from GET /admin/settings, grouped by area
-  (Kaspi payee and company requisites, top-ups and automatic crediting from
-  receipts, radius dispatch, …). Changed values are saved together in one
-  PATCH; "default" restores the environment or built-in value (PATCH key: null).
+  (welcome bonus and commission first, Kaspi payee and company requisites,
+  top-ups and automatic crediting from receipts, radius dispatch, …). Changed
+  values are saved together in one PATCH; "default" restores the environment
+  or built-in value (PATCH key: null).
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
@@ -13,8 +14,10 @@ import { AppButton, Card, StateView, confirmAction, toast } from '../../componen
 import { useErrors } from '../../composables/useErrors'
 import { useFormat } from '../../composables/useFormat'
 import { useResource } from '../../composables/useResource'
+import BonusDialog from '../drivers/BonusDialog.vue'
+import BonusCommissionCard from './BonusCommissionCard.vue'
 import SettingField from './SettingField.vue'
-import { DISPATCH_KEYS, SETTING_GROUPS, fromDraft, groupOf, radiusSchedule, sameJSON, toDraft, type Draft } from './settingsModel'
+import { DISPATCH_KEYS, SETTING_GROUPS, fromDraft, groupOf, intOutOfRange, radiusSchedule, sameJSON, toDraft, type Draft } from './settingsModel'
 
 const { t, te } = useI18n()
 const errors = useErrors()
@@ -25,6 +28,7 @@ void res.reload()
 const drafts = ref<Record<string, Draft>>({})
 const fieldErrors = ref<Record<string, string>>({})
 const saving = ref(false)
+const bonusOpen = ref(false)
 
 const items = computed<SettingItem[]>(() => res.data.value?.items ?? [])
 watch(items, (list) => {
@@ -32,8 +36,11 @@ watch(items, (list) => {
   fieldErrors.value = {}
 })
 
+/** Welcome bonus and commission keys, shown in their own block. */
+const ruleItems = computed(() => items.value.filter((i) => groupOf(i.key) === 'rules'))
+
 const groups = computed(() => {
-  const ids = [...SETTING_GROUPS.map((g) => g.id), 'other']
+  const ids = [...SETTING_GROUPS.map((g) => g.id).filter((id) => id !== 'rules'), 'other']
   return ids
     .map((id) => ({ id, items: items.value.filter((i) => groupOf(i.key) === id) }))
     .filter((g) => g.items.length > 0)
@@ -41,7 +48,7 @@ const groups = computed(() => {
 
 function changed(item: SettingItem): boolean {
   const d = drafts.value[item.key]
-  if (d === undefined) return false
+  if (d === undefined || item.read_only) return false
   const v = fromDraft(item, d)
   return 'invalid' in v || !sameJSON(v.value, item.value)
 }
@@ -75,6 +82,7 @@ async function save(): Promise<void> {
   for (const item of changedItems.value) {
     const v = fromDraft(item, drafts.value[item.key]!)
     if ('invalid' in v) local[item.key] = v.invalid
+    else if (intOutOfRange(item, v.value)) local[item.key] = 'out_of_range'
     else body[item.key] = v.value
   }
   // Same rule as the API: the maximum radius may not be below the starting one.
@@ -123,6 +131,16 @@ function groupTitle(id: string): string {
   <section class="jt-page settings">
     <StateView v-if="!res.data.value" :loading="res.loading.value" :error="res.error.value" @retry="res.reload()" />
     <template v-else>
+      <BonusCommissionCard
+        v-if="ruleItems.length"
+        :items="ruleItems"
+        :drafts="drafts"
+        :errors="fieldErrors"
+        :changed="changed"
+        @update="(key, v) => (drafts[key] = v)"
+        @reset="resetDefault"
+        @grant="bonusOpen = true"
+      />
       <Card v-for="g in groups" :key="g.id" :title="groupTitle(g.id)" :subtitle="te(`settings.group_${g.id}_hint`, 'kk') ? t(`settings.group_${g.id}_hint`) : ''">
         <SettingField
           v-for="item in g.items"
@@ -146,6 +164,7 @@ function groupTitle(id: string): string {
           <p v-else class="jt-muted">{{ t('settings.preview_invalid') }}</p>
         </div>
       </Card>
+      <BonusDialog v-model:open="bonusOpen" />
       <div v-if="changedItems.length" class="savebar jt-glass" role="region" :aria-label="t('settings.unsaved', { n: changedItems.length })">
         <span>{{ t('settings.unsaved', { n: changedItems.length }) }}</span>
         <div class="jt-row">

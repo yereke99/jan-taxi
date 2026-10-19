@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
+	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
 	"github.com/yereke99/jantaxi/admin/backend/internal/pricing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/routing"
+	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 )
 
 // embiCenter is the map default when no active city is configured yet.
@@ -55,7 +57,20 @@ func (a *App) wireRouting() error {
 	h.MountApp(a.AnyApp)          // GET /geo/search, GET /geo/reverse
 	h.MountPassenger(a.Passenger) // POST /routes/preview
 
-	pricing.NewAdminHandler(a.Pool).MountAdmin(a.Admin) // /admin/tariffs
+	// Arrival estimates of drivers who took an order (§22.6): the road time
+	// from the driver's latest fix to pickup A, recomputed while they drive.
+	a.ETA = dispatch.NewArrivalETA(a.Pool, func(ctx context.Context, from, to geo.Point) (int, error) {
+		r, err := osrm.Route(ctx, []geo.Point{from, to})
+		return r.DurationS, err
+	}, a.Log)
+	eta := a.ETA
+	a.AddJob("driver_eta", dispatch.ETAJobInterval, func(ctx context.Context) error {
+		_, err := eta.RefreshDue(ctx)
+		return err
+	})
+
+	pricing.NewAdminHandler(a.Pool).MountAdmin(a.Admin)        // /admin/tariffs
+	vehicleclasses.NewAdminHandler(a.Pool).MountAdmin(a.Admin) // /admin/vehicle-classes
 
 	a.AddJob("quote_cleanup", time.Hour, func(ctx context.Context) error {
 		n, err := pricing.CleanupQuotes(ctx, a.Pool, quoteRetention)

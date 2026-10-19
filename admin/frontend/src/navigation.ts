@@ -14,6 +14,7 @@ import {
   Settings,
   ShieldCheck,
   Tag,
+  Truck,
   Users,
   Wallet,
 } from '@lucide/vue'
@@ -45,6 +46,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { name: 'ledger', path: '/ledger', titleKey: 'nav.ledger', perm: 'finance.view', icon: BookOpen, section: 'finance' },
   { name: 'cities', path: '/cities', titleKey: 'nav.cities', perm: 'config.manage', icon: Map, section: 'config' },
   { name: 'places', path: '/places', titleKey: 'nav.places', perm: 'config.manage', icon: MapPin, section: 'config' },
+  { name: 'vehicle-classes', path: '/vehicle-classes', titleKey: 'nav.vehicle_classes', perm: 'config.manage', icon: Truck, section: 'config' },
   { name: 'tariffs', path: '/tariffs', titleKey: 'nav.tariffs', perm: 'dashboard.view', icon: Tag, section: 'config' },
   { name: 'settings', path: '/settings', titleKey: 'nav.settings', perm: 'config.manage', icon: Settings, section: 'config' },
   { name: 'notifications', path: '/notifications', titleKey: 'nav.notifications', perm: 'orders.manage', icon: Bell, section: 'system' },

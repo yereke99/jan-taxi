@@ -44,7 +44,7 @@ func TestCompleteRegistrationAndApproval(t *testing.T) {
 		res.Body["can_submit"] != false || res.Body["editable"] != true {
 		t.Fatalf("empty registration: %s", res)
 	}
-	if got := strs(res.Body["missing_fields"]); len(got) != 10 {
+	if got := strs(res.Body["missing_fields"]); len(got) != 11 {
 		t.Fatalf("missing fields before start: %v", got)
 	}
 
@@ -143,7 +143,7 @@ func TestSubmitIncompleteListsMissingFields(t *testing.T) {
 	if res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "registration_incomplete" {
 		t.Fatalf("submit incomplete: %s", res)
 	}
-	want := []string{"avatar", "last_name", "phone", "id_front", "id_back", "vehicle_make_model", "vehicle_color", "vehicle_plate", "vehicle_photos"}
+	want := []string{"avatar", "last_name", "phone", "id_front", "id_back", "vehicle_class", "vehicle_make_model", "vehicle_color", "vehicle_plate", "vehicle_photos"}
 	if got := strs(res.Details()["missing_fields"]); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("missing_fields = %v, want %v", got, want)
 	}

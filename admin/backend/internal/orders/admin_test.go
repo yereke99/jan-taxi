@@ -20,10 +20,10 @@ func (e *env) audits(action, entityID string) int {
 	return e.count(`SELECT count(*) FROM admin_audit_logs WHERE action = $1 AND entity_id = $2`, action, entityID)
 }
 
-// TestAdminReassignMovesReservation: re-assigning an accepted order releases
-// the first driver's reservation, reserves on the new driver and tells
-// everyone; only the new driver is charged on completion.
-func TestAdminReassignMovesReservation(t *testing.T) {
+// TestAdminReassignChargesNewDriver: re-assigning an accepted order charges
+// the new driver the commission (§22.2); the previous driver keeps having
+// paid unless the operator refunds it, and everyone is told.
+func TestAdminReassignChargesNewDriver(t *testing.T) {
 	e := newEnv(t)
 	a := e.driver(1000, true)
 	b := e.driver(1000, true)
@@ -36,25 +36,21 @@ func TestAdminReassignMovesReservation(t *testing.T) {
 	var ao orders.AdminOrder
 	r.decode(t, &ao)
 	if ao.Status != "accepted" || ao.Driver == nil || ao.Driver.ID != b.DriverID || ao.ArrivedAt != nil ||
-		ao.Reservation == nil || ao.Reservation.Status != "active" || ao.Reservation.Amount != 80 || len(ao.Warnings) != 0 {
+		ao.Reservation != nil || ao.CommissionAmount != 50 || ao.CommissionMode != "fixed" || len(ao.Warnings) != 0 {
 		t.Fatalf("reassigned order: %+v", ao)
 	}
-	if bal, res := e.wallet(a.DriverID); bal != 1000 || res != 0 {
+	if bal, res := e.wallet(a.DriverID); bal != 950 || res != 0 {
 		t.Fatalf("previous driver wallet %d/%d", bal, res)
 	}
-	if bal, res := e.wallet(b.DriverID); bal != 1000 || res != 80 {
+	if bal, res := e.wallet(b.DriverID); bal != 950 || res != 0 {
 		t.Fatalf("new driver wallet %d/%d", bal, res)
 	}
-	var types []string
-	for _, l := range ao.Ledger {
-		types = append(types, l.EntryType)
-	}
-	if len(types) != 3 || types[0] != "commission_reserve" || types[1] != "commission_release" || types[2] != "commission_reserve" ||
-		ao.Ledger[1].DriverID != a.DriverID || ao.Ledger[2].DriverID != b.DriverID {
+	if len(ao.Ledger) != 2 || ao.Ledger[0].EntryType != "commission_charge" || ao.Ledger[0].DriverID != a.DriverID ||
+		ao.Ledger[1].EntryType != "commission_charge" || ao.Ledger[1].DriverID != b.DriverID {
 		t.Fatalf("ledger: %+v", ao.Ledger)
 	}
-	if got := e.count(`SELECT count(*) FROM wallet_reservations WHERE order_id = $1 AND status = 'active'`, o.ID); got != 1 {
-		t.Fatalf("active reservations = %d", got)
+	if got := e.count(`SELECT count(*) FROM wallet_reservations WHERE order_id = $1`, o.ID); got != 0 {
+		t.Fatalf("reservations = %d", got)
 	}
 	if e.outbox("order_cancelled_driver", a.UserID) != 1 || e.outbox("order_accepted_driver", b.UserID) != 1 ||
 		e.outbox("order_accepted_passenger", pid) != 2 {
@@ -74,20 +70,39 @@ func TestAdminReassignMovesReservation(t *testing.T) {
 	e.expect(e.do(a.c, http.MethodPost, path("/driver/orders/%s/start", o.ID), nil), http.StatusNotFound, "not_found")
 	e.expect(e.do(b.c, http.MethodGet, "/driver/orders/active", nil), http.StatusOK, "")
 
-	// Assigning the same driver again, or once the trip started, is refused.
+	// Assigning the same driver again is refused; another re-assignment with
+	// refund_commission returns what b paid.
 	r = e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/assign", o.ID), map[string]any{"driver_id": b.DriverID})
 	e.expect(r, http.StatusConflict, "conflict")
-	e.expect(e.do(b.c, http.MethodPost, path("/driver/orders/%s/start", o.ID), nil), http.StatusOK, "")
 	c := e.driver(1000, true)
-	e.expect(e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/assign", o.ID), map[string]any{"driver_id": c.DriverID}),
+	r = e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/assign", o.ID),
+		map[string]any{"driver_id": c.DriverID, "refund_commission": true})
+	e.expect(r, http.StatusOK, "")
+	if bal, _ := e.wallet(b.DriverID); bal != 1000 {
+		t.Fatalf("refunded driver balance %d", bal)
+	}
+	if bal, _ := e.wallet(c.DriverID); bal != 950 {
+		t.Fatalf("third driver balance %d", bal)
+	}
+	if e.count(`SELECT count(*) FROM notification_outbox WHERE template = 'order_cancelled_driver' AND user_id = $1 AND params->>'refunded' = '50'`, b.UserID) != 1 {
+		t.Fatal("the refunded driver was not told about the refund")
+	}
+
+	// Once the trip started it cannot be re-assigned.
+	e.expect(e.do(c.c, http.MethodPost, path("/driver/orders/%s/start", o.ID), nil), http.StatusOK, "")
+	d := e.driver(1000, true)
+	e.expect(e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/assign", o.ID), map[string]any{"driver_id": d.DriverID}),
 		http.StatusConflict, "invalid_transition")
 
-	e.expect(e.do(b.c, http.MethodPost, path("/driver/orders/%s/complete", o.ID), nil), http.StatusOK, "")
-	if bal, res := e.wallet(a.DriverID); bal != 1000 || res != 0 {
-		t.Fatalf("previous driver charged: %d/%d", bal, res)
-	}
-	if bal, res := e.wallet(b.DriverID); bal != 920 || res != 0 {
-		t.Fatalf("new driver wallet %d/%d", bal, res)
+	// Completion charges nobody again.
+	e.expect(e.do(c.c, http.MethodPost, path("/driver/orders/%s/complete", o.ID), nil), http.StatusOK, "")
+	for _, w := range []struct {
+		d    testDriver
+		want int64
+	}{{a, 950}, {b, 1000}, {c, 950}} {
+		if bal, res := e.wallet(w.d.DriverID); bal != w.want || res != 0 {
+			t.Fatalf("wallet %d/%d, want %d", bal, res, w.want)
+		}
 	}
 	if m, err := wallets.Reconcile(context.Background(), e.pool); err != nil || len(m) != 0 {
 		t.Fatalf("reconcile: %v %+v", err, m)
@@ -146,8 +161,8 @@ func TestAdminAssignChecks(t *testing.T) {
 	if e.audits("order.assign", o.ID.String()) != 1 {
 		t.Fatal("assignment not audited")
 	}
-	if _, res := e.wallet(offline.DriverID); res != 80 {
-		t.Fatalf("reserved %d", res)
+	if bal, res := e.wallet(offline.DriverID); bal != 950 || res != 0 {
+		t.Fatalf("assigned driver wallet %d/%d", bal, res)
 	}
 }
 
@@ -197,15 +212,17 @@ func testDriverWithStatus(e *env, status string) testDriver {
 	return d
 }
 
-// TestAdminCancel: operators may cancel a trip in progress; the reservation is
-// released, both sides are told and the action is audited.
+// TestAdminCancel: operators may cancel a trip in progress; the commission
+// stays charged unless the operator refunds it, both sides are told and the
+// action is audited.
 func TestAdminCancel(t *testing.T) {
 	e := newEnv(t)
 	drv := e.driver(1000, true)
 	o, pid, pc := e.order(embiStops[:2], 800)
 	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil), http.StatusOK, "")
 	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/start", o.ID), nil), http.StatusOK, "")
-	e.expect(e.do(pc, http.MethodPost, path("/orders/%s/cancel", o.ID), nil), http.StatusConflict, "invalid_transition")
+	e.expect(e.do(pc, http.MethodPost, path("/orders/%s/cancel", o.ID), cancelBody("changed_plans")),
+		http.StatusConflict, "invalid_transition")
 
 	r := e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/cancel", o.ID), map[string]any{})
 	e.expect(r, http.StatusUnprocessableEntity, "validation_failed")
@@ -213,11 +230,11 @@ func TestAdminCancel(t *testing.T) {
 	e.expect(r, http.StatusOK, "")
 	var ao orders.AdminOrder
 	r.decode(t, &ao)
-	if ao.Status != "cancelled" || ao.CancelledBy == nil || *ao.CancelledBy != "admin" || ao.Reservation == nil ||
-		ao.Reservation.Status != "released" || ao.DriverLocation != nil {
+	if ao.Status != "cancelled" || ao.CancelledBy == nil || *ao.CancelledBy != "admin" || ao.Reservation != nil ||
+		ao.DriverLocation != nil || ao.CancelReasonCode != nil {
 		t.Fatalf("cancelled: %+v", ao)
 	}
-	if bal, res := e.wallet(drv.DriverID); bal != 1000 || res != 0 {
+	if bal, res := e.wallet(drv.DriverID); bal != 950 || res != 0 {
 		t.Fatalf("wallet %d/%d", bal, res)
 	}
 	if e.outbox("order_cancelled_passenger", pid) != 1 || e.outbox("order_cancelled_driver", drv.UserID) != 1 {
@@ -228,6 +245,32 @@ func TestAdminCancel(t *testing.T) {
 	}
 	// The driver is free again.
 	e.expect(e.do(drv.c, http.MethodGet, "/driver/orders/active", nil), http.StatusNoContent, "")
+
+	// With refund_commission the driver gets the commission back, once.
+	o2, _, _ := e.order(embiStops[1:3], 700)
+	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o2.ID), nil), http.StatusOK, "")
+	if bal, _ := e.wallet(drv.DriverID); bal != 900 {
+		t.Fatalf("balance after second accept %d", bal)
+	}
+	r = e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/cancel", o2.ID),
+		map[string]any{"reason": "Жүргізуші көлігі бұзылды", "refund_commission": true})
+	e.expect(r, http.StatusOK, "")
+	r.decode(t, &ao)
+	if bal, res := e.wallet(drv.DriverID); bal != 950 || res != 0 {
+		t.Fatalf("wallet after refund %d/%d", bal, res)
+	}
+	if len(ao.Ledger) != 2 || ao.Ledger[1].EntryType != "commission_refund" || ao.Ledger[1].BalanceDelta != 50 {
+		t.Fatalf("refund ledger: %+v", ao.Ledger)
+	}
+	if e.count(`SELECT count(*) FROM notification_outbox WHERE template = 'order_cancelled_driver' AND user_id = $1 AND params->>'refunded' = '50'`, drv.UserID) != 1 {
+		t.Fatal("driver not told about the refund")
+	}
+	if e.count(`SELECT count(*) FROM admin_audit_logs WHERE action = 'order.cancel' AND entity_id = $1 AND after->>'refunded_commission' = '50'`, o2.ID.String()) != 1 {
+		t.Fatal("refund not audited")
+	}
+	if m, err := wallets.Reconcile(context.Background(), e.pool); err != nil || len(m) != 0 {
+		t.Fatalf("reconcile: %v %+v", err, m)
+	}
 }
 
 // TestAdminListAndSearch covers filters and q (number, id, phones, driver code).

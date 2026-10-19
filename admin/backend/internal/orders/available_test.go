@@ -182,8 +182,8 @@ func TestRadiusDispatchIgnoresCity(t *testing.T) {
 	if got := e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1 AND driver_id = $2 AND status = 'lost'`, o.ID, local.DriverID); got != 1 {
 		t.Fatal("the other offer was not closed")
 	}
-	if _, res := e.wallet(visitor.DriverID); res != 80 {
-		t.Fatalf("reserved %d", res)
+	if bal, res := e.wallet(visitor.DriverID); bal != 950 || res != 0 {
+		t.Fatalf("wallet %d/%d", bal, res)
 	}
 }
 

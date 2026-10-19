@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { DriverRegistration, RegistrationField } from '../../api/types'
+import type { VehicleClassOption } from '../vehicle/classes'
 import { matchColor } from './colors'
 import {
+  applyClass,
   buildUpdate,
   editableFields,
   firstOpenStep,
@@ -11,9 +13,12 @@ import {
   isStepComplete,
   isValidPlate,
   normalizePlateInput,
+  parseLitres,
+  sameUpdate,
   stepsForFields,
   validatePersonal,
   validateVehicle,
+  validateVehicleClass,
   visibleSteps,
   type RegistrationForm,
 } from './form'
@@ -39,6 +44,10 @@ function registration(over: Partial<DriverRegistration> = {}): DriverRegistratio
       color: 'Ақ',
       plate: '123 ABC 04',
       plate_normalized: '123ABC04',
+      vehicle_class: 'sedan',
+      vehicle_class_name: { kk: 'Седан', ru: 'Седан', en: 'Sedan' },
+      seats: 4,
+      cargo_volume_l: 400,
       photos: [{ id: 'f4', kind: 'main', url: '/api/v1/driver/files/f4', width: 1, height: 1, created_at: '' }],
     },
     corrections: [],
@@ -58,6 +67,22 @@ function registration(over: Partial<DriverRegistration> = {}): DriverRegistratio
 function form(over: Partial<RegistrationForm> = {}): RegistrationForm {
   return { ...formFromRegistration(registration()), ...over }
 }
+
+function vclass(code: string, seatsDefault: number, seatsMax: number, cargo: number): VehicleClassOption {
+  return {
+    code,
+    name: { kk: code, ru: code, en: code },
+    examples: '',
+    icon: 'sedan',
+    seats_default: seatsDefault,
+    seats_max: seatsMax,
+    cargo_volume_l_default: cargo,
+    passenger_capable: true,
+    cargo_capable: true,
+  }
+}
+
+const CLASSES = [vclass('sedan', 4, 4, 400), vclass('minivan', 7, 8, 800), vclass('truck', 2, 2, 15000)]
 
 describe('plates (KZ format 123 ABC 04)', () => {
   it.each([
@@ -96,13 +121,74 @@ describe('validation', () => {
   })
 })
 
+describe('vehicle class step', () => {
+  it('reads the stored class, seats and cargo into the form', () => {
+    expect(form()).toMatchObject({ vehicle_class: 'sedan', seats: 4, cargo_volume_l: '400' })
+    const none = registration({ vehicle: { ...registration().vehicle, vehicle_class: null, vehicle_class_name: null, seats: null, cargo_volume_l: null } })
+    expect(formFromRegistration(none)).toMatchObject({ vehicle_class: '', seats: null, cargo_volume_l: '' })
+  })
+
+  it('a chosen class brings its default seats and cargo space', () => {
+    const f = form({ vehicle_class: '', seats: null, cargo_volume_l: '' })
+    applyClass(f, CLASSES[1]!)
+    expect(f).toMatchObject({ vehicle_class: 'minivan', seats: 7, cargo_volume_l: '800' })
+    f.seats = 8
+    applyClass(f, CLASSES[1]!) // the same class again keeps the driver's values
+    expect(f.seats).toBe(8)
+  })
+
+  it('bounds seats by the class and cargo by the API maximum', () => {
+    expect(validateVehicleClass(form(), CLASSES)).toEqual({})
+    expect(validateVehicleClass(form({ vehicle_class: '' }), CLASSES)).toEqual({ vehicle_class: 'required' })
+    expect(validateVehicleClass(form({ vehicle_class: 'minivan', seats: 8 }), CLASSES)).toEqual({})
+    expect(validateVehicleClass(form({ vehicle_class: 'minivan', seats: 9 }), CLASSES)).toEqual({ seats: 'too_large' })
+    expect(validateVehicleClass(form({ seats: 0 }), CLASSES)).toEqual({ seats: 'too_small' })
+    expect(validateVehicleClass(form({ cargo_volume_l: '' }), CLASSES)).toEqual({ cargo_volume_l: 'required' })
+    expect(validateVehicleClass(form({ cargo_volume_l: '1,5' }), CLASSES)).toEqual({ cargo_volume_l: 'invalid' })
+    expect(validateVehicleClass(form({ cargo_volume_l: '100001' }), CLASSES)).toEqual({ cargo_volume_l: 'too_large' })
+    expect(validateVehicleClass(form({ cargo_volume_l: '0' }), CLASSES)).toEqual({})
+  })
+
+  it('accepts a class no longer offered only when it is the stored one', () => {
+    const f = form({ vehicle_class: 'universal' })
+    expect(validateVehicleClass(f, CLASSES, 'universal')).toEqual({})
+    expect(validateVehicleClass(f, CLASSES, 'sedan')).toEqual({ vehicle_class: 'invalid' })
+    // Classes not loaded: the class cannot be checked, seats use the API limit.
+    expect(validateVehicleClass(form({ seats: 40 }), [])).toEqual({})
+  })
+
+  it('parses litres the way drivers type them', () => {
+    expect(parseLitres('1500')).toBe(1500)
+    expect(parseLitres(' 1 500 л')).toBe(1500)
+    expect(parseLitres('600 L')).toBe(600)
+    expect(parseLitres('1.5')).toBeNull()
+    expect(parseLitres('')).toBeNull()
+  })
+
+  it('sends the class fields only once chosen, and compares them for autosave', () => {
+    const body = buildUpdate(registration(), form({ vehicle_class: 'minivan', seats: 8, cargo_volume_l: '1 000' }))
+    expect(body.vehicle).toMatchObject({ vehicle_class: 'minivan', seats: 8, cargo_volume_l: 1000 })
+    const none = buildUpdate(registration(), form({ vehicle_class: '', seats: null, cargo_volume_l: '' }))
+    expect(none.vehicle).not.toHaveProperty('vehicle_class')
+    expect(sameUpdate(body, buildUpdate(registration(), form({ vehicle_class: 'minivan', seats: 8, cargo_volume_l: '1000' })))).toBe(true)
+    expect(sameUpdate(body, buildUpdate(registration(), form({ vehicle_class: 'minivan', seats: 7, cargo_volume_l: '1000' })))).toBe(false)
+  })
+
+  it('is complete with a class and valid capacity', () => {
+    const ctx = (f: RegistrationForm) => ({ registration: registration(), form: f, consentGiven: true, classes: CLASSES })
+    expect(isStepComplete('vehicle_class', ctx(form()))).toBe(true)
+    expect(isStepComplete('vehicle_class', ctx(form({ vehicle_class: '' })))).toBe(false)
+    expect(isStepComplete('vehicle_class', ctx(form({ seats: 5 })))).toBe(false)
+  })
+})
+
 describe('correction locking', () => {
   const flagged = (fields: RegistrationField[]) =>
     registration({ status: 'changes_requested', corrections: fields.map((field) => ({ field, reason: 'other', comment: null })) })
 
   it('everything is editable in draft (and before the profile exists)', () => {
-    expect(editableFields(registration()).size).toBe(10)
-    expect(editableFields(registration({ id: null, status: 'draft' })).size).toBe(10)
+    expect(editableFields(registration()).size).toBe(11)
+    expect(editableFields(registration({ id: null, status: 'draft' })).size).toBe(11)
   })
 
   it('only flagged fields are editable in changes_requested', () => {
@@ -125,19 +211,33 @@ describe('correction locking', () => {
     expect(body.first_name).toBe('Әлі')
     expect(body.vehicle.make).toBe('Toyota')
     expect(body.vehicle.plate).toBe('777 KZ 01')
+    // The class was not flagged: it is not sent, so the stored one stays.
+    const classBody = buildUpdate(r, form({ vehicle_class: 'minivan', seats: 7 }))
+    expect(classBody.vehicle).not.toHaveProperty('vehicle_class')
+    expect(classBody.vehicle).not.toHaveProperty('seats')
+  })
+
+  it('a flagged vehicle_class unlocks class, seats and cargo together', () => {
+    const e = editableFields(flagged(['vehicle_class']))
+    expect(isFormFieldLocked(e, 'vehicle_class')).toBe(false)
+    expect(isFormFieldLocked(e, 'seats')).toBe(false)
+    expect(isFormFieldLocked(e, 'cargo_volume_l')).toBe(false)
+    expect(isFormFieldLocked(e, 'make')).toBe(true)
+    expect(visibleSteps(flagged(['vehicle_class']), true)).toEqual(['vehicle_class', 'review'])
   })
 
   it('shows only the steps with flagged fields, consent if not recorded, and review', () => {
     const r = flagged(['id_back', 'vehicle_color'])
     expect(visibleSteps(r, true)).toEqual(['documents', 'vehicle', 'review'])
     expect(visibleSteps(r, false)).toEqual(['documents', 'vehicle', 'consent', 'review'])
-    expect(visibleSteps(registration(), false)).toEqual(['personal', 'phone', 'documents', 'vehicle', 'photos', 'consent', 'review'])
+    expect(visibleSteps(registration(), false)).toEqual(['personal', 'phone', 'documents', 'vehicle_class', 'vehicle', 'photos', 'consent', 'review'])
   })
 })
 
 describe('steps', () => {
   it('maps server missing_fields back to steps in form order', () => {
     expect(stepsForFields(['vehicle_photos', 'avatar', 'phone', 'vehicle_plate'])).toEqual(['personal', 'phone', 'vehicle', 'photos'])
+    expect(stepsForFields(['vehicle_plate', 'vehicle_class'])).toEqual(['vehicle_class', 'vehicle'])
   })
 
   it('opens the first incomplete step', () => {
@@ -146,8 +246,10 @@ describe('steps', () => {
     expect(isStepComplete('personal', ctx)).toBe(true)
     expect(isStepComplete('phone', ctx)).toBe(false)
     expect(firstOpenStep(visibleSteps(r, false), ctx)).toBe('phone')
-    const done = { registration: registration(), form: form(), consentGiven: true }
+    const done = { registration: registration(), form: form(), consentGiven: true, classes: CLASSES }
     expect(firstOpenStep(visibleSteps(registration(), false), done)).toBe('review')
+    const noClass = { ...done, form: form({ vehicle_class: '', seats: null, cargo_volume_l: '' }) }
+    expect(firstOpenStep(visibleSteps(registration(), false), noClass)).toBe('vehicle_class')
     expect(isStepComplete('review', done)).toBe(true)
   })
 

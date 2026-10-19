@@ -16,6 +16,7 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
+	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 )
 
 // QuoteTTL is how long a quote can be turned into an order.
@@ -45,17 +46,53 @@ type Leg struct {
 type StoredQuote struct {
 	ID, UserID, CityID, TariffID uuid.UUID
 	Category                     string
-	Stops                        []QuoteStop
-	StopsHash                    string
-	DistanceM, DurationS         int
-	Legs                         []Leg
-	Geometry                     json.RawMessage // GeoJSON LineString
-	BBox                         [4]float64      // [min_lon, min_lat, max_lon, max_lat]
-	RecommendedFare              int
-	MinFare, MaxFare, FareStep   int
-	CommissionBps                int
-	ExpiresAt                    time.Time
-	UsedAt                       *time.Time
+	Load
+	Stops                      []QuoteStop
+	StopsHash                  string
+	DistanceM, DurationS       int
+	Legs                       []Leg
+	Geometry                   json.RawMessage // GeoJSON LineString
+	BBox                       [4]float64      // [min_lon, min_lat, max_lon, max_lat]
+	RecommendedFare            int
+	MinFare, MaxFare, FareStep int
+	CommissionBps              int
+	// Locality is the settlement of the pickup from reverse geocoding (nil
+	// when unknown); the order copies it.
+	Locality  *string
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+}
+
+// Load is what an order carries (ARCHITECTURE §21.2): the vehicle class it
+// asks for, the passenger count of a taxi order (nil otherwise) and the cargo
+// size and volume of a parcel/other order (nil and 0 for taxi).
+type Load struct {
+	VehicleClass   string
+	PassengerCount *int
+	CargoSize      *string
+	CargoVolumeL   int
+}
+
+// normalizeLoad keeps only the part of l that fits category and fills the
+// defaults: one passenger for taxi, a small parcel otherwise.
+func normalizeLoad(category string, l Load) Load {
+	if category == CategoryTaxi {
+		n := 1
+		if l.PassengerCount != nil {
+			n = *l.PassengerCount
+		}
+		return Load{VehicleClass: l.VehicleClass, PassengerCount: &n}
+	}
+	size := vehicleclasses.DefaultCargoSize
+	if l.CargoSize != nil {
+		size = *l.CargoSize
+	}
+	vol, ok := vehicleclasses.CargoVolumeL(size)
+	if !ok {
+		size = vehicleclasses.DefaultCargoSize
+		vol, _ = vehicleclasses.CargoVolumeL(size)
+	}
+	return Load{VehicleClass: l.VehicleClass, CargoSize: &size, CargoVolumeL: vol}
 }
 
 // FareOptions returns the fares the passenger may choose for this quote.
@@ -94,7 +131,8 @@ func StopsHash(stops []QuoteStop) string {
 type NewQuote struct {
 	UserID    uuid.UUID
 	CityID    uuid.UUID
-	Tariff    Tariff
+	Tariff    Tariff // its VehicleClass is the quote's class
+	Load      Load   // VehicleClass is taken from Tariff
 	Stops     []QuoteStop
 	DistanceM int
 	DurationS int
@@ -102,6 +140,7 @@ type NewQuote struct {
 	Geometry  json.RawMessage
 	BBox      [4]float64
 	Fare      Fare
+	Locality  *string       // settlement of the pickup; nil when unknown
 	TTL       time.Duration // QuoteTTL when zero
 }
 
@@ -146,23 +185,25 @@ func CreateQuote(ctx context.Context, q db.Querier, in NewQuote) (StoredQuote, e
 	if err != nil {
 		return StoredQuote{}, fmt.Errorf("encode bbox: %w", err)
 	}
+	load := normalizeLoad(in.Tariff.Category, in.Load)
+	load.VehicleClass = in.Tariff.VehicleClass
 	sq := StoredQuote{
-		UserID: in.UserID, CityID: in.CityID, TariffID: in.Tariff.ID, Category: in.Tariff.Category,
+		UserID: in.UserID, CityID: in.CityID, TariffID: in.Tariff.ID, Category: in.Tariff.Category, Load: load,
 		Stops: stops, StopsHash: StopsHash(stops), DistanceM: in.DistanceM, DurationS: in.DurationS,
 		Legs: append([]Leg(nil), in.Legs...), Geometry: in.Geometry, BBox: in.BBox,
 		RecommendedFare: in.Fare.Recommended, MinFare: in.Fare.Min, MaxFare: in.Fare.Max, FareStep: in.Fare.Step,
-		CommissionBps: in.Tariff.CommissionBps,
+		CommissionBps: in.Tariff.CommissionBps, Locality: in.Locality,
 	}
 	err = q.QueryRow(ctx, `
 		INSERT INTO fare_quotes (user_id, city_id, tariff_id, category, stops, stops_hash, distance_m, duration_s,
 		                         legs, geometry, bbox, recommended_fare, min_fare, max_fare, fare_step, commission_bps,
-		                         expires_at)
+		                         expires_at, vehicle_class, passenger_count, cargo_size, cargo_volume_l, locality)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-		        now() + make_interval(secs => $17))
+		        now() + make_interval(secs => $17), $18, $19, $20, $21, $22)
 		RETURNING id, expires_at`,
 		sq.UserID, sq.CityID, sq.TariffID, sq.Category, stopsJSON, sq.StopsHash, sq.DistanceM, sq.DurationS,
 		legsJSON, []byte(sq.Geometry), bboxJSON, sq.RecommendedFare, sq.MinFare, sq.MaxFare, sq.FareStep,
-		sq.CommissionBps, ttl.Seconds(),
+		sq.CommissionBps, ttl.Seconds(), sq.VehicleClass, sq.PassengerCount, sq.CargoSize, sq.CargoVolumeL, sq.Locality,
 	).Scan(&sq.ID, &sq.ExpiresAt)
 	if err != nil {
 		return StoredQuote{}, fmt.Errorf("insert quote: %w", err)
@@ -180,17 +221,19 @@ func LoadQuoteForUpdate(ctx context.Context, tx pgx.Tx, quoteID, userID uuid.UUI
 		stopsJSON, legsJSON, bbox []byte
 		geometry                  []byte
 		expired                   bool
+		passengers                *int16
 	)
 	err := tx.QueryRow(ctx, `
 		SELECT id, user_id, city_id, tariff_id, category, stops, stops_hash, distance_m, duration_s, legs, geometry,
 		       bbox, recommended_fare, min_fare, max_fare, fare_step, commission_bps, expires_at, used_at,
-		       expires_at <= now()
+		       expires_at <= now(), vehicle_class, passenger_count, cargo_size, cargo_volume_l, locality
 		FROM fare_quotes
 		WHERE id = $1 AND user_id = $2
 		FOR UPDATE`, quoteID, userID).Scan(
 		&sq.ID, &sq.UserID, &sq.CityID, &sq.TariffID, &sq.Category, &stopsJSON, &sq.StopsHash, &sq.DistanceM,
 		&sq.DurationS, &legsJSON, &geometry, &bbox, &sq.RecommendedFare, &sq.MinFare, &sq.MaxFare, &sq.FareStep,
-		&sq.CommissionBps, &sq.ExpiresAt, &sq.UsedAt, &expired)
+		&sq.CommissionBps, &sq.ExpiresAt, &sq.UsedAt, &expired, &sq.VehicleClass, &passengers, &sq.CargoSize,
+		&sq.CargoVolumeL, &sq.Locality)
 	if db.IsNoRows(err) {
 		return StoredQuote{}, ErrQuoteNotFound
 	}
@@ -201,6 +244,10 @@ func LoadQuoteForUpdate(ctx context.Context, tx pgx.Tx, quoteID, userID uuid.UUI
 		return StoredQuote{}, ErrQuoteExpired
 	}
 	sq.ExpiresAt = sq.ExpiresAt.UTC()
+	if passengers != nil {
+		n := int(*passengers)
+		sq.PassengerCount = &n
+	}
 
 	var raw []storedStop
 	if err := json.Unmarshal(stopsJSON, &raw); err != nil {

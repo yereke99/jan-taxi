@@ -9,13 +9,15 @@ export type Draft = string | boolean | LocalizedText | string[]
 
 /** Groups in display order; a key belongs to the group with its longest matching prefix. */
 export const SETTING_GROUPS: ReadonlyArray<{ id: string; prefixes: string[] }> = [
+  // Welcome bonus and commission (§22.7) have their own block at the top.
+  { id: 'rules', prefixes: ['driver.welcome_bonus', 'commission.mode', 'commission.fixed_'] },
   { id: 'kaspi', prefixes: ['kaspi.'] },
   { id: 'company', prefixes: ['company.'] },
   { id: 'topup', prefixes: ['topup.'] },
   { id: 'topup_auto', prefixes: ['topup.auto_', 'topup.receipt_'] },
   { id: 'dispatch', prefixes: ['dispatch.'] },
   { id: 'driver', prefixes: ['driver.'] },
-  { id: 'orders', prefixes: ['routing.', 'commission.'] },
+  { id: 'orders', prefixes: ['routing.', 'commission.', 'orders.'] },
   { id: 'delivery', prefixes: ['delivery.'] },
   { id: 'support', prefixes: ['support.'] },
   { id: 'navigation', prefixes: ['navigation.'] },
@@ -27,6 +29,49 @@ export function groupOf(key: string): string {
     for (const p of g.prefixes) if (key.startsWith(p) && p.length > best.len) best = { id: g.id, len: p.length }
   }
   return best.id
+}
+
+/** Settings of the «Bonus and commission» block (§22.1, §22.2, §22.7). */
+export const RULE_KEYS = {
+  welcomeBonus: 'driver.welcome_bonus',
+  mode: 'commission.mode',
+  fixedAmount: 'commission.fixed_amount',
+  fixedMin: 'commission.fixed_min',
+  fixedMax: 'commission.fixed_max',
+} as const
+
+/** Default welcome bonus offered when the switch is turned back on (§22.1). */
+export const DEFAULT_WELCOME_BONUS = 500
+
+/**
+ * The welcome bonus is off only when its amount is 0. An empty or unfinished
+ * amount is still "on": the admin is typing a new value, so the field stays
+ * on screen (and save reports it if it is left invalid).
+ */
+export function welcomeBonusOn(draft: string): boolean {
+  return parseInteger(draft) !== 0
+}
+
+/**
+ * Effective bounds of the fixed commission: the item's constraints (the API
+ * reports the configured bounds there), else the read-only bound settings,
+ * else 50..100 ₸.
+ */
+export function commissionBounds(items: SettingItem[]): { min: number; max: number } {
+  const byKey = (k: string): SettingItem | undefined => items.find((i) => i.key === k)
+  const c = byKey(RULE_KEYS.fixedAmount)?.constraints
+  const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  return {
+    min: num(c?.min, num(byKey(RULE_KEYS.fixedMin)?.value, 50)),
+    max: num(c?.max, num(byKey(RULE_KEYS.fixedMax)?.value, 100)),
+  }
+}
+
+/** Client copy of the API range rule for int settings: out_of_range when outside constraints. */
+export function intOutOfRange(item: SettingItem, value: unknown): boolean {
+  if (item.type !== 'int' || typeof value !== 'number') return false
+  const { min, max } = item.constraints
+  return (min !== undefined && value < min) || (max !== undefined && value > max)
 }
 
 /** Dispatch radius settings (ARCHITECTURE §7). */

@@ -8,21 +8,31 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
+	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 )
 
 // orderSummary is the OpenAPI BotOrderSummary.
 type orderSummary struct {
-	ID                 uuid.UUID `json:"id"`
-	Number             int64     `json:"number"`
-	Status             string    `json:"status"`
-	Category           string    `json:"category"`
-	Fare               int64     `json:"fare"`
-	Currency           string    `json:"currency"`
-	PickupAddress      string    `json:"pickup_address"`
-	DestinationAddress string    `json:"destination_address"`
-	CreatedAt          time.Time `json:"created_at"`
+	ID                 uuid.UUID           `json:"id"`
+	Number             int64               `json:"number"`
+	Status             string              `json:"status"`
+	Category           string              `json:"category"`
+	VehicleClass       string              `json:"vehicle_class"`
+	VehicleClassName   vehicleclasses.Name `json:"vehicle_class_name"`
+	PassengerCount     *int                `json:"passenger_count"`
+	CargoSize          *string             `json:"cargo_size"`
+	Fare               int64               `json:"fare"`
+	Currency           string              `json:"currency"`
+	PickupAddress      string              `json:"pickup_address"`
+	DestinationAddress string              `json:"destination_address"`
+	// Locality is the settlement of the pickup (nil when unknown);
+	// TariffRegion is the region whose tariff priced the order.
+	Locality     *string       `json:"locality"`
+	TariffRegion cities.Region `json:"tariff_region"`
+	CreatedAt    time.Time     `json:"created_at"`
 }
 
 type orderList struct {
@@ -35,8 +45,12 @@ const stopLabel = `COALESCE(NULLIF(btrim(%[1]s.address), ''),
 
 var orderSummarySelect = fmt.Sprintf(`
 	SELECT o.id, o.number, o.status, o.category, o.fare, o.currency,
-	       COALESCE(%s, ''), COALESCE(%s, ''), o.created_at
+	       COALESCE(%s, ''), COALESCE(%s, ''), o.created_at,
+	       o.vehicle_class, ovc.name_kk, ovc.name_ru, ovc.name_en, o.passenger_count, o.cargo_size,
+	       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en
 	FROM orders o
+	JOIN vehicle_classes ovc ON ovc.code = o.vehicle_class
+	JOIN cities trc ON trc.id = o.city_id
 	LEFT JOIN order_stops p ON p.order_id = o.id AND p.seq = 0
 	LEFT JOIN LATERAL (
 		SELECT s.address, s.lat, s.lon FROM order_stops s
@@ -53,7 +67,9 @@ func queryOrderSummaries(ctx context.Context, q db.Querier, where string, args .
 	for rows.Next() {
 		var o orderSummary
 		if err := rows.Scan(&o.ID, &o.Number, &o.Status, &o.Category, &o.Fare, &o.Currency,
-			&o.PickupAddress, &o.DestinationAddress, &o.CreatedAt); err != nil {
+			&o.PickupAddress, &o.DestinationAddress, &o.CreatedAt, &o.VehicleClass, &o.VehicleClassName.KK,
+			&o.VehicleClassName.RU, &o.VehicleClassName.EN, &o.PassengerCount, &o.CargoSize, &o.Locality,
+			&o.TariffRegion.Code, &o.TariffRegion.Name.KK, &o.TariffRegion.Name.RU, &o.TariffRegion.Name.EN); err != nil {
 			return nil, fmt.Errorf("scan order summary: %w", err)
 		}
 		out = append(out, o)

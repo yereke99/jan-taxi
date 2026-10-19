@@ -2,10 +2,45 @@
 
 import { api } from '../services/api'
 import type { Category, OrderStatus, PaymentMethod } from '../utils/status'
-import type { ActorType, AdminRef, CityRef, DriverRef, LatLon, Page, Vehicle } from './common'
+import type { ActorType, AdminRef, CityRef, DriverRef, LatLon, LocalizedText, Page, TariffRegion, Vehicle } from './common'
 import { dayEnd, dayStart, opt } from './common'
 
+/**
+ * Where an order happens and which tariff priced it: `locality` is the real
+ * settlement of pickup A (reverse geocoding; null when unknown), while
+ * `tariff_region` is the city zone or the nationwide region (KAZ) whose
+ * tariff applied. `city` is the same tariff city as a reference.
+ */
+export interface OrderPlace {
+  locality: string | null
+  tariff_region: TariffRegion | null
+  city: CityRef
+}
+
+/** The tariff region of an order; older payloads only carry `city`. */
+export function orderTariffRegion(o: Pick<OrderPlace, 'tariff_region' | 'city'>): TariffRegion | null {
+  return o.tariff_region ?? (o.city ? { code: o.city.code, name: o.city.name } : null)
+}
+
 export type StopKind = 'pickup' | 'intermediate' | 'destination'
+
+/** Passenger cancellation reasons (§22.3), in the order the passenger sees them. */
+export const CANCEL_REASON_CODES = ['long_wait', 'driver_issue', 'vehicle_issue', 'changed_plans', 'other'] as const
+export type CancelReasonCode = (typeof CANCEL_REASON_CODES)[number]
+
+export type CommissionMode = 'fixed' | 'percent'
+
+/** Vehicle class and load of an order (§21): seats for taxi, cargo size for parcel/other. */
+export interface OrderLoad {
+  vehicle_class: string
+  vehicle_class_name: LocalizedText
+  /** Taxi only. */
+  passenger_count: number | null
+  /** Parcel/other only: s | m | l | xl. */
+  cargo_size: string | null
+  /** 0 for taxi. */
+  cargo_volume_l: number
+}
 
 export interface StopSummary extends LatLon {
   seq: number
@@ -29,13 +64,12 @@ export interface AdminPassengerRef {
   is_blocked: boolean
 }
 
-export interface AdminOrderListItem {
+export interface AdminOrderListItem extends OrderLoad, OrderPlace {
   id: string
   number: number
   status: OrderStatus
   category: Category
   service_type: 'passenger' | 'delivery'
-  city: CityRef
   fare: number
   currency: string
   commission_amount: number
@@ -52,6 +86,7 @@ export interface AdminOrderListItem {
   completed_at: string | null
   cancelled_at: string | null
   cancelled_by: ActorType | null
+  cancel_reason_code: CancelReasonCode | null
 }
 
 export interface LineString {
@@ -142,7 +177,7 @@ export interface OrderRating {
   created_at: string
 }
 
-export interface AdminOrder {
+export interface AdminOrder extends OrderLoad, OrderPlace {
   id: string
   number: number
   status: OrderStatus
@@ -157,13 +192,14 @@ export interface AdminOrder {
   currency: string
   commission_bps: number
   commission_amount: number
+  /** fixed: commission.fixed_amount at creation; percent: commission_bps of the fare (orders before v2). */
+  commission_mode: CommissionMode
   payment_method: PaymentMethod
   tariff_id: string
   quote_id: string | null
   distance_m: number
   duration_s: number
   stop_count: number
-  city: CityRef
   stops: Stop[]
   route: RouteSnapshot
   passenger: AdminPassengerRef
@@ -176,8 +212,14 @@ export interface AdminOrder {
   ledger: OrderLedgerRow[]
   dispute: Dispute | null
   rating: OrderRating | null
+  /** Passenger comment (or the operator's reason for an admin cancel). */
   cancel_reason: string | null
+  /** Reason the passenger chose; null for other cancellations and older orders. */
+  cancel_reason_code: CancelReasonCode | null
   cancelled_by: ActorType | null
+  /** Road time from the driver to pickup A while accepted (§22.6). */
+  driver_eta_s: number | null
+  driver_eta_at: string | null
   version: number
   created_at: string
   updated_at: string
@@ -199,6 +241,7 @@ export interface OrderFilters {
   /** Local dates YYYY-MM-DD (inclusive). */
   from?: string
   to?: string
+  /** Order number, id, phone, driver code or part of the locality of pickup A (e.g. "Алматы"). */
   q?: string
 }
 
@@ -221,11 +264,13 @@ export const ordersApi = {
   get(id: string, signal?: AbortSignal): Promise<AdminOrder> {
     return api.get(`/admin/orders/${encodeURIComponent(id)}`, { signal })
   },
-  cancel(id: string, reason: string): Promise<AdminOrder> {
-    return api.post(`/admin/orders/${encodeURIComponent(id)}/cancel`, { reason })
+  /** The driver's commission is kept unless refundCommission (§22.2). */
+  cancel(id: string, reason: string, refundCommission = false): Promise<AdminOrder> {
+    return api.post(`/admin/orders/${encodeURIComponent(id)}/cancel`, { reason, refund_commission: refundCommission })
   },
-  assign(id: string, driverId: string): Promise<AdminOrder> {
-    return api.post(`/admin/orders/${encodeURIComponent(id)}/assign`, { driver_id: driverId })
+  /** On a re-assignment, refundCommission returns the previous driver's commission; the new driver is always charged. */
+  assign(id: string, driverId: string, refundCommission = false): Promise<AdminOrder> {
+    return api.post(`/admin/orders/${encodeURIComponent(id)}/assign`, { driver_id: driverId, refund_commission: refundCommission })
   },
   openDispute(id: string, reason: string): Promise<AdminOrder> {
     return api.post(`/admin/orders/${encodeURIComponent(id)}/dispute`, { reason })

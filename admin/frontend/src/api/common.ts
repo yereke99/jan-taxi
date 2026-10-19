@@ -24,6 +24,33 @@ export interface CityRef {
   name: LocalizedText
 }
 
+/** Code of the nationwide default region: its tariffs apply wherever no city zone covers pickup A. */
+export const DEFAULT_REGION_CODE = 'KAZ'
+
+/** The city or region whose tariff priced an order. */
+export interface TariffRegion {
+  code: string
+  name: LocalizedText
+}
+
+/** True for the nationwide default region (it cannot be switched off). */
+export function isDefaultRegion(c: { code?: string | null; is_default_region?: boolean | null } | null | undefined): boolean {
+  if (!c) return false
+  return c.is_default_region === true || (c.code ?? '').toUpperCase() === DEFAULT_REGION_CODE
+}
+
+/** "48.826400, 58.144200"-like text: coordinates are never shown as a place name. */
+const COORDINATES_RE = /^\s*-?\d{1,3}(?:[.,]\d+)?\s*[,;]\s*-?\d{1,3}(?:[.,]\d+)?\s*$/
+
+/**
+ * The settlement of pickup A as the API reverse-geocoded it, trimmed; null
+ * when unknown or when the text is only coordinates.
+ */
+export function localityText(v: string | null | undefined): string | null {
+  const s = typeof v === 'string' ? v.trim() : ''
+  return s && !COORDINATES_RE.test(s) ? s : null
+}
+
 export interface AdminRef {
   id: string
   email: string
@@ -53,7 +80,15 @@ export interface FileRef {
   created_at: string
 }
 
-export interface Vehicle {
+/** Vehicle class (body type), seats and cargo space of a vehicle (§21); null until a class is chosen. */
+export interface VehicleClassFields {
+  vehicle_class: string | null
+  vehicle_class_name: LocalizedText | null
+  seats: number | null
+  cargo_volume_l: number | null
+}
+
+export interface Vehicle extends Partial<VehicleClassFields> {
   make: string
   model: string
   color: string

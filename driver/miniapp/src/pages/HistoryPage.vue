@@ -31,9 +31,15 @@ const error = shallowRef<unknown>(null)
 const totals = computed(() => {
   const done = items.value.filter((o) => o.status === 'completed')
   const fare = done.reduce((s, o) => s + o.fare, 0)
-  const commission = done.reduce((s, o) => s + o.commission_amount, 0)
-  return { count: done.length, fare, net: fare - commission }
+  // Commissions kept on cancelled orders (§22.2) count against the earnings too.
+  const commission = items.value.reduce((s, o) => s + paid(o), 0)
+  return { count: done.length, fare, commission, net: fare - commission }
 })
+
+/** Commission the wallet paid for o; a completed order always paid its own. */
+function paid(o: DriverOrderSummary): number {
+  return o.status === 'completed' ? Math.max(o.commission_charged, 0) || o.commission_amount : Math.max(o.commission_charged, 0)
+}
 
 async function load(reset: boolean): Promise<void> {
   if (loading.value || (!reset && loaded.value && !next.value)) return
@@ -79,11 +85,14 @@ onMounted(() => void load(true))
         <p class="hist__totals-label">{{ t('history.loaded_totals', { n: totals.count }) }}</p>
         <p class="hist__totals-value jt-tabular">{{ fmt.money(totals.net) }}</p>
         <p class="hist__totals-sub jt-tabular">{{ t('history.fare') }}: {{ fmt.money(totals.fare) }}</p>
+        <p v-if="totals.commission > 0" class="hist__totals-sub jt-tabular">{{ t('history.commission') }}: −{{ fmt.money(totals.commission) }}</p>
       </section>
 
       <button v-for="o in items" :key="o.id" type="button" class="hist__item" @click="open(o)">
         <div class="hist__top">
-          <span class="hist__cat"><CategoryIcon :category="o.category" :size="16" /> №{{ o.number }}</span>
+          <span class="hist__cat">
+            <CategoryIcon :category="o.category" :size="16" /> №{{ o.number }}<span v-if="o.locality" class="hist__locality"> · {{ o.locality }}</span>
+          </span>
           <span class="hist__date">{{ fmt.dateTime(o.completed_at ?? o.cancelled_at ?? o.created_at) }}</span>
         </div>
         <p class="hist__route">{{ addr(o.pickup.address) }} → {{ addr(o.destination.address) }}</p>
@@ -91,8 +100,11 @@ onMounted(() => void load(true))
           <JBadge :tone="orderStatusTone(o.status)" :label="t(`trip.status.${o.status}`)" />
           <span v-if="o.status === 'completed'" class="hist__money jt-tabular">
             <span>{{ fmt.money(o.fare) }}</span>
-            <span class="hist__minus">−{{ fmt.money(o.commission_amount) }}</span>
-            <span class="hist__net">{{ fmt.money(o.fare - o.commission_amount) }}</span>
+            <span class="hist__minus">−{{ fmt.money(paid(o)) }}</span>
+            <span class="hist__net">{{ fmt.money(o.fare - paid(o)) }}</span>
+          </span>
+          <span v-else-if="paid(o) > 0" class="hist__money jt-tabular">
+            <span class="hist__minus">{{ t('history.commission') }} −{{ fmt.money(paid(o)) }}</span>
           </span>
           <span v-else class="hist__money jt-tabular hist__muted">{{ fmt.money(o.fare) }}</span>
         </div>
@@ -164,8 +176,22 @@ onMounted(() => void load(true))
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   color: var(--jt-color-label);
   font-weight: 600;
+}
+
+.hist__date {
+  flex: none;
+}
+
+.hist__locality {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--jt-color-label-secondary);
+  font-weight: 500;
 }
 
 .hist__route {

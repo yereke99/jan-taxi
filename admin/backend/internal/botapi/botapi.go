@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 )
 
@@ -50,6 +51,9 @@ type Options struct {
 	Receipts ReceiptIntake
 	// MaxReceiptBytes bounds one receipt (default DefaultMaxReceiptBytes).
 	MaxReceiptBytes int64
+	// ArrivalETA refines the arrival estimate after «Алу» (§22.6); nil
+	// keeps the straight-line estimate.
+	ArrivalETA *dispatch.ArrivalETA
 }
 
 // Handler serves the internal bot endpoints.
@@ -92,12 +96,15 @@ func (h *Handler) Mount(r chi.Router) {
 	bots.Post("/bots/{bot}/users/sync", httpx.H(h.syncUser))
 	bots.Put("/bots/{bot}/users/{tg_id}/language", httpx.H(h.setLanguage))
 
-	r.With(requireBot(BotPassenger)).Get("/passenger/{tg_id}/orders", httpx.H(h.passengerOrders))
+	pas := r.With(requireBot(BotPassenger))
+	pas.Get("/passenger/{tg_id}/orders", httpx.H(h.passengerOrders))
+	pas.Post("/passenger/{tg_id}/contact", httpx.H(h.passengerContact))
 
 	drv := r.With(requireBot(BotDriver))
 	drv.Get("/driver/{tg_id}/summary", httpx.H(h.driverSummary))
 	drv.Post("/driver/{tg_id}/availability", httpx.H(h.driverAvailability))
 	drv.Get("/driver/{tg_id}/orders", httpx.H(h.driverOrders))
+	drv.Post("/driver/{tg_id}/orders/{id}/accept", httpx.H(h.driverAccept))
 	drv.Post("/driver/{tg_id}/contact", httpx.H(h.driverContact))
 	drv.Post("/driver/{tg_id}/location", httpx.H(h.driverLocation))
 	drv.Post("/driver/{tg_id}/topup-receipt", httpx.H(h.driverTopUpReceipt))

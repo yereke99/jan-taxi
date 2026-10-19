@@ -205,6 +205,8 @@ function refreshLists(): void {
 
 const offs: Array<() => void> = []
 onMounted(() => {
+  // Home starts a new booking: the vehicle class goes back to the default.
+  booking.startNewBooking()
   void orders.loadActive()
   if (!orders.historyLoaded) void orders.loadHistory()
   offs.push(

@@ -65,6 +65,9 @@ type snapshotVehicle struct {
 	Color           string          `json:"color"`
 	PlateRaw        string          `json:"plate_raw"`
 	PlateNormalized string          `json:"plate_normalized"`
+	VehicleClass    string          `json:"vehicle_class"`
+	Seats           int             `json:"seats"`
+	CargoVolumeL    int             `json:"cargo_volume_l"`
 	Photos          []snapshotPhoto `json:"photos"`
 }
 
@@ -93,7 +96,8 @@ func buildSnapshot(reg drivers.Registration, round int, consentVersion *string) 
 	}
 	if v := reg.Vehicle; v != nil {
 		s.Vehicle = snapshotVehicle{ID: v.ID, Make: v.Make, Model: v.Model, Color: v.Color, PlateRaw: v.PlateRaw,
-			PlateNormalized: v.PlateNormalized, Photos: []snapshotPhoto{}}
+			PlateNormalized: v.PlateNormalized, VehicleClass: v.ClassCode, Seats: v.Seats, CargoVolumeL: v.CargoVolumeL,
+			Photos: []snapshotPhoto{}}
 	}
 	for _, ph := range reg.Photos {
 		s.Vehicle.Photos = append(s.Vehicle.Photos, snapshotPhoto{Kind: ph.Kind, FileID: ph.FileID})

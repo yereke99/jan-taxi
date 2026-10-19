@@ -1,12 +1,15 @@
 <!--
   Order detail (GET /driver/orders/{id}): an available order the driver may
-  accept, or one of their own. Large white map (driver → A → … → E), every
-  stop, comment / cargo, fare with commission and net earning, and the
-  sticky "accept" button. Acceptance is atomic on the server; the outcomes
-  are handled per openapi acceptOrder.
+  accept, or one of their own. Large white map (driver → A → … → E), the
+  settlement of pickup A above every stop, the requested vehicle class with passenger count or cargo size (§21),
+  comment / cargo, fare with commission and net earning, and the sticky
+  "accept" button with the commission charged on acceptance stated right
+  above it (§22.2). Acceptance is atomic on the server; the outcomes are
+  handled per openapi acceptOrder: 402 shows how much is missing with a
+  top-up button, a taken order closes, a missing location is fixed in place.
 -->
 <script setup lang="ts">
-import { ChevronLeft, Clock, MapPin, Route } from '@lucide/vue'
+import { ChevronLeft, Clock, MapPin, Navigation, Package, Route, Users } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -15,9 +18,12 @@ import type { DriverOrderDetail } from '../api/types'
 import FareBreakdown from '../components/driver/FareBreakdown.vue'
 import StopList from '../components/driver/StopList.vue'
 import TripMap from '../components/driver/TripMap.vue'
-import { JBadge, JButton, JEmptyState, JMapButton, JSheet, JSkeleton, toast, type SheetSnap } from '../components/ui'
+import VehicleClassIcon from '../components/driver/VehicleClassIcon.vue'
+import { JBadge, JButton, JEmptyState, JListGroup, JListRow, JMapButton, JSheet, JSkeleton, toast, type SheetSnap } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
-import { classifyAcceptError } from '../features/orders/acceptOutcome'
+import { classifyAcceptError, suggestedTopUpAmount } from '../features/orders/acceptOutcome'
+import { findClass } from '../features/vehicle/classes'
+import { useVehicleText } from '../features/vehicle/useVehicleText'
 import { isActiveTripStatus } from '../features/trip/sequence'
 import { useDriverErrorText } from '../composables/useDriverErrorText'
 import { ROUTE } from '../router/names'
@@ -28,6 +34,7 @@ import { useLocationStore } from '../stores/location'
 import { useOrdersStore } from '../stores/orders'
 import { useSessionStore } from '../stores/session'
 import { useTripStore } from '../stores/trip'
+import { useWalletStore } from '../stores/wallet'
 import { normalizeTwoGisBase, planNavigation } from '../features/navigation/twogis'
 import { useEnsureLocation } from '../features/location/useEnsureLocation'
 import { effectiveSafeInsets, haptics, navigateBack, openExternal, useTelegramFullscreen } from '../telegram'
@@ -45,12 +52,16 @@ const session = useSessionStore()
 const location = useLocationStore()
 const realtime = useRealtime()
 const gps = useEnsureLocation()
+const wallet = useWalletStore()
+const vt = useVehicleText()
 
 const order = shallowRef<DriverOrderDetail | null>(null)
 const loading = ref(true)
 const loadError = shallowRef<unknown>(null)
 const gone = ref(false)
 const accepting = ref(false)
+/** Set by a 402 insufficient_balance: what the commission needs and what is available. */
+const shortfall = ref<{ required: number | null; available: number | null; topUp: number | null } | null>(null)
 const snap = ref<SheetSnap>('half')
 const sheetHeight = ref(0)
 const tg = useTelegramFullscreen()
@@ -83,6 +94,24 @@ function openTwoGis(): void {
 
 const id = computed(() => String(route.params.id ?? ''))
 const canAcceptNow = computed(() => Boolean(order.value?.can_accept && !gone.value))
+/** Completed or cancelled: nothing left to drive to. */
+const finished = computed(() => order.value?.status === 'completed' || order.value?.status === 'cancelled')
+
+const classIcon = computed(() => findClass(session.extras.vehicleClasses, order.value?.vehicle_class)?.icon ?? null)
+const className = computed(() => (order.value?.vehicle_class ? vt.className(order.value.vehicle_class, order.value.vehicle_class_name) : ''))
+const loadText = computed(() => (order.value ? vt.load(order.value) : ''))
+
+const shortfallText = computed(() => {
+  const s = shortfall.value
+  if (!s) return ''
+  if (s.required === null || s.available === null) return t('order.insufficient_toast')
+  return t('order.insufficient_text', { required: fmt.money(s.required), available: fmt.money(s.available) })
+})
+
+function topUp(): void {
+  const amount = shortfall.value?.topUp
+  void router.push({ name: ROUTE.topup, query: amount ? { amount: String(amount) } : {} })
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -97,6 +126,7 @@ async function load(): Promise<void> {
     order.value = o
     loadError.value = null
     gone.value = false
+    if (o.can_accept) clearShortfallIfCovered()
   } catch (err) {
     if (isApiError(err) && err.status === 404) {
       gone.value = true
@@ -147,6 +177,13 @@ function locationProblemText(): string {
   }
 }
 
+/** After a top-up the shortfall message goes away once the balance covers the commission. */
+function clearShortfallIfCovered(): void {
+  const w = wallet.wallet
+  const o = order.value
+  if (shortfall.value && w && o && w.available >= o.commission_amount) shortfall.value = null
+}
+
 async function accept(): Promise<void> {
   const o = order.value
   if (!o || accepting.value) return
@@ -154,8 +191,11 @@ async function accept(): Promise<void> {
   try {
     await acceptWithLocation(o.id)
     haptics.notification('success')
+    shortfall.value = null
     orders.remove(o.id)
     toast.success(t('order.accepted_toast'))
+    // The commission was charged with the acceptance.
+    void wallet.refreshWallet()
     void router.replace({ name: ROUTE.trip })
   } catch (err) {
     const f = classifyAcceptError(err)
@@ -168,8 +208,14 @@ async function accept(): Promise<void> {
         gone.value = true
         break
       case 'insufficient_balance':
-        toast.show(t('order.insufficient_toast'))
-        void router.push({ name: ROUTE.topup, query: f.suggestedTopUp ? { amount: String(f.suggestedTopUp) } : {} })
+        // The order stays open: say what is missing and offer the top-up right here.
+        shortfall.value = {
+          required: f.required ?? o.commission_amount,
+          available: f.available,
+          topUp: f.suggestedTopUp ?? suggestedTopUpAmount(o.commission_amount, f.available, session.config.topup?.min ?? null),
+        }
+        snap.value = 'half'
+        void wallet.refreshWallet()
         break
       case 'has_active_order':
         await trip.refresh()
@@ -212,6 +258,8 @@ async function goOnline(): Promise<void> {
   if (!res.ok) void router.replace({ name: ROUTE.home })
 }
 
+watch(() => wallet.wallet?.available, clearShortfallIfCovered)
+
 const offs: Array<() => void> = []
 onMounted(() => {
   void load()
@@ -251,9 +299,20 @@ watch(id, () => void load())
     >
       <template #header>
         <div v-if="order" class="odetail__head">
-          <h1 class="odetail__title">
-            {{ t(`category.${order.category}`) }} · <span class="jt-tabular">{{ fmt.money(order.fare) }}</span>
-          </h1>
+          <div class="odetail__head-text">
+            <h1 class="odetail__title">
+              {{ t(`category.${order.category}`) }} · <span class="jt-tabular">{{ fmt.money(order.fare) }}</span>
+            </h1>
+            <p v-if="className || loadText" class="odetail__need">
+              <VehicleClassIcon v-if="classIcon" :icon="classIcon" :width="34" />
+              <span v-if="className" class="odetail__need-class">{{ className }}</span>
+              <span v-if="loadText" class="odetail__need-load">
+                <Users v-if="order.passenger_count" :size="16" :stroke-width="2" aria-hidden="true" />
+                <Package v-else :size="16" :stroke-width="2" aria-hidden="true" />
+                {{ loadText }}
+              </span>
+            </p>
+          </div>
           <JBadge v-if="order.is_mine" :tone="orderStatusTone(order.status)" :label="t(`trip.status.${order.status}`)" />
         </div>
       </template>
@@ -282,14 +341,19 @@ watch(id, () => void load())
 
       <template v-else-if="order">
         <section class="odetail__stops">
+          <p v-if="order.locality" class="odetail__locality">
+            <MapPin :size="16" :stroke-width="2.2" aria-hidden="true" />
+            <span class="jt-visually-hidden">{{ t('order.locality') }}:</span>
+            <span class="odetail__locality-name">{{ order.locality }}</span>
+          </p>
           <StopList :stops="order.stops" :live="order.is_mine" />
         </section>
 
         <div class="odetail__chips jt-tabular">
           <span class="odetail__chip"><Route :size="18" :stroke-width="2" aria-hidden="true" />{{ fmt.distance(order.distance_m) }}</span>
           <span class="odetail__chip"><Clock :size="17" :stroke-width="2" aria-hidden="true" />{{ fmt.duration(order.duration_s) }}</span>
-          <span v-if="order.distance_to_pickup_m !== null" class="odetail__chip">
-            <MapPin :size="17" :stroke-width="2" aria-hidden="true" />{{ t('orders.from_you', { distance: fmt.distance(order.distance_to_pickup_m) }) }}
+          <span v-if="order.distance_to_pickup_m !== null && !finished" class="odetail__chip">
+            <Navigation :size="16" :stroke-width="2" aria-hidden="true" />{{ t('orders.from_you', { distance: fmt.distance(order.distance_to_pickup_m) }) }}
           </span>
         </div>
 
@@ -304,16 +368,27 @@ watch(id, () => void load())
           </template>
         </section>
 
+        <!-- A cancelled trip earned nothing; only the commission taken at acceptance remains (§22.2). -->
+        <JListGroup
+          v-if="order.is_mine && order.status === 'cancelled'"
+          class="odetail__group"
+          :footer="order.commission_charged > 0 ? t('order.cancelled_commission_kept') : t('order.cancelled_commission_none')"
+        >
+          <JListRow :title="t('history.commission')">
+            <template #accessory><span class="odetail__minus jt-tabular">−{{ fmt.money(order.commission_charged) }}</span></template>
+          </JListRow>
+        </JListGroup>
         <FareBreakdown
+          v-else
           class="odetail__group"
           :fare="order.fare"
           :commission="order.commission_amount"
-          :commission-bps="order.commission_bps"
           :payment-method="order.payment_method"
           :compact="!order.is_mine"
+          :charged="order.is_mine"
         />
 
-        <JButton v-if="twoGisUrl" class="odetail__nav" variant="secondary" block @click="openTwoGis">
+        <JButton v-if="twoGisUrl && !finished" class="odetail__nav" variant="secondary" block @click="openTwoGis">
           <template #icon><MapPin :size="20" :stroke-width="2" aria-hidden="true" /></template>
           {{ t('trip.open_2gis') }}
         </JButton>
@@ -322,13 +397,24 @@ watch(id, () => void load())
       </template>
 
       <template v-if="canAcceptNow" #footer>
-        <JButton block :loading="accepting" @click="accept">{{ t('order.accept') }}</JButton>
+        <p v-if="shortfall" class="odetail__short" role="alert">{{ shortfallText }}</p>
+        <p v-else-if="order" class="odetail__fee jt-tabular">{{ t('order.commission_on_accept', { amount: fmt.money(order.commission_amount) }) }}</p>
+        <div class="odetail__actions">
+          <JButton v-if="shortfall" block @click="topUp">
+            {{ shortfall.topUp ? t('order.top_up_amount', { amount: fmt.money(shortfall.topUp) }) : t('orders.top_up') }}
+          </JButton>
+          <JButton block :variant="shortfall ? 'secondary' : 'primary'" :loading="accepting" @click="accept">{{ t('order.accept') }}</JButton>
+        </div>
       </template>
     </JSheet>
   </div>
 </template>
 
 <style scoped>
+.odetail__minus {
+  color: var(--jt-color-label-secondary);
+}
+
 .odetail {
   position: absolute;
   inset: 0;
@@ -356,6 +442,24 @@ watch(id, () => void load())
   background: var(--jt-color-fill-secondary);
 }
 
+.odetail__locality {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: var(--jt-space-2) 0 2px;
+  font: var(--jt-font-subheadline);
+  font-weight: 600;
+}
+
+.odetail__locality svg {
+  flex: none;
+}
+
+.odetail__locality-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .odetail__chips {
   display: flex;
   flex-wrap: wrap;
@@ -374,6 +478,51 @@ watch(id, () => void load())
   font: var(--jt-font-subheadline);
   font-weight: 600;
   white-space: nowrap;
+}
+
+.odetail__head-text {
+  min-width: 0;
+}
+
+.odetail__need {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--jt-space-2);
+  margin-top: var(--jt-space-1);
+  font: var(--jt-font-subheadline);
+}
+
+.odetail__need-class {
+  font-weight: 600;
+}
+
+.odetail__need-load {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--jt-color-label-secondary);
+}
+
+.odetail__fee,
+.odetail__short {
+  margin-bottom: var(--jt-space-2);
+  font: var(--jt-font-subheadline);
+  text-align: center;
+}
+
+.odetail__fee {
+  color: var(--jt-color-label-secondary);
+}
+
+.odetail__short {
+  color: var(--jt-color-red-text);
+}
+
+.odetail__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jt-space-2);
 }
 
 .odetail__nav {

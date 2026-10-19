@@ -37,8 +37,15 @@ type Change struct {
 	// OnlyPassenger restricts the transition to the order's passenger (404 otherwise).
 	OnlyPassenger *uuid.UUID
 	Actor         Actor
-	Reason        *string        // stored on the event; for cancellations also as cancel_reason
-	Meta          map[string]any // stored on the event
+	Reason        *string // stored on the event; for cancellations also as cancel_reason
+	// ReasonCode is the passenger's cancellation reason (orders.cancel_reason_code, §22.3).
+	ReasonCode *string
+	// ExpectStatus is the status the caller last saw. When set and the order
+	// has moved on since (e.g. a driver accepted it while the passenger was
+	// confirming a cancellation), the transition is refused with
+	// OrderChanged, so the caller looks again before acting.
+	ExpectStatus *string
+	Meta         map[string]any // stored on the event
 }
 
 // Apply locks the order, checks the caller may act on it and that its status
@@ -54,6 +61,9 @@ func Apply(ctx context.Context, tx pgx.Tx, c Change) (before, after Core, err er
 	}
 	if c.OnlyPassenger != nil && before.PassengerID != *c.OnlyPassenger {
 		return Core{}, Core{}, httpx.NotFound()
+	}
+	if c.ExpectStatus != nil && *c.ExpectStatus != before.Status {
+		return Core{}, Core{}, OrderChanged(before.Status)
 	}
 	if !slices.Contains(c.From, before.Status) {
 		return Core{}, Core{}, InvalidTransition(before.Status, c.Action)
@@ -82,8 +92,9 @@ func update(ctx context.Context, tx pgx.Tx, before Core, c Change) (Core, error)
 	case StatusCompleted:
 		set = `completed_at = COALESCE(completed_at, now())`
 	case StatusCancelled:
-		args = append(args, c.Actor.Type, c.Reason)
-		set = `cancelled_at = now(), cancelled_by = $4, cancel_reason = $5, search_expires_at = NULL`
+		args = append(args, c.Actor.Type, c.Reason, c.ReasonCode)
+		set = `cancelled_at = now(), cancelled_by = $4, cancel_reason = $5, cancel_reason_code = $6,
+			search_expires_at = NULL`
 	case StatusDisputed:
 		set = `updated_at = now()`
 	default:

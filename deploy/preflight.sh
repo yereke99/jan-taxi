@@ -1,13 +1,23 @@
 #!/bin/sh
 # Checks a Compose env file before `make up`: required values present,
 # placeholders replaced, secrets long enough, URLs consistent with the domains.
-# The file is parsed, never executed.
+# The files are parsed, never executed. Several files are read in order, a
+# later assignment winning, like repeated `docker compose --env-file`.
 #
-#   sh deploy/preflight.sh [.env]
+#   sh deploy/preflight.sh [.env] [more.env ...]
 set -eu
 
-file=${1:-.env}
-[ -f "$file" ] || { echo "preflight: $file not found"; exit 1; }
+[ $# -gt 0 ] || set -- .env
+for f in "$@"; do
+	[ -f "$f" ] || { echo "preflight: $f not found"; exit 1; }
+done
+names="$*"
+file=$(mktemp)
+trap 'rm -f "$file"' EXIT
+for f in "$@"; do
+	cat "$f"
+	echo
+done >"$file"
 
 errors=0
 warnings=0
@@ -28,7 +38,7 @@ require() {
 	fi
 }
 
-echo "preflight: checking $file"
+echo "preflight: checking $names"
 
 app_env=$(get APP_ENV)
 [ -n "$app_env" ] || app_env=production
@@ -77,7 +87,7 @@ admin=$(get ADMIN_DOMAIN)
 if [ "$prod" = 1 ]; then
 	for k in APP_DOMAIN ADMIN_DOMAIN ACME_EMAIL; do
 		case "$(get "$k")" in
-			*.example | *.example/* | *@*.example | http://*) err "$k still uses a placeholder (.example) or plain http: $(get "$k")" ;;
+			*.example | *.example/* | http://*) err "$k still uses a placeholder (.example) or plain http: $(get "$k")" ;;
 		esac
 	done
 	for k in PASSENGER_MINIAPP_URL DRIVER_MINIAPP_URL ADMIN_FRONTEND_URL API_PUBLIC_URL; do
@@ -97,7 +107,7 @@ if [ "$prod" = 1 ]; then
 fi
 
 if [ "$errors" -gt 0 ]; then
-	echo "preflight: $errors error(s), $warnings warning(s). Fix $file (see .env.example and docs/DEPLOYMENT.md)."
+	echo "preflight: $errors error(s), $warnings warning(s). Fix $names (see .env.example and docs/DEPLOYMENT.md)."
 	exit 1
 fi
 echo "preflight: ok ($warnings warning(s))"

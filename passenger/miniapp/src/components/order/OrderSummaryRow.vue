@@ -1,18 +1,31 @@
-<!-- One order in a list: category, pickup → destination, date, fare and status. -->
+<!-- One order in a list: category, pickup (with its settlement) → destination, date, vehicle class, fare and status. -->
 <script setup lang="ts">
 import { ChevronRight } from '@lucide/vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { OrderSummary } from '../../api/types'
+import { orderLocality } from '../../domain/orderView'
 import { formatDateTime, formatMoney, type Locale } from '../../utils/format'
 import { orderStatusTone } from '../../utils/status'
 import CategoryIcon from '../CategoryIcon.vue'
 import { JBadge } from '../ui'
+import { useVehicleText } from '../../composables/useVehicleText'
 import { useAddressText } from '../../i18n/core'
 
-defineProps<{ order: OrderSummary; locale: Locale }>()
+const props = withDefaults(
+  defineProps<{
+    order: OrderSummary
+    locale: Locale
+    /** The pickup's locality line seen while booking (orders placed in this session). */
+    pickupSubtitle?: string | null
+  }>(),
+  { pickupSubtitle: null },
+)
 const emit = defineEmits<{ open: [order: OrderSummary] }>()
 const { t } = useI18n()
 const addr = useAddressText()
+const vehicleText = useVehicleText()
+const locality = computed(() => orderLocality(props.order, props.pickupSubtitle))
 </script>
 
 <template>
@@ -21,11 +34,12 @@ const addr = useAddressText()
     <span class="summary__main">
       <span class="summary__route">
         <span class="summary__address">{{ addr(order.pickup.address) }}</span>
+        <span v-if="locality" class="summary__place">{{ locality }}</span>
         <span class="summary__arrow" aria-hidden="true">↓</span>
         <span class="summary__address">{{ addr(order.destination.address) }}</span>
       </span>
       <span class="summary__meta">
-        {{ formatDateTime(order.created_at, locale) }}<template v-if="order.stop_count > 2">
+        {{ formatDateTime(order.created_at, locale) }} · {{ vehicleText.className(order.vehicle_class, order.vehicle_class_name) }}<template v-if="order.stop_count > 2">
           · {{ t('orders.stops_more', { n: order.stop_count - 2 }) }}</template
         >
       </span>
@@ -88,6 +102,14 @@ const addr = useAddressText()
 
 .summary__address {
   font: var(--jt-font-subheadline);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary__place {
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

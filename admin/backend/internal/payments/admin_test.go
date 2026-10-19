@@ -274,6 +274,8 @@ func TestAdminPermissionMatrix(t *testing.T) {
 		{"adjust", http.MethodPost, "/drivers/" + uuid.NewString() + "/wallet/adjustments",
 			func() any { return map[string]any{"amount": 1, "reason": "x", "idempotency_key": uuid.NewString()} }, auth.PermFinanceManage},
 		{"confirm", http.MethodPost, "/topups/" + uuid.NewString() + "/confirm", func() any { return confirmBody(1000, uuid.NewString()) }, auth.PermFinanceManage},
+		{"bonus", http.MethodPost, "/drivers/" + uuid.NewString() + "/bonus",
+			func() any { return map[string]any{"amount": 1000, "idempotency_key": uuid.NewString()} }, auth.PermFinanceManage},
 	}
 	for _, role := range auth.Roles {
 		_, h := e.admin(role)

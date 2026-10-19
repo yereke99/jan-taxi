@@ -214,3 +214,84 @@ func TestAdminSettingsRequireConfigManage(t *testing.T) {
 		}
 	}
 }
+
+// TestAdminCommissionAndBonusControls (§22.7): the fixed commission can be
+// changed only within commission.fixed_min..commission.fixed_max (50..100),
+// the bounds themselves are read-only, and the welcome bonus can be switched
+// off or set to any amount.
+func TestAdminCommissionAndBonusControls(t *testing.T) {
+	pool := testutil.NewDB(t)
+	ctx := context.Background()
+	h := adminRouter(pool, auth.AdminPrincipal{AdminID: createAdmin(t, pool, "super_admin"), Role: auth.RoleSuperAdmin})
+
+	rec, body := call(t, h, http.MethodGet, "/settings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d", rec.Code)
+	}
+	items := itemsByKey(t, body)
+	c := items["commission.fixed_amount"]["constraints"].(map[string]any)
+	if items["commission.fixed_amount"]["value"] != float64(50) || c["min"] != float64(50) || c["max"] != float64(100) {
+		t.Fatalf("fixed amount item: %v", items["commission.fixed_amount"])
+	}
+	if items["commission.fixed_min"]["read_only"] != true || items["commission.fixed_max"]["value"] != float64(100) ||
+		items["commission.fixed_amount"]["read_only"] != false {
+		t.Fatalf("bounds: %v %v", items["commission.fixed_min"], items["commission.fixed_max"])
+	}
+
+	rejects := []struct{ name, body, key, reason string }{
+		{"below the minimum", `{"commission.fixed_amount":49}`, "commission.fixed_amount", ReasonOutOfRange},
+		{"above the maximum", `{"commission.fixed_amount":101}`, "commission.fixed_amount", ReasonOutOfRange},
+		{"bound is read-only", `{"commission.fixed_max":500}`, "commission.fixed_max", ReasonReadOnly},
+		{"bound reset is read-only", `{"commission.fixed_min":null}`, "commission.fixed_min", ReasonReadOnly},
+		{"negative bonus", `{"driver.welcome_bonus":-1}`, "driver.welcome_bonus", ReasonOutOfRange},
+	}
+	for _, tt := range rejects {
+		rec, body := call(t, h, http.MethodPatch, "/settings", tt.body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: %d %s", tt.name, rec.Code, rec.Body)
+		}
+		if got := body["error"].(map[string]any)["fields"].(map[string]any)[tt.key]; got != tt.reason {
+			t.Fatalf("%s: field %s = %v", tt.name, tt.key, got)
+		}
+	}
+	rec, body = call(t, h, http.MethodPatch, "/settings", `{"commission.fixed_amount":101}`)
+	if d := body["error"].(map[string]any)["details"].(map[string]any); d["min"] != float64(50) || d["max"] != float64(100) {
+		t.Fatalf("range details: %v", d)
+	}
+
+	for _, amount := range []int64{100, 50, 75} {
+		rec, _ := call(t, h, http.MethodPatch, "/settings", `{"commission.fixed_amount":`+jsonInt(amount)+`}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("commission %d: %d %s", amount, rec.Code, rec.Body)
+		}
+		if p := Commission(ctx, pool); p.FixedAmount != amount || p.Mode != CommissionFixed {
+			t.Fatalf("commission after patch: %+v", p)
+		}
+	}
+	// Switched off, then a larger bonus (e.g. 1000 KZT).
+	for _, amount := range []int64{0, 1000} {
+		rec, _ := call(t, h, http.MethodPatch, "/settings", `{"driver.welcome_bonus":`+jsonInt(amount)+`}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("bonus %d: %d %s", amount, rec.Code, rec.Body)
+		}
+		if got := WelcomeBonus(ctx, pool); got != amount {
+			t.Fatalf("welcome bonus = %d, want %d", got, amount)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM admin_audit_logs WHERE action = 'settings.update'
+		AND entity_id IN ('commission.fixed_amount', 'driver.welcome_bonus')`).Scan(&n); err != nil || n != 5 {
+		t.Fatalf("audited changes = %d (%v)", n, err)
+	}
+
+	// A stored value outside the bounds (written past the API) is clamped.
+	if _, err := pool.Exec(ctx, `UPDATE app_settings SET value = '20' WHERE key = 'commission.fixed_amount'`); err != nil {
+		t.Fatal(err)
+	}
+	Invalidate("commission.fixed_amount")
+	if p := Commission(ctx, pool); p.FixedAmount != 50 {
+		t.Fatalf("clamped commission = %d", p.FixedAmount)
+	}
+}
+
+func jsonInt(n int64) string { b, _ := json.Marshal(n); return string(b) }

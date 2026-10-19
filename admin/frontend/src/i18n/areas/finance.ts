@@ -185,6 +185,9 @@ const kk = {
   desc_cancelled_by: 'Тапсырыстан бас тартылды ({actor})',
   desc_reassigned: 'Тапсырыс басқа жүргізушіге берілді',
   pdf_blocked: 'Браузер PDF-ті осы жерде көрсете алмады. Оны жаңа қойындыда ашыңыз немесе жүктеп алыңыз.',
+  desc_welcome_bonus: 'Жаңа жүргізушіге бонус',
+  desc_bonus: 'Компаниядан бонус',
+  desc_assignment: 'Тапсырысты алғандағы комиссия (№{n})',
 }
 
 export type FinanceMessages = typeof kk
@@ -374,6 +377,9 @@ const ru: FinanceMessages = {
   desc_cancelled_by: 'Заказ отменён ({actor})',
   desc_reassigned: 'Заказ передан другому водителю',
   pdf_blocked: 'Браузер не смог показать PDF здесь. Откройте его в новой вкладке или скачайте.',
+  desc_welcome_bonus: 'Бонус новому водителю',
+  desc_bonus: 'Бонус от компании',
+  desc_assignment: 'Комиссия при принятии заказа (№{n})',
 }
 
 const en: FinanceMessages = {
@@ -561,6 +567,9 @@ const en: FinanceMessages = {
   desc_cancelled_by: 'Order cancelled ({actor})',
   desc_reassigned: 'Order reassigned to another driver',
   pdf_blocked: 'The browser could not show the PDF here. Open it in a new tab or download it.',
+  desc_welcome_bonus: 'Welcome bonus',
+  desc_bonus: 'Company bonus',
+  desc_assignment: 'Commission when the order was taken (#{n})',
 }
 
 export const finance = { kk, ru, en }

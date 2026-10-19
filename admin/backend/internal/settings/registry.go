@@ -39,6 +39,7 @@ const (
 	ReasonDuplicate   = "duplicate"
 	ReasonIncomplete  = "incomplete" // localized text filled for some languages only
 	ReasonRequired    = "required"
+	ReasonReadOnly    = "read_only" // the setting cannot be changed through the API
 )
 
 // Def declares one admin-editable setting.
@@ -54,6 +55,9 @@ type Def struct {
 	MaxLen   int   // code points per string
 	MaxItems int   // list length
 	Required bool  // string/url may not be empty
+	// ReadOnly settings are shown to admins but cannot be changed through the
+	// API (PATCH answers read_only); they bound other settings.
+	ReadOnly bool
 
 	// env returns the environment-provided default, if configured.
 	env func(Env) (any, bool)
@@ -126,6 +130,14 @@ var registry = []Def{
 		},
 	},
 	{
+		Key: "orders.passenger_cancels_after_accept_per_day", Kind: KindInt, Min: 0, Max: 100, Default: int64(3),
+		Description: Localized{
+			KK: "Жолаушы 24 сағат ішінде жүргізуші қабылдаған қанша тапсырысты болдырмаса, жаңа тапсырыс бере алмайды (әр осындай болдырмауда жүргізуші комиссиясын жоғалтады; 0 — шектеусіз)",
+			RU: "Сколько принятых водителем заказов пассажир может отменить за 24 часа, прежде чем новые заказы будут отклоняться (при каждой такой отмене водитель теряет комиссию; 0 — без ограничения)",
+			EN: "How many driver-accepted orders a passenger may cancel within 24 hours before new orders are refused (the driver loses the commission on each; 0 = no limit)",
+		},
+	},
+	{
 		Key: "commission.default_bps", Kind: KindInt, Min: 0, Max: 5000, Default: int64(1000),
 		Description: Localized{
 			KK: "Әдепкі комиссия, базистік пункт (1000 = 10%)",
@@ -137,6 +149,47 @@ var registry = []Def{
 				return nil, false
 			}
 			return int64(e.DefaultCommissionPercent) * 100, true
+		},
+	},
+	{
+		Key: "commission.mode", Kind: KindString, Required: true, Default: CommissionFixed,
+		Description: Localized{
+			KK: "Комиссия түрі: fixed — әр тапсырыстан тұрақты сома, percent — тарифтегі пайыз",
+			RU: "Тип комиссии: fixed — фиксированная сумма с заказа, percent — процент из тарифа",
+			EN: "Commission type: fixed — a fixed amount per order, percent — the tariff percentage",
+		},
+		check: checkCommissionMode,
+	},
+	{
+		Key: "commission.fixed_amount", Kind: KindInt, Min: 0, Max: 100_000, Default: int64(50),
+		Description: Localized{
+			KK: "Жүргізуші тапсырысты алған кезде ұсталатын тұрақты комиссия, ₸ (commission.fixed_min…commission.fixed_max аралығында)",
+			RU: "Фиксированная комиссия, списываемая при принятии заказа водителем, ₸ (в пределах commission.fixed_min…commission.fixed_max)",
+			EN: "Fixed commission charged when a driver takes an order, ₸ (within commission.fixed_min…commission.fixed_max)",
+		},
+	},
+	{
+		Key: "commission.fixed_min", Kind: KindInt, Min: 0, Max: 100_000, Default: int64(50), ReadOnly: true,
+		Description: Localized{
+			KK: "Тұрақты комиссияның ең аз мөлшері, ₸ (өзгертілмейді)",
+			RU: "Минимальная фиксированная комиссия, ₸ (не редактируется)",
+			EN: "Lowest fixed commission an admin may set, ₸ (read-only)",
+		},
+	},
+	{
+		Key: "commission.fixed_max", Kind: KindInt, Min: 0, Max: 100_000, Default: int64(100), ReadOnly: true,
+		Description: Localized{
+			KK: "Тұрақты комиссияның ең көп мөлшері, ₸ (өзгертілмейді)",
+			RU: "Максимальная фиксированная комиссия, ₸ (не редактируется)",
+			EN: "Highest fixed commission an admin may set, ₸ (read-only)",
+		},
+	},
+	{
+		Key: "driver.welcome_bonus", Kind: KindInt, Min: 0, Max: 100_000, Default: int64(500),
+		Description: Localized{
+			KK: "Жаңа жүргізушіге бірінші мақұлдауда берілетін бонус, ₸ (телефон мен көлік нөмірі бойынша бір рет; 0 — өшірулі)",
+			RU: "Бонус новому водителю при первом одобрении, ₸ (один раз на телефон и госномер; 0 — выключено)",
+			EN: "Welcome bonus for a new driver on first approval, ₸ (once per phone and plate; 0 disables it)",
 		},
 	},
 	{
@@ -619,6 +672,12 @@ func asInt(v any) (int64, bool) {
 	}
 	n, err := num.Int64()
 	return n, err == nil
+}
+
+// checkCommissionMode accepts "fixed" or "percent".
+func checkCommissionMode(s string) (string, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s, s == CommissionFixed || s == CommissionPercent
 }
 
 func checkTelegramUsername(s string) (string, bool) {

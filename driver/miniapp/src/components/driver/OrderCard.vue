@@ -1,17 +1,22 @@
 <!--
   Available order card: category with how long ago it was placed and the
-  distance from the driver, the fare, then A → final destination with
-  +N stops, trip distance and duration, and the comment or cargo preview.
-  No passenger data (the API withholds it).
+  distance from the driver, the fare, then the settlement of pickup A and
+  A → final destination with +N stops, trip distance and duration, the
+  requested vehicle class with the passenger count or cargo size (§21), and
+  the comment or cargo preview. No passenger data (the API withholds it).
 -->
 <script setup lang="ts">
-import { MessageSquareText, Package } from '@lucide/vue'
+import { MapPin, MessageSquareText, Package } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DriverOrderCard } from '../../api/types'
 import { useFormat } from '../../composables/useFormat'
 import { sortedStops } from '../../features/trip/sequence'
+import { findClass } from '../../features/vehicle/classes'
+import { useVehicleText } from '../../features/vehicle/useVehicleText'
+import { useSessionStore } from '../../stores/session'
 import CategoryIcon from './CategoryIcon.vue'
+import VehicleClassIcon from './VehicleClassIcon.vue'
 import { useAddressText } from '../../i18n/core'
 
 const props = defineProps<{ order: DriverOrderCard; now: number }>()
@@ -20,6 +25,8 @@ const emit = defineEmits<{ open: [id: string] }>()
 const { t } = useI18n()
 const addr = useAddressText()
 const fmt = useFormat()
+const vt = useVehicleText()
+const session = useSessionStore()
 
 const stops = computed(() => sortedStops(props.order.stops))
 const pickup = computed(() => stops.value[0] ?? null)
@@ -33,6 +40,12 @@ const meta = computed(() => {
   if (props.order.distance_to_pickup_m !== null) parts.push(t('orders.from_you', { distance: fmt.distance(props.order.distance_to_pickup_m) }))
   return parts.join(' · ')
 })
+const need = computed(() => {
+  const o = props.order
+  const parts = [o.vehicle_class ? vt.className(o.vehicle_class, o.vehicle_class_name) : '', vt.load(o)].filter(Boolean)
+  return parts.join(' · ')
+})
+const needIcon = computed(() => findClass(session.extras.vehicleClasses, props.order.vehicle_class)?.icon ?? null)
 const summary = computed(() => {
   const parts = [fmt.distance(props.order.distance_m), fmt.duration(props.order.duration_s)]
   if (extraStops.value > 0) parts.unshift(t('orders.more_stops', { n: extraStops.value }))
@@ -52,6 +65,11 @@ const summary = computed(() => {
     </div>
 
     <div class="ocard__body">
+      <p v-if="order.locality" class="ocard__locality">
+        <MapPin :size="15" :stroke-width="2.2" aria-hidden="true" />
+        <span class="jt-visually-hidden">{{ t('order.locality') }}:</span>
+        <span class="ocard__locality-name">{{ order.locality }}</span>
+      </p>
       <p class="ocard__route">
         <span>{{ addr(pickup?.address) }}</span>
         <template v-if="destination">
@@ -60,6 +78,10 @@ const summary = computed(() => {
         </template>
       </p>
       <p class="ocard__summary jt-tabular">{{ summary }}</p>
+      <p v-if="need" class="ocard__need">
+        <VehicleClassIcon v-if="needIcon" :icon="needIcon" :width="30" />
+        <span>{{ need }}</span>
+      </p>
     </div>
 
     <p v-if="preview" class="ocard__comment">
@@ -139,6 +161,27 @@ const summary = computed(() => {
   padding-top: var(--jt-space-3);
 }
 
+.ocard__locality {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: var(--jt-font-subheadline);
+  font-weight: 600;
+  color: var(--jt-color-label-secondary);
+}
+
+.ocard__locality svg {
+  flex: none;
+  color: var(--jt-color-label);
+}
+
+.ocard__locality-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ocard__route {
   font: var(--jt-font-headline);
   overflow-wrap: anywhere;
@@ -147,6 +190,21 @@ const summary = computed(() => {
 .ocard__summary {
   font: var(--jt-font-subheadline);
   color: var(--jt-color-label-secondary);
+}
+
+.ocard__need {
+  display: flex;
+  align-items: center;
+  gap: var(--jt-space-2);
+  margin-top: var(--jt-space-1);
+  font: var(--jt-font-subheadline);
+  font-weight: 600;
+}
+
+.ocard__need span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ocard__comment {

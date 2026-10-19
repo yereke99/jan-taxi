@@ -1,11 +1,13 @@
 <!--
-  Wallet (GET /driver/wallet): available / reserved / balance, the minimum to
-  go online, Kaspi top-ups with their statuses and the journal. The balance
-  changes only through the journal (top-ups after finance verification,
-  commissions on completed trips); realtime wallet.updated / topup.* refresh it.
+  Wallet (GET /driver/wallet): the available balance, the commission each
+  order costs (charged when the order is taken, §22.2) and, when the balance
+  cannot pay it, the "orders paused — top up" state; the minimum to go online,
+  Kaspi top-ups with their statuses and the journal (including bonuses from
+  Jan Taxi). The balance changes only through the journal; realtime
+  wallet.updated / topup.* refresh it.
 -->
 <script setup lang="ts">
-import { ChevronLeft } from '@lucide/vue'
+import { ChevronLeft, CirclePause } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -14,6 +16,7 @@ import LedgerRow from '../../components/driver/LedgerRow.vue'
 import TopUpRow from '../../components/driver/TopUpRow.vue'
 import { JButton, JEmptyState, JListGroup, JSegmented, JSkeleton, JSpinner, type SegmentedOption } from '../../components/ui'
 import { useFormat } from '../../composables/useFormat'
+import { orderFunding } from '../../features/wallet/balance'
 import { usePullToRefresh } from '../../composables/usePullToRefresh'
 import { useErrorText } from '../../i18n/core'
 import { ROUTE } from '../../router/names'
@@ -39,6 +42,14 @@ const tabs = computed<SegmentedOption<Tab>[]>(() => [
 const w = computed(() => wallet.wallet)
 const openTopUps = computed(() => wallet.topups.items.filter((x) => x.status === 'created' || x.status === 'pending_verification'))
 const belowMin = computed(() => w.value !== null && w.value.available < w.value.min_online_balance)
+const funding = computed(() => orderFunding(w.value, session.extras.commission))
+/** Orders paused only matters to a driver who can work (approved). */
+const paused = computed(() => session.isApproved && funding.value.paused)
+const explainer = computed(() =>
+  funding.value.commission !== null
+    ? t('wallet.explainer_fixed', { amount: fmt.money(funding.value.commission) })
+    : t('wallet.explainer'),
+)
 const canTopUp = computed(() => session.driverState !== 'rejected')
 
 const { pull, refreshing } = usePullToRefresh(
@@ -75,7 +86,8 @@ onMounted(() => {
       <template v-if="w">
         <p class="bal__label">{{ t('wallet.available') }}</p>
         <p class="bal__value jt-tabular">{{ fmt.money(w.available) }}</p>
-        <div class="bal__grid">
+        <!-- Reservations exist only for orders taken before the v2 rules. -->
+        <div v-if="w.reserved > 0" class="bal__grid">
           <div>
             <p class="bal__label">{{ t('wallet.balance') }}</p>
             <p class="bal__sub jt-tabular">{{ fmt.money(w.balance) }}</p>
@@ -84,6 +96,13 @@ onMounted(() => {
             <p class="bal__label">{{ t('wallet.reserved') }}</p>
             <p class="bal__sub jt-tabular">{{ fmt.money(w.reserved) }}</p>
           </div>
+        </div>
+        <div v-if="paused" class="bal__paused" role="status">
+          <CirclePause :size="20" :stroke-width="2" aria-hidden="true" />
+          <span>
+            <strong>{{ t('wallet.orders_paused') }}</strong>
+            <span class="bal__paused-sub jt-tabular">{{ t('wallet.orders_paused_text', { amount: fmt.money(funding.commission ?? 0), missing: fmt.money(funding.shortfall) }) }}</span>
+          </span>
         </div>
         <p class="bal__hint" :class="{ 'is-warn': belowMin }">{{ t('wallet.min_online', { amount: fmt.money(w.min_online_balance) }) }}</p>
       </template>
@@ -97,7 +116,7 @@ onMounted(() => {
       </template>
       <JButton v-if="canTopUp" block @click="router.push({ name: ROUTE.topup })">{{ t('wallet.top_up') }}</JButton>
     </section>
-    <p class="wallet__explainer">{{ t('wallet.explainer') }}</p>
+    <p class="wallet__explainer">{{ explainer }}</p>
 
     <JListGroup v-if="openTopUps.length > 0" :header="t('wallet.open_topups')">
       <TopUpRow v-for="x in openTopUps" :key="x.id" :topup="x" />
@@ -185,6 +204,33 @@ onMounted(() => {
 
 .bal__sub {
   font: var(--jt-font-headline);
+}
+
+.bal__paused {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--jt-space-2);
+  margin: var(--jt-space-1) 0 var(--jt-space-1);
+  padding: var(--jt-space-3);
+  border-radius: 14px;
+  background: var(--jt-color-red-tint);
+  color: var(--jt-color-red-text);
+  font: var(--jt-font-subheadline);
+}
+
+.bal__paused svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.bal__paused strong {
+  display: block;
+  font-weight: 600;
+}
+
+.bal__paused-sub {
+  display: block;
+  color: var(--jt-color-label);
 }
 
 .bal__hint {

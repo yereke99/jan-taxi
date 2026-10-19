@@ -2,17 +2,25 @@
 // over. Unknown enum values degrade to safe defaults instead of crashing.
 
 import { MODERATION_STATUSES, type ModerationStatus } from '../utils/status'
+import { isUnnamedPlace } from '../utils/text'
 import {
+  CARGO_SIZES,
   CORRECTION_REASONS,
   REGISTRATION_FIELDS,
+  type CargoSize,
   type CityRef,
   type CorrectionItem,
   type DriverRegistration,
   type FileRef,
+  type LocalizedText,
+  type OrderLoad,
+  type OrderPassenger,
+  type OrderPlace,
   type RegistrationField,
   type RegistrationHistoryItem,
   type TopUp,
   type TopUpReceipt,
+  type VehicleClassFields,
   type VehiclePhoto,
   type VehiclePhotoKind,
 } from './types'
@@ -31,6 +39,18 @@ export function strOrNull(v: unknown): string | null {
 
 export function num(v: unknown, def = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : def
+}
+
+/** A non-negative integer, or null. */
+export function intOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null
+}
+
+/** A localized text with at least one language filled, or null. */
+export function localizedOrNull(v: unknown): LocalizedText | null {
+  const r = rec(v)
+  const t = { kk: str(r.kk).trim(), ru: str(r.ru).trim(), en: str(r.en).trim() }
+  return t.kk || t.ru || t.en ? t : null
 }
 
 function arr(v: unknown): unknown[] {
@@ -91,6 +111,92 @@ function normalizeHistory(v: unknown): RegistrationHistoryItem[] {
   })
 }
 
+/** The class fields of a vehicle object (registration, profile); null until a class is chosen. */
+export function normalizeVehicleClassFields(v: unknown): VehicleClassFields {
+  const r = rec(v)
+  const code = strOrNull(r.vehicle_class)
+  if (!code) return { vehicle_class: null, vehicle_class_name: null, seats: null, cargo_volume_l: null }
+  return {
+    vehicle_class: code,
+    vehicle_class_name: localizedOrNull(r.vehicle_class_name),
+    seats: intOrNull(r.seats),
+    cargo_volume_l: intOrNull(r.cargo_volume_l),
+  }
+}
+
+export function isCargoSize(v: unknown): v is CargoSize {
+  return (CARGO_SIZES as readonly string[]).includes(str(v))
+}
+
+/** The load of an order view (§21); unknown or missing values read as "not given". */
+export function normalizeOrderLoad(v: unknown): OrderLoad {
+  const r = rec(v)
+  const count = intOrNull(r.passenger_count)
+  return {
+    vehicle_class: str(r.vehicle_class),
+    vehicle_class_name: localizedOrNull(r.vehicle_class_name),
+    passenger_count: count !== null && count > 0 ? count : null,
+    cargo_size: isCargoSize(r.cargo_size) ? r.cargo_size : null,
+    cargo_volume_l: intOrNull(r.cargo_volume_l) ?? 0,
+  }
+}
+
+/** Longest settlement name kept for display (the orders.locality limit). */
+const LOCALITY_MAX = 120
+
+/** The settlement of pickup A, trimmed; null when missing, too long or only coordinates. */
+export function localityOrNull(v: unknown): string | null {
+  const s = str(v).trim()
+  if (isUnnamedPlace(s) || [...s].length > LOCALITY_MAX) return null
+  return s
+}
+
+/** Locality and tariff region of an order view; anything malformed reads as unknown. */
+export function normalizeOrderPlace(v: unknown): OrderPlace {
+  const r = rec(v)
+  const region = rec(r.tariff_region)
+  const name = localizedOrNull(region.name)
+  return {
+    locality: localityOrNull(r.locality),
+    tariff_region: str(region.code) && name ? { code: str(region.code), name } : null,
+  }
+}
+
+const TG_USER_RE = /^tg:\/\/user\?id=\d{1,20}$/
+const TG_USERNAME_RE = /^[A-Za-z][A-Za-z0-9_]{3,31}$/
+
+/**
+ * Only links that open a Telegram chat are kept: https://t.me/<username> or
+ * tg://user?id=<digits>. Anything else is dropped rather than opened.
+ */
+export function safeTelegramUrl(v: unknown): string | null {
+  const s = str(v).trim()
+  if (TG_USER_RE.test(s)) return s
+  try {
+    const u = new URL(s)
+    const name = u.pathname.replace(/^\//, '')
+    if (u.protocol === 'https:' && u.hostname === 't.me' && TG_USERNAME_RE.test(name) && !u.search && !u.hash) return `https://t.me/${name}`
+  } catch {
+    // Not a URL.
+  }
+  return null
+}
+
+/** DriverOrderDetail.passenger: null when withheld. */
+export function normalizePassenger(v: unknown): OrderPassenger | null {
+  if (!v || typeof v !== 'object') return null
+  const r = rec(v)
+  const verified = r.phone_verified === true || (r.phone_verified === undefined && strOrNull(r.phone) !== null)
+  const username = strOrNull(r.telegram_username)
+  return {
+    first_name: str(r.first_name),
+    phone: verified ? strOrNull(r.phone) : null,
+    phone_verified: verified,
+    telegram_username: username && TG_USERNAME_RE.test(username.replace(/^@/, '')) ? username.replace(/^@/, '') : null,
+    telegram_url: safeTelegramUrl(r.telegram_url),
+  }
+}
+
 /** GET/PUT /driver/registration and POST /driver/register. */
 export function normalizeRegistration(raw: unknown): DriverRegistration {
   const r = rec(raw)
@@ -113,6 +219,7 @@ export function normalizeRegistration(raw: unknown): DriverRegistration {
       color: str(v.color),
       plate: str(v.plate),
       plate_normalized: strOrNull(v.plate_normalized),
+      ...normalizeVehicleClassFields(v),
       photos: arr(v.photos)
         .map(normalizePhoto)
         .filter((p): p is VehiclePhoto => p !== null),

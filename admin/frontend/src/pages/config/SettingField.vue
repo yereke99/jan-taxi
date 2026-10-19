@@ -57,12 +57,13 @@ function codeLabel(code: string): string {
     <div class="setting__head">
       <label class="setting__label" :for="item.key">{{ label }}</label>
       <span class="setting__source" :title="item.updated_at ? fmt.dateTime(item.updated_at) : ''">{{ sourceLabel }}</span>
+      <span v-if="item.read_only" class="setting__source">{{ t('settings.read_only') }}</span>
       <a v-if="savedLink" :href="savedLink" target="_blank" rel="noopener noreferrer" class="jt-link-button setting__link">{{ t('settings.open_link') }}</a>
-      <button v-if="item.source === 'database'" type="button" class="jt-link-button setting__reset" @click="emit('reset')">{{ t('settings.reset_default') }}</button>
+      <button v-if="item.source === 'database' && !item.read_only" type="button" class="jt-link-button setting__reset" @click="emit('reset')">{{ t('settings.reset_default') }}</button>
     </div>
     <p class="setting__desc">{{ description }}<template v-if="range"> · {{ range }}</template></p>
 
-    <ToggleSwitch v-if="item.type === 'bool'" :id="item.key" :model-value="modelValue as boolean" :label="(modelValue as boolean) ? t('common.yes') : t('common.no')" @update:model-value="(v) => emit('update:modelValue', v)" />
+    <ToggleSwitch v-if="item.type === 'bool'" :id="item.key" :disabled="item.read_only" :model-value="modelValue as boolean" :label="(modelValue as boolean) ? t('common.yes') : t('common.no')" @update:model-value="(v) => emit('update:modelValue', v)" />
 
     <div v-else-if="item.type === 'localized_text'" class="setting__langs">
       <label v-for="lang in ['kk', 'ru', 'en'] as const" :key="lang" class="setting__lang">
@@ -108,6 +109,7 @@ function codeLabel(code: string): string {
       :type="item.type === 'url' ? 'url' : 'text'"
       :inputmode="item.type === 'int' ? 'numeric' : undefined"
       :placeholder="item.type === 'int_list' ? t('settings.int_list_hint') : ''"
+      :disabled="item.read_only"
       :invalid="Boolean(error)"
       @update:model-value="(v) => emit('update:modelValue', v)"
     />

@@ -1,16 +1,11 @@
 package orders
 
 import (
-	"bufio"
-	"errors"
-	"io"
-	"net/http"
 	"strings"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
 )
 
@@ -83,24 +78,4 @@ func cleanRequiredField(fields map[string]string, name string, v *string, max in
 		return ""
 	}
 	return c
-}
-
-// decodeOptionalJSON decodes a JSON body into dst when the request has one; an
-// absent or empty body leaves dst untouched.
-func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil
-	}
-	br := bufio.NewReader(r.Body)
-	if _, err := br.Peek(1); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		return httpx.BadRequest("cannot read request body").WithCause(err)
-	}
-	r.Body = struct {
-		io.Reader
-		io.Closer
-	}{br, r.Body}
-	return httpx.DecodeJSON(w, r, dst)
 }

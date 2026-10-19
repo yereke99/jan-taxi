@@ -1,12 +1,14 @@
 <!--
   Active trip (§5): map with the route and the current leg, one primary
   action per state — arrived → start → intermediate stops in seq order →
-  complete — 2GIS hand-off, contacts, all stops, and cancelling before the
-  start with a reason. When the order ends (here or elsewhere) its final
-  state is summarised.
+  complete — 2GIS hand-off, the passenger contact (call when the phone was
+  shared, Telegram chat), the requested class and load, all stops. Drivers
+  cannot cancel (§22.3): a problem goes to support, which can cancel or
+  reassign. When the order ends (here or elsewhere) its final state is
+  summarised; a passenger's cancellation reason is not shown to the driver.
 -->
 <script setup lang="ts">
-import { CircleCheck, CircleX } from '@lucide/vue'
+import { CircleCheck, CircleX, Headset, MapPin } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -15,11 +17,12 @@ import NavigationButtons from '../components/driver/NavigationButtons.vue'
 import StopList from '../components/driver/StopList.vue'
 import TripContacts from '../components/driver/TripContacts.vue'
 import TripMap from '../components/driver/TripMap.vue'
-import { JButton, JEmptyState, JSheet, JSkeleton, showActionSheet, toast, type SheetSnap } from '../components/ui'
+import { JButton, JEmptyState, JListGroup, JListRow, JSheet, JSkeleton, toast, type SheetSnap } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
 import { usePolling } from '../composables/usePolling'
-import { cancelReasons, actionLabelKey } from '../features/trip/labels'
-import { canDriverCancel, currentTarget, primaryAction, remainingStops, stopLetter } from '../features/trip/sequence'
+import { actionLabelKey } from '../features/trip/labels'
+import { currentTarget, primaryAction, remainingStops, stopLetter } from '../features/trip/sequence'
+import { useVehicleText } from '../features/vehicle/useVehicleText'
 import { useDriverErrorText } from '../composables/useDriverErrorText'
 import { ROUTE } from '../router/names'
 import { isApiError } from '../services/http'
@@ -35,17 +38,21 @@ const errorText = useDriverErrorText()
 const router = useRouter()
 const trip = useTripStore()
 const location = useLocationStore()
+const vt = useVehicleText()
 
 const snap = ref<SheetSnap>('half')
 const sheetHeight = ref(0)
-const cancelling = ref(false)
 
 const order = computed(() => trip.active)
 const finished = computed(() => (trip.active ? null : trip.finished))
 const action = computed(() => (order.value ? primaryAction(order.value) : null))
 const target = computed(() => (order.value ? currentTarget(order.value) : null))
 const remaining = computed(() => (order.value ? remainingStops(order.value) : []))
-const canCancel = computed(() => (order.value ? canDriverCancel(order.value) : false))
+const need = computed(() => {
+  const o = order.value
+  if (!o) return ''
+  return [o.vehicle_class ? vt.className(o.vehicle_class, o.vehicle_class_name) : '', vt.load(o)].filter(Boolean).join(' · ')
+})
 
 const heading = computed(() => {
   const o = order.value
@@ -74,28 +81,6 @@ async function perform(): Promise<void> {
     toast.error(errorText(err))
     // The order moved on elsewhere (passenger cancelled, admin): show the real state.
     if (isApiError(err) && (err.code === 'invalid_transition' || err.status === 404)) void trip.refresh()
-  }
-}
-
-async function cancel(): Promise<void> {
-  const o = order.value
-  if (!o || cancelling.value) return
-  const reasons = cancelReasons(o.category, o.status)
-  const choice = await showActionSheet({
-    title: t('trip.cancel_title'),
-    message: t('trip.cancel_message'),
-    actions: reasons.map((r) => ({ id: r, label: t(`trip.cancel_reasons.${r}`), destructive: true })),
-  })
-  if (!choice) return
-  cancelling.value = true
-  try {
-    await trip.cancel(t(`trip.cancel_reasons.${choice}`))
-    toast.show(t('trip.cancelled_toast'))
-  } catch (err) {
-    toast.error(errorText(err))
-    void trip.refresh()
-  } finally {
-    cancelling.value = false
   }
 }
 
@@ -143,6 +128,7 @@ onBeforeUnmount(() => {
             <p class="tpage__meta jt-tabular">
               {{ t('trip.order_number', { number: order.number }) }} · {{ fmt.money(order.fare) }} · {{ t(`payment_method.${order.payment_method}`) }}
             </p>
+            <p v-if="need" class="tpage__meta">{{ need }}</p>
           </div>
         </template>
 
@@ -152,6 +138,11 @@ onBeforeUnmount(() => {
 
         <section class="tpage__card">
           <h2 class="tpage__section">{{ t('trip.stops_title') }}</h2>
+          <p v-if="order.locality" class="tpage__locality">
+            <MapPin :size="16" :stroke-width="2.2" aria-hidden="true" />
+            <span class="jt-visually-hidden">{{ t('order.locality') }}:</span>
+            <span>{{ order.locality }}</span>
+          </p>
           <StopList :stops="order.stops" :current-id="target?.id ?? null" live />
         </section>
 
@@ -166,15 +157,13 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <FareBreakdown
-          class="tpage__group"
-          :fare="order.fare"
-          :commission="order.commission_amount"
-          :commission-bps="order.commission_bps"
-          :payment-method="order.payment_method"
-        />
+        <FareBreakdown class="tpage__group" :fare="order.fare" :commission="order.commission_amount" :payment-method="order.payment_method" charged />
 
-        <JButton v-if="canCancel" variant="destructive" block :loading="cancelling" @click="cancel">{{ t('trip.cancel') }}</JButton>
+        <JListGroup class="tpage__group" :footer="t('trip.problem_note')">
+          <JListRow :title="t('trip.problem')" :to="{ name: ROUTE.support }">
+            <template #icon><Headset :size="22" :stroke-width="2" aria-hidden="true" /></template>
+          </JListRow>
+        </JListGroup>
 
         <template #footer>
           <JButton v-if="action" block :loading="trip.busy" @click="perform">{{ actionLabel }}</JButton>
@@ -197,13 +186,15 @@ onBeforeUnmount(() => {
           {{ t('trip.completed_text', { fare: fmt.money(finished.fare), payment: t(`payment.${finished.payment_method}`) }) }}
         </p>
         <div class="tpage__done-fare">
-          <FareBreakdown :fare="finished.fare" :commission="finished.commission_amount" :commission-bps="finished.commission_bps" />
+          <FareBreakdown :fare="finished.fare" :commission="finished.commission_amount" charged />
         </div>
       </template>
       <template v-else>
         <h1 class="tpage__done-title">{{ t('trip.cancelled_title') }}</h1>
         <p class="tpage__done-text">{{ finished.cancelled_by ? t(`trip.cancelled_by.${finished.cancelled_by}`) : '' }}</p>
-        <p v-if="finished.cancel_reason" class="tpage__done-text">{{ t('trip.reason', { reason: finished.cancel_reason }) }}</p>
+        <p v-if="finished.cancel_reason && finished.cancelled_by !== 'passenger'" class="tpage__done-text">
+          {{ t('trip.reason', { reason: finished.cancel_reason }) }}
+        </p>
       </template>
       <div class="tpage__done-actions">
         <JButton block @click="done">{{ t('trip.done') }}</JButton>
@@ -253,6 +244,19 @@ onBeforeUnmount(() => {
   font: var(--jt-font-subheadline);
   color: var(--jt-color-label-secondary);
   overflow-wrap: anywhere;
+}
+
+.tpage__locality {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font: var(--jt-font-subheadline);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tpage__locality svg {
+  flex: none;
 }
 
 .tpage__meta {

@@ -1,12 +1,28 @@
 // Presentation rules for an order: headline per status, cancel reason,
-// map markers (completed stops grey, pulsing pickup while searching) and the
-// points the map should frame in each phase.
+// the driver's arrival estimate, map markers (completed stops grey, pulsing
+// pickup while searching) and the points the map should frame in each phase.
 
-import type { Order } from '../api/types'
+import type { Order, OrderPlace } from '../api/types'
 import { STOP_LETTERS } from '../maps/constants'
+import { haversineMeters } from '../utils/geo'
 import type { StopMarkerPoint } from '../maps/useStopMarkers'
 import type { LatLon } from '../utils/geo'
 import { isActiveOrderStatus } from '../utils/status'
+import { isUnnamedPlace } from '../utils/text'
+
+/**
+ * The place name shown for an order: the settlement of pickup A from the API
+ * ("Алматы"), else the pickup's locality line the passenger saw while
+ * booking; null when neither is known. Never coordinates, and never the
+ * tariff region (a nationwide tariff is not a place).
+ */
+export function orderLocality(o: Pick<OrderPlace, 'locality'>, pickupSubtitle?: string | null): string | null {
+  for (const v of [o.locality, pickupSubtitle]) {
+    const text = v?.trim() ?? ''
+    if (!isUnnamedPlace(text)) return text
+  }
+  return null
+}
 
 export function isDeliveryOrder(o: Pick<Order, 'category'>): boolean {
   return o.category !== 'taxi'
@@ -45,7 +61,9 @@ export interface CancelInfo {
   byKey: string | null
   /** Translated system reason (message key), e.g. no driver found. */
   reasonKey: string | null
-  /** Free-text reason given by a person. */
+  /** The passenger's chosen reason (message key of its label), shown as "Reason: …". */
+  labelKey: string | null
+  /** Free-text reason given by a person (the passenger's comment). */
   text: string | null
 }
 
@@ -55,16 +73,43 @@ export const DRIVER_CANCEL_CODES = ['passenger_no_show', 'sender_no_show', 'pass
 export function cancelInfo(o: Order): CancelInfo {
   const by = o.cancelled_by
   const reason = o.cancel_reason
-  if (by === 'system' && reason === 'no_driver_found') return { byKey: null, reasonKey: 'order.reason_no_driver_found', text: null }
+  if (by === 'system' && reason === 'no_driver_found') return { byKey: null, reasonKey: 'order.reason_no_driver_found', labelKey: null, text: null }
   const code = reason?.trim() ?? ''
   if (by === 'driver' && (DRIVER_CANCEL_CODES as readonly string[]).includes(code)) {
-    return { byKey: 'order.reason_by_driver', reasonKey: `order.driver_reason.${code}`, text: null }
+    return { byKey: 'order.reason_by_driver', reasonKey: `order.driver_reason.${code}`, labelKey: null, text: null }
   }
   return {
     byKey: by ? `order.reason_by_${by}` : null,
     reasonKey: null,
+    // §22.3: the passenger's reason code, with the comment (if any) in cancel_reason.
+    labelKey: by === 'passenger' && o.cancel_reason_code ? `cancel.reason.${o.cancel_reason_code}` : null,
     text: reason && by !== 'system' ? reason : null,
   }
+}
+
+/** An arrival estimate older than this is not trusted; the local estimate is used instead. */
+export const ETA_MAX_AGE_MS = 5 * 60_000
+/** Average town speed for the local arrival estimate, m/s (~25 km/h along streets). */
+const TOWN_SPEED_MPS = 7
+const ROAD_FACTOR = 1.3
+
+/**
+ * Minutes until the driver reaches pickup A while the order is accepted:
+ * the API's road estimate (§22.6) less the time since it was computed, or a
+ * straight-line estimate from the driver's last position; at least 1, null
+ * when neither is known.
+ */
+export function arrivalMinutes(o: Order, now = Date.now()): number | null {
+  if (o.status !== 'accepted') return null
+  if (o.driver_eta_s !== null && o.driver_eta_s >= 0) {
+    const at = Date.parse(o.driver_eta_at ?? '')
+    const age = Number.isFinite(at) ? Math.max(0, now - at) : 0
+    if (age <= ETA_MAX_AGE_MS) return Math.max(1, Math.ceil((o.driver_eta_s - age / 1000) / 60))
+  }
+  const loc = o.driver_location
+  const pickup = o.stops[0]
+  if (!loc || !pickup) return null
+  return Math.max(1, Math.round((haversineMeters(loc, pickup) * ROAD_FACTOR) / TOWN_SPEED_MPS / 60))
 }
 
 /** Map markers for the order's stops. */

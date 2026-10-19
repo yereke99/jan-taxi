@@ -1,0 +1,80 @@
+# Local live stack: the whole platform on one machine, reachable from real
+# Telegram bots through a Cloudflare quick tunnel. Development only: the quick
+# tunnel has no uptime guarantee and its host name changes on every start.
+#
+# Do not run this file by hand; deploy/local/stack.sh wraps it (docs/DEPLOYMENT.md §10):
+#
+#   docker compose -p jantaxi-local -f compose.yaml -f compose.local.yaml \
+#     --env-file <state>/compose.env --env-file <state>/tunnel.env ...
+#
+# compose.env holds the static settings (APP_ENV=development, APP_DOMAIN=:8088,
+# ADMIN_DOMAIN=:8089, ...); tunnel.env holds the current tunnel URL as
+# PASSENGER_MINIAPP_URL, DRIVER_MINIAPP_URL, API_PUBLIC_URL and
+# CORS_ALLOWED_ORIGINS. stack.sh rewrites tunnel.env and recreates api and the
+# bots whenever the tunnel URL changes.
+#
+# Published on the host (127.0.0.1 only):
+#   8088   Mini Apps and their /api (the same port the tunnel forwards to);
+#          /api/v1/admin* answers 404 here (Caddyfile, and the API by Host)
+#   8089   admin panel and the whole /api including /api/v1/admin*; this port
+#          is never reachable through the tunnel
+#   18091  passenger bot health JSON      18092  driver bot health JSON
+#   20241  cloudflared metrics (/ready, /quicktunnel)
+
+services:
+  web:
+    ports: !override
+      - "127.0.0.1:${LOCAL_APP_PORT:-8088}:8088"
+      - "127.0.0.1:${LOCAL_ADMIN_PORT:-8089}:8089"
+
+  passenger-bot:
+    environment:
+      # A stable id lets a recreated container take the polling lease back at once.
+      INSTANCE_ID: local-passenger
+    ports:
+      - "127.0.0.1:${LOCAL_PASSENGER_BOT_HEALTH_PORT:-18091}:8090"
+
+  driver-bot:
+    environment:
+      INSTANCE_ID: local-driver
+    ports:
+      - "127.0.0.1:${LOCAL_DRIVER_BOT_HEALTH_PORT:-18092}:8090"
+
+  # Cloudflare quick tunnel: https://<random>.trycloudflare.com -> web:8088.
+  # HTTP/2 transport (QUIC/UDP is often blocked). The URL is read from the
+  # metrics endpoint (/quicktunnel). Every start of this container, including
+  # a restart, gets a new URL; stack.sh and the watchdog follow it.
+  tunnel:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.10.1}
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - --metrics
+      - 0.0.0.0:20241
+      - --url
+      - http://web:8088
+    ports:
+      - "127.0.0.1:${LOCAL_TUNNEL_METRICS_PORT:-20241}:20241"
+    networks: [edge]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

@@ -155,6 +155,22 @@ public HTTPS URL for the Mini Apps (see [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_S
 **Whole stack in Docker on a laptop.** See `compose.override.example.yaml` (plain
 HTTP on `localhost:8088` / `localhost:8089`).
 
+**Whole stack with the real test bots (local live stack).** `deploy/local/stack.sh`
+runs everything in Docker (Compose project `jantaxi-local`, `compose.local.yaml`)
+behind a Cloudflare quick tunnel, so Telegram opens the Mini Apps over HTTPS;
+it keeps the bots' menu buttons on the current tunnel URL and runs a watchdog:
+
+```sh
+export JT_STACK_DIR=$HOME/jan-taxi-local      # state outside the repo (secrets, tunnel URL, logs)
+deploy/local/stack.sh env                     # compose.env from .env (real test bot tokens)
+deploy/local/stack.sh up                      # prints the Mini App URLs; admin on http://localhost:8089/
+deploy/local/stack.sh status                  # health, tunnel, bot health JSON, menu buttons
+deploy/local/stack.sh rebuild                 # deploy the current working tree, tunnel URL kept
+```
+
+Same through make: `make local-up STACK_DIR=...` (`make help`). Details:
+[docs/DEPLOYMENT.md §10](docs/DEPLOYMENT.md#10-local-live-stack-docker--cloudflare-quick-tunnel).
+
 ## Production deployment
 
 Summary (details in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)):

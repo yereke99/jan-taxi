@@ -59,6 +59,9 @@ func TestExports(t *testing.T) {
 		t.Fatalf("orders rows = %d", len(recs)-1)
 	}
 	pick, dest, reason := column(t, recs, "pickup_address"), column(t, recs, "destination_address"), column(t, recs, "cancel_reason")
+	if city, locality := column(t, recs, "city"), column(t, recs, "locality"); locality != city+1 || recs[1][locality] != "" {
+		t.Fatalf("locality column %d after city %d: %v", locality, city, recs[1])
+	}
 	var sawLink, sawReason bool
 	for _, r := range recs[1:] {
 		if r[pick] == `'=HYPERLINK("http://evil.example","click")` && r[dest] == "Ембі, Абай көшесі 5" {

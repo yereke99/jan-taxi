@@ -90,9 +90,9 @@ func TestPhoton(t *testing.T) {
 		t.Fatalf("local search must be biased and boxed around the position: %v", q)
 	}
 	want := []Place{
-		{Title: "Ембі темір жол вокзалы", Subtitle: "Темір жол көшесі, 1, Ембі, Ақтөбе облысы", Point: embiStation, Source: "photon", CountryCode: "KZ"},
-		{Title: "Жиенқали Тілепбергенов көшесі, 12", Subtitle: "Ембі, Ақтөбе облысы", Point: embi, Source: "photon", CountryCode: "KZ"},
-		{Title: "Ембі", Subtitle: "Мұғалжар ауданы, Ақтөбе облысы", Point: geo.Point{Lat: 48.83, Lon: 58.15}, Source: "photon", CountryCode: "KZ"},
+		{Title: "Ембі темір жол вокзалы", Subtitle: "Темір жол көшесі, 1, Ембі, Ақтөбе облысы", Point: embiStation, Source: "photon", CountryCode: "KZ", Locality: "Ембі"},
+		{Title: "Жиенқали Тілепбергенов көшесі, 12", Subtitle: "Ембі, Ақтөбе облысы", Point: embi, Source: "photon", CountryCode: "KZ", Locality: "Ембі"},
+		{Title: "Ембі", Subtitle: "Мұғалжар ауданы, Ақтөбе облысы", Point: geo.Point{Lat: 48.83, Lon: 58.15}, Source: "photon", CountryCode: "KZ", Locality: "Ембі"},
 	}
 	if len(places) != len(want) {
 		t.Fatalf("places = %+v", places)
@@ -415,5 +415,60 @@ func TestDedupeAndLabels(t *testing.T) {
 	}
 	if title, _ := photonLabel(photonProps{Street: "Жолдасбеков көшесі", City: "Алматы"}); title != "Жолдасбеков көшесі" {
 		t.Fatalf("street title = %q", title)
+	}
+}
+
+func TestPhotonSettlement(t *testing.T) {
+	// Around Embi: a village mapped as a node (no extent), a village whose
+	// extent misses the point, the district (bigger extent) and the town.
+	const body = `{"type":"FeatureCollection","features":[
+ {"type":"Feature","geometry":{"type":"Point","coordinates":[58.15,48.83]},
+  "properties":{"name":"Нүкте ауылы","osm_key":"place","osm_value":"village","countrycode":"KZ"}},
+ {"type":"Feature","geometry":{"type":"Point","coordinates":[58.30,48.90]},
+  "properties":{"name":"Шет ауылы","osm_key":"place","osm_value":"village","countrycode":"KZ","extent":[58.28,48.92,58.32,48.88]}},
+ {"type":"Feature","geometry":{"type":"Point","coordinates":[58.0,48.9]},
+  "properties":{"name":"Үлкен аймақ","osm_key":"place","osm_value":"city","countrycode":"KZ","extent":[57.5,49.5,58.8,48.3]}},
+ {"type":"Feature","geometry":{"type":"Point","coordinates":[58.1444,48.8224]},
+  "properties":{"name":" Ембі ","osm_key":"place","osm_value":"town","countrycode":"KZ","extent":[58.0973339,48.84485,58.1853961,48.798949]}}
+]}`
+	var status = 200
+	rec := newRecorder(t, func(path string, q url.Values) (int, string) {
+		if path != "/reverse" {
+			return 404, `{}`
+		}
+		if status == 400 {
+			return 400, `{"message":"unknown parameter 'layer'"}`
+		}
+		if status != 200 {
+			return status, `oops`
+		}
+		if q.Get("lat") == "48.000000" {
+			return 200, `{"type":"FeatureCollection","features":[]}`
+		}
+		return 200, body
+	})
+	g, err := NewPhoton(rec.srv.URL, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	name, err := g.Settlement(ctx, embi, "kk")
+	if err != nil || name != "Ембі" {
+		t.Fatalf("settlement = %q %v, want the smallest settlement covering the point", name, err)
+	}
+	path, q, _ := rec.last()
+	if path != "/reverse" || q.Get("layer") != "city" || q.Get("limit") != "5" || q.Get("radius") != "25" || q.Get("lang") != "default" {
+		t.Fatalf("request %s %v", path, q)
+	}
+	if name, err := g.Settlement(ctx, geo.Point{Lat: 48, Lon: 58}, "kk"); err != nil || name != "" {
+		t.Fatalf("no settlement = %q %v", name, err)
+	}
+	status = 400
+	if name, err := g.Settlement(ctx, embi, "kk"); err != nil || name != "" {
+		t.Fatalf("instance without the layer filter = %q %v, want no settlement and no error", name, err)
+	}
+	status = 500
+	if _, err := g.Settlement(ctx, embi, "kk"); err == nil {
+		t.Fatal("HTTP 500 must be an error")
 	}
 }

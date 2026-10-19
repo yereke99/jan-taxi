@@ -154,6 +154,34 @@ describe('LiveOrderSync (realtime-driven status transitions)', () => {
     sync.stop()
   })
 
+  it('applies the arrival estimate, also from an event without a position', async () => {
+    const { rt, sync, fetchOrder } = setup([order('accepted', 2, { driver_eta_s: 420, driver_eta_at: '2026-10-16T10:00:00Z' })])
+    sync.start()
+    await vi.advanceTimersByTimeAsync(0)
+    // The API's periodic refresh: order, driver and estimate only.
+    rt.emit('driver.location_updated', { order_id: ID, driver_id: DRIVER, driver_eta_s: 300 })
+    expect(sync.current?.driver_eta_s).toBe(300)
+    expect(sync.current?.driver_location).toBeNull()
+    expect(Date.parse(sync.current?.driver_eta_at ?? '')).toBe(Date.now())
+    // A position with the latest estimate updates both.
+    rt.emit('driver.location_updated', { order_id: ID, driver_id: DRIVER, lat: 48.83, lon: 58.15, recorded_at: '2026-10-16T10:00:10Z', driver_eta_s: 240 })
+    expect(sync.current).toMatchObject({ driver_eta_s: 240, driver_location: { lat: 48.83 } })
+    // Another driver's estimate is ignored.
+    rt.emit('driver.location_updated', { order_id: ID, driver_id: 'x', driver_eta_s: 5 })
+    expect(sync.current?.driver_eta_s).toBe(240)
+    expect(fetchOrder).toHaveBeenCalledTimes(1)
+    sync.stop()
+  })
+
+  it('ignores arrival estimates once the driver has arrived', async () => {
+    const { rt, sync } = setup([order('driver_arriving', 3, { driver_eta_s: null })])
+    sync.start()
+    await vi.advanceTimersByTimeAsync(0)
+    rt.emit('driver.location_updated', { order_id: ID, driver_id: DRIVER, driver_eta_s: 120 })
+    expect(sync.current?.driver_eta_s).toBeNull()
+    sync.stop()
+  })
+
   it('polls every 10 s while the socket is down, slower while connected, and stops when finished', async () => {
     const { rt, sync, fetchOrder } = setup([order('searching', 1)])
     rt.status = 'reconnecting'

@@ -15,6 +15,7 @@ export const PAGE_COMPONENTS: Record<string, Loader> = {
   ledger: () => import('../pages/finance/LedgerPage.vue'),
   cities: () => import('../pages/config/CitiesPage.vue'),
   places: () => import('../pages/config/PlacesPage.vue'),
+  'vehicle-classes': () => import('../pages/config/VehicleClassesPage.vue'),
   tariffs: () => import('../pages/config/TariffsPage.vue'),
   settings: () => import('../pages/config/SettingsPage.vue'),
   notifications: () => import('../pages/system/NotificationsPage.vue'),

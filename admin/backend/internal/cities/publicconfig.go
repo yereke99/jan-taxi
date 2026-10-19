@@ -16,6 +16,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
+	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 )
 
 // Apps that may request public configuration.
@@ -37,19 +38,48 @@ type PublicOptions struct {
 
 // PublicConfig is the runtime configuration served to the apps (§14).
 type PublicConfig struct {
-	App             string                `json:"app"`
-	DefaultLanguage string                `json:"default_language"`
-	Languages       []string              `json:"languages"`
-	City            *PublicCity           `json:"city"`
-	Map             PublicMap             `json:"map"`
-	Routing         PublicRouting         `json:"routing"`
-	Bots            PublicBots            `json:"bots"`
-	Support         PublicSupport         `json:"support"`
-	Delivery        PublicDelivery        `json:"delivery"`
-	Navigation      PublicNavigation      `json:"navigation"`
-	Fare            *Fare                 `json:"fare,omitempty"`  // passenger
-	Kaspi           *settings.Kaspi       `json:"kaspi,omitempty"` // driver
-	TopUp           *settings.TopUpLimits `json:"topup,omitempty"` // driver
+	App             string           `json:"app"`
+	DefaultLanguage string           `json:"default_language"`
+	Languages       []string         `json:"languages"`
+	City            *PublicCity      `json:"city"`
+	Map             PublicMap        `json:"map"`
+	Routing         PublicRouting    `json:"routing"`
+	Bots            PublicBots       `json:"bots"`
+	Support         PublicSupport    `json:"support"`
+	Delivery        PublicDelivery   `json:"delivery"`
+	Navigation      PublicNavigation `json:"navigation"`
+	// VehicleClasses are the active vehicle classes in display order (§21).
+	VehicleClasses    []vehicleclasses.PublicClass `json:"vehicle_classes"`
+	CargoSizes        []vehicleclasses.CargoSize   `json:"cargo_sizes"`
+	MaxPassengerCount int                          `json:"max_passenger_count"`
+	Fare              *Fare                        `json:"fare,omitempty"`  // passenger
+	Kaspi             *settings.Kaspi              `json:"kaspi,omitempty"` // driver
+	TopUp             *settings.TopUpLimits        `json:"topup,omitempty"` // driver
+	// CancelReasons are the passenger's cancellation reasons in display
+	// order (passenger, §22.3).
+	CancelReasons []CancelReason `json:"cancel_reasons,omitempty"`
+	// Commission is charged when a driver takes an order (driver, §22.2).
+	Commission *settings.CommissionPolicy `json:"commission,omitempty"`
+	// WelcomeBonus is credited once to a new driver on approval (driver,
+	// §22.1; 0 when disabled).
+	WelcomeBonus *int64 `json:"welcome_bonus,omitempty"`
+}
+
+// CancelReason is one passenger cancellation reason; a comment is required
+// when CommentRequired.
+type CancelReason struct {
+	Code            string `json:"code"`
+	Label           Name   `json:"label"`
+	CommentRequired bool   `json:"comment_required"`
+}
+
+// cancelReasons are the reasons of ARCHITECTURE §22.3 (orders.cancel_reason_code).
+var cancelReasons = []CancelReason{
+	{Code: "long_wait", Label: Name{KK: "Ұзақ күттім", RU: "Долго ждать", EN: "Waited too long"}},
+	{Code: "driver_issue", Label: Name{KK: "Жүргізуші ұнамады", RU: "Не понравился водитель", EN: "Didn't like the driver"}},
+	{Code: "vehicle_issue", Label: Name{KK: "Көлік ұнамады", RU: "Не понравилась машина", EN: "Didn't like the car"}},
+	{Code: "changed_plans", Label: Name{KK: "Жоспарым өзгерді", RU: "Планы изменились", EN: "My plans changed"}},
+	{Code: "other", Label: Name{KK: "Басқа себеп", RU: "Другое", EN: "Other"}, CommentRequired: true},
 }
 
 // PublicCity is the default map city.
@@ -97,7 +127,8 @@ type PublicNavigation struct {
 	TwoGISBaseURL string `json:"twogis_base_url"`
 }
 
-// Fare is the fare range of the default city's taxi tariff.
+// Fare is the fare range of the default city's taxi tariff of the default
+// vehicle class.
 type Fare struct {
 	Min  int `json:"min"`
 	Max  int `json:"max"`
@@ -169,9 +200,16 @@ func (s *PublicConfigService) Build(ctx context.Context, app string) (PublicConf
 			DriverLink:         DirectLink(s.opts.DriverBotUsername, s.opts.DriverMiniAppShortName, "home"),
 			DriverRegisterLink: DirectLink(s.opts.DriverBotUsername, s.opts.DriverMiniAppShortName, "register"),
 		},
-		Delivery:   PublicDelivery{ProhibitedItems: nonNil(settings.ProhibitedItems(ctx, q))},
-		Navigation: PublicNavigation{TwoGISBaseURL: settings.TwoGISBaseURL(ctx, q)},
+		Delivery:          PublicDelivery{ProhibitedItems: nonNil(settings.ProhibitedItems(ctx, q))},
+		Navigation:        PublicNavigation{TwoGISBaseURL: settings.TwoGISBaseURL(ctx, q)},
+		CargoSizes:        slices.Clone(vehicleclasses.CargoSizes),
+		MaxPassengerCount: vehicleclasses.MaxPassengerCount,
 	}
+	classes, err := vehicleclasses.Public(ctx, q)
+	if err != nil {
+		return PublicConfig{}, err
+	}
+	cfg.VehicleClasses = classes
 	sup := settings.SupportContacts(ctx, q)
 	cfg.Support = PublicSupport{TelegramUsername: sup.TelegramUsername, Phone: sup.Phone, Hours: sup.Hours}
 	if sup.TelegramUsername != "" {
@@ -188,6 +226,7 @@ func (s *PublicConfigService) Build(ctx context.Context, app string) (PublicConf
 
 	switch app {
 	case "passenger":
+		cfg.CancelReasons = slices.Clone(cancelReasons)
 		if cfg.City != nil {
 			fare, err := taxiFare(ctx, q, city)
 			if err != nil {
@@ -198,7 +237,9 @@ func (s *PublicConfigService) Build(ctx context.Context, app string) (PublicConf
 	case "driver":
 		k := settings.KaspiPayment(ctx, q)
 		t := settings.TopUp(ctx, q)
-		cfg.Kaspi, cfg.TopUp = &k, &t
+		c := settings.Commission(ctx, q)
+		b := settings.WelcomeBonus(ctx, q)
+		cfg.Kaspi, cfg.TopUp, cfg.Commission, cfg.WelcomeBonus = &k, &t, &c, &b
 	}
 	return cfg, nil
 }
@@ -207,7 +248,8 @@ func taxiFare(ctx context.Context, q db.Querier, c City) (*Fare, error) {
 	var f Fare
 	err := q.QueryRow(ctx, `
 		SELECT min_fare, max_fare, fare_step FROM tariffs
-		WHERE city_id = $1 AND category = 'taxi' AND is_active`, c.ID).Scan(&f.Min, &f.Max, &f.Step)
+		WHERE city_id = $1 AND category = 'taxi' AND vehicle_class = $2 AND is_active`, c.ID, vehicleclasses.Default).
+		Scan(&f.Min, &f.Max, &f.Step)
 	if db.IsNoRows(err) {
 		return nil, nil
 	}

@@ -1,6 +1,7 @@
 package cities
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -61,10 +62,13 @@ func (h *AdminHandler) createZone(w http.ResponseWriter, r *http.Request) error 
 	active := req.IsActive == nil || *req.IsActive
 	var zone Zone
 	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		if _, err := getCity(ctx, tx, "c.id = $1 FOR SHARE", cityID); err != nil {
+		city, err := getCity(ctx, tx, "c.id = $1 FOR SHARE", cityID)
+		if err != nil {
 			return err
 		}
-		var err error
+		if city.IsDefaultRegion {
+			return ErrDefaultRegionLocked
+		}
 		if zone, err = zoneInsert(ctx, tx, cityID, name, geometry, active); err != nil {
 			return err
 		}
@@ -115,6 +119,9 @@ func (h *AdminHandler) updateZone(w http.ResponseWriter, r *http.Request) error 
 		if err != nil {
 			return err
 		}
+		if err := checkZoneEditable(ctx, tx, before); err != nil {
+			return err
+		}
 		_, err = tx.Exec(ctx, `
 			UPDATE service_zones SET
 				name = COALESCE($2, name),
@@ -146,6 +153,9 @@ func (h *AdminHandler) deleteZone(w http.ResponseWriter, r *http.Request) error 
 		if err != nil {
 			return err
 		}
+		if err := checkZoneEditable(ctx, tx, before); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `DELETE FROM service_zones WHERE id = $1`, id)
 		if err != nil {
 			return httpx.Internal(err)
@@ -159,4 +169,18 @@ func (h *AdminHandler) deleteZone(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	return httpx.NoContent(w)
+}
+
+// checkZoneEditable refuses changes to the zone of the nationwide default
+// region: it is the Kazakhstan boundary, and a smaller or missing one would
+// change which orders the region prices against the city zones.
+func checkZoneEditable(ctx context.Context, q db.Querier, z Zone) error {
+	var locked bool
+	if err := q.QueryRow(ctx, `SELECT is_default_region FROM cities WHERE id = $1`, z.CityID).Scan(&locked); err != nil {
+		return httpx.Internal(err)
+	}
+	if locked {
+		return ErrDefaultRegionLocked
+	}
+	return nil
 }

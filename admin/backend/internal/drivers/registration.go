@@ -390,6 +390,9 @@ func (r Registration) MissingFields(requirePhone bool) []string {
 		missing[FieldIDBack] = true
 	}
 	v := r.Vehicle
+	if v == nil || !v.HasClass() {
+		missing[FieldVehicleClass] = true
+	}
 	if v == nil || v.Make == "" || v.Model == "" {
 		missing[FieldVehicleMakeModel] = true
 	}

@@ -2,6 +2,8 @@
 // holds kk, ru and en side by side; Kazakh defines the schema.
 
 import { base } from './areas/base'
+import { bonusArea } from './areas/bonus'
+import { classesArea } from './areas/classes'
 import { dashboard } from './areas/dashboard'
 import { drivers } from './areas/drivers'
 import { finance } from './areas/finance'
@@ -20,6 +22,8 @@ function compose(locale: 'kk' | 'ru' | 'en') {
     config: configArea[locale],
     settings: settingsArea[locale],
     system: system[locale],
+    classes: classesArea[locale],
+    bonus: bonusArea[locale],
   }
 }
 

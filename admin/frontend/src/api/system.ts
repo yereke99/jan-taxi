@@ -32,6 +32,15 @@ export interface DailyRow {
   topups_confirmed_amount: number
 }
 
+export interface CancelReasonCounts {
+  long_wait: number
+  driver_issue: number
+  vehicle_issue: number
+  changed_plans: number
+  other: number
+  unspecified: number
+}
+
 /** GET /admin/dashboard (admin/backend/internal/reports/dashboard.go). */
 export interface DashboardMetrics {
   from: string
@@ -46,12 +55,24 @@ export interface DashboardMetrics {
     cancelled_by_driver: number
     cancelled_by_admin: number
     no_driver_found: number
+    /** Passenger cancellations by the reason they chose (§22.3); unspecified = older orders. */
+    cancelled_by_reason: CancelReasonCounts
     disputed: number
     searching_now: number
     active_now: number
     by_category: { taxi: number; parcel: number; other: number }
   }
-  revenue: { gmv: number; commission_charged: number; commission_refunded: number; commission_net: number; currency: string }
+  revenue: {
+    gmv: number
+    commission_charged: number
+    commission_refunded: number
+    commission_net: number
+    /** Welcome balance credited to new drivers (§22.1). */
+    welcome_bonuses: number
+    /** Bonuses operators gave drivers (§22.7). */
+    manual_bonuses: number
+    currency: string
+  }
   drivers: {
     total: number
     approved: number
@@ -92,7 +113,9 @@ export const NOTIFICATION_TEMPLATE_KEYS = [
   'order_completed_driver',
   'order_cancelled_passenger',
   'order_cancelled_driver',
-  'order_taken_driver',
+  'order_offer_won',
+  'order_offer_taken',
+  'order_offer_cancelled',
   'order_no_driver',
   'moderation_submitted',
   'moderation_approved',
@@ -100,6 +123,8 @@ export const NOTIFICATION_TEMPLATE_KEYS = [
   'moderation_rejected',
   'driver_suspended',
   'driver_restored',
+  'driver_welcome_bonus',
+  'driver_bonus_granted',
   'topup_created',
   'topup_confirmed',
   'topup_rejected',

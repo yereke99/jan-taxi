@@ -152,13 +152,15 @@ func (f *fakeOSRM) serve(w http.ResponseWriter, r *http.Request) {
 
 // fakeGeocoder is a scripted Geocoder that counts calls.
 type fakeGeocoder struct {
-	mu       sync.Mutex
-	search   []Place
-	reverse  *Place
-	err      error
-	delay    time.Duration
-	searches int
-	reverses int
+	mu      sync.Mutex
+	search  []Place
+	reverse *Place
+	err     error
+	delay   time.Duration
+	// reverseDelay holds every reverse answer back (until the context ends).
+	reverseDelay time.Duration
+	searches     int
+	reverses     int
 }
 
 func (g *fakeGeocoder) Search(ctx context.Context, _ string, _ *geo.Point, _ string, _ int) ([]Place, error) {
@@ -179,8 +181,15 @@ func (g *fakeGeocoder) Search(ctx context.Context, _ string, _ *geo.Point, _ str
 func (g *fakeGeocoder) Reverse(ctx context.Context, _ geo.Point, _ string) (*Place, error) {
 	g.mu.Lock()
 	g.reverses++
-	res, err := copyPlace(g.reverse), g.err
+	res, err, delay := copyPlace(g.reverse), g.err, g.reverseDelay
 	g.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return res, err
 }
 

@@ -110,7 +110,7 @@ func TestDriverOnboardingThroughApp(t *testing.T) {
 	}
 	res := call(http.MethodPut, pathRegistration, map[string]any{
 		"first_name": "Ерлан", "last_name": "Бекенов",
-		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": "777 аве 04"},
+		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": "777 аве 04", "vehicle_class": "sedan"},
 	}, bearer)
 	if res.code != http.StatusOK || res.body["code"] != "EMB001" {
 		t.Fatalf("save registration: %d %v", res.code, res.body)
@@ -172,14 +172,22 @@ func TestDriverOnboardingThroughApp(t *testing.T) {
 	if res.code != http.StatusOK || res.body["status"] != "approved" || res.body["wallet"] == nil {
 		t.Fatalf("approve: %d %v", res.code, res.body)
 	}
+	// The first approval credits the welcome bonus (§22.1).
+	if w := res.body["wallet"].(map[string]any); w["balance"] != float64(500) || w["available"] != float64(500) {
+		t.Fatalf("wallet after approval: %v", w)
+	}
+	if b, _ := res.body["welcome_bonus"].(map[string]any); b == nil || b["amount"] != float64(500) || b["granted_at"] == nil {
+		t.Fatalf("welcome bonus: %v", res.body["welcome_bonus"])
+	}
 	if res := call(http.MethodGet, "/api/v1/admin/drivers/locations", nil, session); res.code != http.StatusOK || res.body["items"] == nil {
 		t.Fatalf("live map: %d %v", res.code, res.body)
 	}
 
-	// Approved with an empty wallet: going online asks for a top-up.
+	// With the bonus the driver may work at once; going online only needs a
+	// location.
 	res = call(http.MethodPatch, "/api/v1/driver/availability", map[string]any{"online": true}, bearer)
-	if res.code != http.StatusPaymentRequired || res.body["error"].(map[string]any)["code"] != "insufficient_balance" {
-		t.Fatalf("go online with empty wallet: %d %v", res.code, res.body)
+	if res.code != http.StatusUnprocessableEntity || res.body["error"].(map[string]any)["code"] != "location_required" {
+		t.Fatalf("go online without location: %d %v", res.code, res.body)
 	}
 	res = call(http.MethodGet, "/api/v1/driver/profile", nil, bearer)
 	if res.code != http.StatusOK || res.body["status"] != "approved" || res.body["vehicle"].(map[string]any)["plate"] != "777 ABE 04" {

@@ -114,12 +114,12 @@ func TestWorkerSendsInUserLanguage(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("sent %d messages", len(got))
 	}
-	want := "<b>Заказ №1042: водитель найден</b>\nЕрлан &lt;b&gt; · Toyota Camry, белый\nГосномер: <b>123ABC04</b>"
+	want := "<b>Водитель найден · №1042</b>\nЕрлан &lt;b&gt;\nToyota Camry, белый\nГосномер: <b>123ABC04</b>"
 	if got[0].text != want || got[0].bot != PassengerBot {
 		t.Fatalf("text = %q", got[0].text)
 	}
 	btn := got[0].markup.InlineKeyboard[0][0]
-	if btn.Text != "Открыть заказ" || btn.WebApp.URL != "https://jantaxi.example.kz/passenger/?startapp=order_"+orderID.String() {
+	if btn.Text != "Смотреть на карте" || btn.WebApp.URL != "https://jantaxi.example.kz/passenger/?startapp=order_"+orderID.String() {
 		t.Fatalf("button = %+v / %+v", btn, btn.WebApp)
 	}
 	var id uuid.UUID
@@ -421,7 +421,7 @@ func TestTwoWorkersSendEachMessageOnce(t *testing.T) {
 	}
 	for i, u := range users {
 		if err := Enqueue(ctx, pool, Notification{Bot: DriverBot, UserID: u, Template: TplWalletLowBalance,
-			DedupeKey: fmt.Sprintf("low:%d", i), Params: map[string]any{"available": 40}}); err != nil {
+			DedupeKey: fmt.Sprintf("low:%d", i), Params: map[string]any{"available": 40, "required": 50}}); err != nil {
 			t.Fatal(err)
 		}
 	}

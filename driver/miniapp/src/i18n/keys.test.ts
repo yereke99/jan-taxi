@@ -3,8 +3,7 @@
 // key dynamically.
 
 import { describe, expect, it } from 'vitest'
-import { CORRECTION_REASONS, REGISTRATION_FIELDS } from '../api/types'
-import { CANCEL_REASONS } from '../features/trip/labels'
+import { CARGO_SIZES, CORRECTION_REASONS, REGISTRATION_FIELDS } from '../api/types'
 import { CONSENT_SECTIONS } from '../features/registration/consent'
 import { STEP_IDS } from '../features/registration/form'
 import { RECEIPT_REASONS } from '../features/topup/receipt'
@@ -57,7 +56,7 @@ describe('i18n keys', () => {
       ...TOPUP_STATUSES.map((s) => `topup_status.${s}`),
       ...MODERATION_STATUSES.map((s) => `moderation_status.${s}`),
       ...['not_approved', 'offline', 'insufficient_balance', 'has_active_order', 'location_required', 'location_stale'].map((r) => `orders.eligibility.${r}`),
-      ...CANCEL_REASONS.map((r) => `trip.cancel_reasons.${r}`),
+      ...CARGO_SIZES.map((c) => `vehicle.cargo_size.${c}`),
       ...['passenger', 'driver', 'admin', 'system'].map((a) => `trip.cancelled_by.${a}`),
       ...['ios', 'no_gps', 'too_many_points'].map((n) => `trip.note_${n}`),
       ...[
@@ -69,6 +68,7 @@ describe('i18n keys', () => {
         'commission_refund',
         'adjustment_credit',
         'adjustment_debit',
+        'bonus_credit',
       ].map((e) => `wallet.entry.${e}`),
       ...LOCALES.map((l) => `languages.${l}`),
       ...RECEIPT_REASONS.map((r) => `topup.reasons.${r}`),

@@ -36,7 +36,7 @@ func TestDisputeRefund(t *testing.T) {
 	drv := e.driver(1000, true)
 	o, pid, pc := e.trip(drv, 800)
 	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/complete", o.ID), nil), http.StatusOK, "")
-	if bal, _ := e.wallet(drv.DriverID); bal != 920 {
+	if bal, _ := e.wallet(drv.DriverID); bal != 950 {
 		t.Fatalf("balance after completion %d", bal)
 	}
 
@@ -108,8 +108,9 @@ func TestDisputeRefund(t *testing.T) {
 	}
 }
 
-// TestDisputeDuringTrip: a dispute opened while in progress settles the
-// reservation when resolved completed and releases it when resolved cancelled.
+// TestDisputeDuringTrip: the commission was charged when the driver took the
+// order; a dispute opened while in progress keeps it when resolved completed
+// or cancelled, and refunds it only with refund_commission.
 func TestDisputeDuringTrip(t *testing.T) {
 	e := newEnv(t)
 	drv := e.driver(1000, true)
@@ -126,7 +127,7 @@ func TestDisputeDuringTrip(t *testing.T) {
 	if s := e.status(o.ID); s != "completed" {
 		t.Fatalf("order %s", s)
 	}
-	if bal, res := e.wallet(drv.DriverID); bal != 920 || res != 0 {
+	if bal, res := e.wallet(drv.DriverID); bal != 950 || res != 0 {
 		t.Fatalf("wallet %d/%d", bal, res)
 	}
 	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_charge'`, o.ID); got != 1 {
@@ -136,7 +137,8 @@ func TestDisputeDuringTrip(t *testing.T) {
 		t.Fatalf("completed_trips = %d", got)
 	}
 
-	// Opened by an operator, resolved as cancelled: the reservation is released.
+	// Opened by an operator, resolved as cancelled without a refund: the
+	// commission stays charged.
 	o2, pid2, _ := e.trip(drv, 1000)
 	r = e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/dispute", o2.ID), map[string]any{"reason": "Жолаушы шағымы"})
 	e.expect(r, http.StatusOK, "")
@@ -150,15 +152,25 @@ func TestDisputeDuringTrip(t *testing.T) {
 	}
 	e.expect(e.do(e.operator(), http.MethodPost, path("/admin/orders/%s/dispute", o2.ID), map[string]any{"reason": "Қайта"}),
 		http.StatusConflict, "conflict")
-	if _, res := e.wallet(drv.DriverID); res != 100 {
-		t.Fatalf("reserved during dispute %d", res)
+	if bal, res := e.wallet(drv.DriverID); bal != 900 || res != 0 {
+		t.Fatalf("wallet during dispute %d/%d", bal, res)
 	}
 	e.expect(e.resolve(ao.Dispute.ID, map[string]any{"outcome": "cancelled", "resolution": "Тапсырыс жойылды"}), http.StatusOK, "")
-	if bal, res := e.wallet(drv.DriverID); bal != 920 || res != 0 {
+	if bal, res := e.wallet(drv.DriverID); bal != 900 || res != 0 {
 		t.Fatalf("wallet %d/%d", bal, res)
 	}
-	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_release'`, o2.ID); got != 1 {
-		t.Fatalf("releases = %d", got)
+	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type <> 'commission_charge'`, o2.ID); got != 0 {
+		t.Fatalf("other ledger rows = %d", got)
+	}
+
+	// Disputed during the trip and resolved cancelled with a refund.
+	o3, _, pc3 := e.trip(drv, 900)
+	e.expect(e.do(pc3, http.MethodPost, path("/orders/%s/dispute", o3.ID), map[string]any{"reason": "Жүргізуші келмеді"}), http.StatusOK, "")
+	r = e.do(e.operator(), http.MethodGet, "/admin/disputes?status=open", nil)
+	r.decode(t, &dp)
+	e.expect(e.resolve(dp.Items[0].ID, map[string]any{"outcome": "cancelled", "resolution": "Қайтарылды", "refund_commission": true}), http.StatusOK, "")
+	if bal, res := e.wallet(drv.DriverID); bal != 900 || res != 0 {
+		t.Fatalf("wallet after refund %d/%d", bal, res)
 	}
 	if m, err := wallets.Reconcile(context.Background(), e.pool); err != nil || len(m) != 0 {
 		t.Fatalf("reconcile: %v %+v", err, m)

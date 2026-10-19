@@ -35,7 +35,7 @@ func TestFullLifecycle(t *testing.T) {
 	r := e.do(drv.c, http.MethodGet, "/driver/orders", nil)
 	e.expect(r, http.StatusOK, "")
 	r.decode(t, &avail)
-	if !avail.Eligibility.Eligible || len(avail.Items) != 1 || avail.Items[0].ID != o.ID || avail.Items[0].CommissionAmount != 80 {
+	if !avail.Eligibility.Eligible || len(avail.Items) != 1 || avail.Items[0].ID != o.ID || avail.Items[0].CommissionAmount != 50 {
 		t.Fatalf("available: %+v", avail)
 	}
 	if len(avail.Items[0].Stops) != 3 || avail.Items[0].Stops[2].Kind != "destination" {
@@ -55,10 +55,11 @@ func TestFullLifecycle(t *testing.T) {
 	e.expect(r, http.StatusOK, "")
 	r.decode(t, &dd)
 	if !dd.IsMine || dd.Status != "accepted" || dd.Passenger == nil || dd.Stops[0].AddressDetails == nil ||
-		!dd.CanArrive || !dd.CanStart || !dd.CanCancel || dd.CanComplete {
+		!dd.CanArrive || !dd.CanStart || dd.CanCancel || dd.CanComplete {
 		t.Fatalf("accepted detail: %+v", dd)
 	}
-	if bal, res := e.wallet(drv.DriverID); bal != 1000 || res != 80 {
+	// The fixed commission is charged at once (§22.2).
+	if bal, res := e.wallet(drv.DriverID); bal != 950 || res != 0 {
 		t.Fatalf("after accept wallet = %d/%d", bal, res)
 	}
 	if e.outbox("order_accepted_passenger", pid) != 1 || e.outbox("order_accepted_driver", drv.UserID) != 1 {
@@ -105,7 +106,7 @@ func TestFullLifecycle(t *testing.T) {
 	if dd.Status != "completed" || dd.CompletedAt == nil || dd.Stops[2].CompletedAt == nil || dd.Passenger != nil {
 		t.Fatalf("completed detail: %+v", dd)
 	}
-	if bal, res := e.wallet(drv.DriverID); bal != 920 || res != 0 {
+	if bal, res := e.wallet(drv.DriverID); bal != 950 || res != 0 {
 		t.Fatalf("after complete wallet = %d/%d", bal, res)
 	}
 	if n := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_charge'`, o.ID); n != 1 {
@@ -170,7 +171,7 @@ func TestFullLifecycle(t *testing.T) {
 	r = e.do(drv.c, http.MethodGet, "/driver/orders/history", nil)
 	e.expect(r, http.StatusOK, "")
 	r.decode(t, &dh)
-	if len(dh.Items) != 1 || dh.Items[0].CommissionAmount != 80 || dh.Items[0].Destination.Seq != 2 {
+	if len(dh.Items) != 1 || dh.Items[0].CommissionAmount != 50 || dh.Items[0].Destination.Seq != 2 {
 		t.Fatalf("driver history: %+v", dh)
 	}
 	e.expect(e.do(drv.c, http.MethodGet, "/driver/orders/active", nil), http.StatusNoContent, "")
@@ -237,22 +238,56 @@ func TestStopsOrderPreserved(t *testing.T) {
 	}
 }
 
-// TestLowBalanceNotice: a completion that leaves less than the minimum online
-// balance tells the driver to top up.
+// TestLowBalanceNotice: an acceptance that leaves less than the next
+// commission tells the driver once a day, with a top-up button, and the
+// driver stops receiving offers (§22.2).
 func TestLowBalanceNotice(t *testing.T) {
 	e := newEnv(t)
 	drv := e.driver(120, true)
 	o, _, _ := e.order(embiStops[:2], 1000)
-	for _, step := range []string{"accept", "start", "complete"} {
-		e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/%s", o.ID, step), nil), http.StatusOK, "")
-	}
-	if bal, res := e.wallet(drv.DriverID); bal != 20 || res != 0 {
+	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil), http.StatusOK, "")
+	if bal, res := e.wallet(drv.DriverID); bal != 70 || res != 0 {
 		t.Fatalf("wallet %d/%d", bal, res)
 	}
-	if e.outbox("wallet_low_balance", drv.UserID) != 1 || e.outbox("order_completed_driver", drv.UserID) != 1 {
+	if e.outbox("wallet_low_balance", drv.UserID) != 0 {
+		t.Fatal("low balance notice while the next commission is covered")
+	}
+	for _, step := range []string{"start", "complete"} {
+		e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/%s", o.ID, step), nil), http.StatusOK, "")
+	}
+	o2, _, _ := e.order(embiStops[:2], 800)
+	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o2.ID), nil), http.StatusOK, "")
+	if bal, _ := e.wallet(drv.DriverID); bal != 20 {
+		t.Fatalf("balance %d", bal)
+	}
+	if e.outbox("wallet_low_balance", drv.UserID) != 1 {
 		t.Fatal("low balance notice missing")
 	}
-	// The driver no longer covers a new order's commission.
-	o2, _, _ := e.order(embiStops[:2], 800)
-	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o2.ID), nil), http.StatusPaymentRequired, "insufficient_balance")
+	if n := e.count(`SELECT count(*) FROM notification_outbox WHERE template = 'wallet_low_balance' AND user_id = $1
+		AND params->>'available' = '20' AND params->>'required' = '50' AND dedupe_key LIKE 'wallet_low_balance:' || $2 || ':%'`,
+		drv.UserID, drv.DriverID.String()); n != 1 {
+		t.Fatal("low balance notice params")
+	}
+	for _, step := range []string{"start", "complete"} {
+		e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/%s", o2.ID, step), nil), http.StatusOK, "")
+	}
+	// The driver is no longer offered orders and cannot take one.
+	o3, _, _ := e.order(embiStops[:2], 800)
+	if n := e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1 AND driver_id = $2`, o3.ID, drv.DriverID); n != 0 {
+		t.Fatal("offered an order the driver cannot pay for")
+	}
+	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o3.ID), nil), http.StatusPaymentRequired, "insufficient_balance")
+	// A top-up, a new acceptance and a second drop the same day: still one notice.
+	if _, err := e.pool.Exec(context.Background(), `UPDATE wallets SET balance = balance + 50 WHERE driver_id = $1`, drv.DriverID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO wallet_ledger (wallet_id, entry_type, balance_delta, reserved_delta,
+		balance_after, reserved_after, idempotency_key) SELECT id, 'adjustment_credit', 50, 0, balance, reserved, 'adjust:test'
+		FROM wallets WHERE driver_id = $1`, drv.DriverID); err != nil {
+		t.Fatal(err)
+	}
+	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o3.ID), nil), http.StatusOK, "")
+	if e.outbox("wallet_low_balance", drv.UserID) != 1 {
+		t.Fatal("second low balance notice on the same day")
+	}
 }

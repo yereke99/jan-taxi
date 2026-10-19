@@ -12,6 +12,7 @@ import { intentLocation, parseStartParam } from './router/startParam'
 import { getToken, reauthenticate } from './services/auth'
 import { initRealtime } from './services/realtime'
 import { useSessionStore } from './stores/session'
+import { useTripStore } from './stores/trip'
 import { bootTelegram, useBackButton } from './telegram'
 
 const START_HANDLED_KEY = 'jt.driver.start_param_handled'
@@ -64,7 +65,17 @@ async function main(): Promise<void> {
   useBackButton(router)
   await router.isReady()
   const param = takeStartParam(tg.state.startParam)
-  if (param) await router.replace(intentLocation(parseStartParam(param), router))
+  if (param) {
+    const intent = parseStartParam(param)
+    let activeOrderId: string | null = null
+    if (intent.kind === 'order' && session.isApproved) {
+      // The driver's own trip (opened from the bot after «Алу») goes straight to the trip screen.
+      const trip = useTripStore(pinia)
+      await trip.refresh()
+      activeOrderId = trip.active?.id ?? null
+    }
+    await router.replace(intentLocation(intent, router, activeOrderId))
+  }
   if (demo) await demo.openDemoScreen(pinia, router)
 
   app.mount('#app')

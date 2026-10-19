@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
@@ -23,7 +24,15 @@ import (
 type Service struct {
 	pool *pgxpool.Pool
 	log  *slog.Logger
+	// eta refines the driver's arrival estimate after an acceptance commits
+	// (§22.6); nil keeps the straight-line estimate.
+	eta *dispatch.ArrivalETA
 }
+
+// SetArrivalETA makes the service refine the arrival estimate (OSRM) right
+// after a driver takes an order or an operator assigns one. Call before
+// mounting.
+func (s *Service) SetArrivalETA(eta *dispatch.ArrivalETA) { s.eta = eta }
 
 // New builds the service.
 func New(pool *pgxpool.Pool, log *slog.Logger) *Service {
@@ -57,7 +66,8 @@ func (s *Service) MountDriver(r chi.Router) {
 	r.Post("/driver/orders/{id}/start", httpx.H(s.startTrip))
 	r.Post("/driver/orders/{id}/stops/{stopId}/complete", httpx.H(s.completeStop))
 	r.Post("/driver/orders/{id}/complete", httpx.H(s.completeOrder))
-	r.Post("/driver/orders/{id}/cancel", httpx.H(s.cancelByDriver))
+	// Drivers cannot cancel (§22.3): they contact support, and operators
+	// cancel or re-assign.
 }
 
 // MountAdmin mounts the operator routes on the admin router (session + CSRF

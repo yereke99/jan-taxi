@@ -228,6 +228,11 @@ func (c *Client) do(ctx context.Context, pool *httpPool, method string, params a
 	if err != nil {
 		return fmt.Errorf("telegram %s: encode request: %w", method, err)
 	}
+	return c.send(ctx, pool, method, body, "application/json", out, pollTimeout)
+}
+
+// send POSTs body with contentType to method and decodes the result into out.
+func (c *Client) send(ctx context.Context, pool *httpPool, method string, body []byte, contentType string, out any, pollTimeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, pollTimeout+c.timeout)
 	defer cancel()
 
@@ -235,7 +240,7 @@ func (c *Client) do(ctx context.Context, pool *httpPool, method string, params a
 	if err != nil {
 		return c.transportError(method, err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := pool.Do(req)

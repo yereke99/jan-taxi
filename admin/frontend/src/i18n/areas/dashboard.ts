@@ -45,6 +45,11 @@ const kk = {
   show_table: 'Кестені көрсету',
   hide_table: 'Кестені жасыру',
   date: 'Күні',
+  cancel_reasons: 'Бас тарту себептері',
+  cancel_reasons_hint: 'Жолаушылар бас тартқан тапсырыстар: {n}',
+  cancel_reasons_none: 'Бұл кезеңде жолаушылар бас тартпаған.',
+  bonuses: 'Берілген бонустар',
+  bonuses_breakdown: 'жаңа жүргізушілерге {welcome} · компаниядан {manual}',
 }
 
 export type DashboardMessages = typeof kk
@@ -94,6 +99,11 @@ const ru: DashboardMessages = {
   show_table: 'Показать таблицу',
   hide_table: 'Скрыть таблицу',
   date: 'Дата',
+  cancel_reasons: 'Причины отмен',
+  cancel_reasons_hint: 'Отменено пассажирами: {n}',
+  cancel_reasons_none: 'За период пассажиры не отменяли заказы.',
+  bonuses: 'Начисленные бонусы',
+  bonuses_breakdown: 'новым водителям {welcome} · от компании {manual}',
 }
 
 const en: DashboardMessages = {
@@ -141,6 +151,11 @@ const en: DashboardMessages = {
   show_table: 'Show table',
   hide_table: 'Hide table',
   date: 'Date',
+  cancel_reasons: 'Cancellation reasons',
+  cancel_reasons_hint: 'Cancelled by passengers: {n}',
+  cancel_reasons_none: 'No passenger cancellations in this period.',
+  bonuses: 'Bonuses credited',
+  bonuses_breakdown: 'welcome {welcome} · from the company {manual}',
 }
 
 export const dashboard = { kk, ru, en }

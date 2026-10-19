@@ -45,8 +45,12 @@ func TestDriverSummary(t *testing.T) {
 	if ao["id"] != oid.String() || ao["status"] != "accepted" || ao["fare"] != float64(800) || ao["destination_address"] != "48.83010, 58.15100" {
 		t.Fatalf("active order: %v", ao)
 	}
-	if v := b["vehicle"].(map[string]any); v["make"] != "Toyota" || v["model"] != "Camry" || v["plate"] == "" {
+	if v := b["vehicle"].(map[string]any); v["make"] != "Toyota" || v["model"] != "Camry" || v["plate"] == "" ||
+		v["vehicle_class"] != "sedan" || v["seats"] != float64(4) || v["cargo_volume_l"] != float64(400) {
 		t.Fatalf("vehicle: %v", v)
+	}
+	if ao := b["active_order"].(map[string]any); ao["vehicle_class"] != "sedan" || ao["passenger_count"] != float64(1) {
+		t.Fatalf("active order load: %v", ao)
 	}
 	if b["available_orders"] != float64(0) {
 		t.Fatalf("a driver with an active order has no available orders: %v", b["available_orders"])

@@ -112,3 +112,19 @@ const ReasonNoDriverFound = "no_driver_found"
 
 // DisputeWindowHours is how long after completion a passenger may open a dispute.
 const DisputeWindowHours = 72
+
+// Passenger cancellation reasons (orders.cancel_reason_code, ARCHITECTURE
+// §22.3). A comment is required with CancelOther.
+const (
+	CancelLongWait     = "long_wait"
+	CancelDriverIssue  = "driver_issue"
+	CancelVehicleIssue = "vehicle_issue"
+	CancelChangedPlans = "changed_plans"
+	CancelOther        = "other"
+)
+
+// CancelReasonCodes lists the passenger cancellation reasons in display order.
+var CancelReasonCodes = []string{CancelLongWait, CancelDriverIssue, CancelVehicleIssue, CancelChangedPlans, CancelOther}
+
+// ValidCancelReason reports whether code is a passenger cancellation reason.
+func ValidCancelReason(code string) bool { return slices.Contains(CancelReasonCodes, code) }

@@ -197,6 +197,7 @@ func List(ctx context.Context, q db.Querier, f ListFilter) ([]ListItem, int, err
 		FROM driver_profiles dp
 		JOIN cities c ON c.id = dp.city_id
 		LEFT JOIN vehicles v ON v.driver_id = dp.id AND v.status <> 'archived'
+		LEFT JOIN vehicle_classes vc ON vc.code = v.class_code
 		LEFT JOIN wallets w ON w.driver_id = dp.id ` + where
 	var total int
 	if err := q.QueryRow(ctx, `SELECT count(*) `+from, args...).Scan(&total); err != nil {
@@ -211,6 +212,7 @@ func List(ctx context.Context, q db.Querier, f ListFilter) ([]ListItem, int, err
 		SELECT dp.id, dp.code, dp.status, dp.first_name, dp.last_name, dp.phone_e164, dp.phone_verified_at,
 		       c.id, c.code, c.name_kk, c.name_ru, c.name_en, dp.is_online, dp.last_heartbeat_at,
 		       v.id, v.make, v.model, v.color, v.plate_raw, v.plate_normalized,
+		       v.class_code, v.seats, v.cargo_volume_l, vc.name_kk, vc.name_ru, vc.name_en,
 		       dp.rating_sum, dp.rating_count, dp.completed_trips, w.balance - w.reserved,
 		       dp.submitted_at, dp.approved_at, dp.created_at `+from+`
 		ORDER BY `+order+`
@@ -222,17 +224,22 @@ func List(ctx context.Context, q db.Querier, f ListFilter) ([]ListItem, int, err
 	items := []ListItem{}
 	for rows.Next() {
 		var (
-			it                       ListItem
-			phoneAt                  *time.Time
-			name                     cities.Name
-			vehicleID                *uuid.UUID
-			make_, model, color, raw *string
-			plateNorm                *string
-			ratingSum                int
+			it                        ListItem
+			phoneAt                   *time.Time
+			name                      cities.Name
+			vehicleID                 *uuid.UUID
+			make_, model, color, raw  *string
+			plateNorm                 *string
+			classCode                 *string
+			seats                     *int16
+			cargoL                    *int32
+			classKK, classRU, classEN *string
+			ratingSum                 int
 		)
 		if err := rows.Scan(&it.ID, &it.Code, &it.Status, &it.FirstName, &it.LastName, &it.Phone, &phoneAt,
 			&it.City.ID, &it.City.Code, &name.KK, &name.RU, &name.EN, &it.IsOnline, &it.LastHeartbeatAt,
 			&vehicleID, &make_, &model, &color, &raw, &plateNorm,
+			&classCode, &seats, &cargoL, &classKK, &classRU, &classEN,
 			&ratingSum, &it.RatingCount, &it.CompletedTrips, &it.WalletAvailable,
 			&it.SubmittedAt, &it.ApprovedAt, &it.CreatedAt); err != nil {
 			return nil, 0, fmt.Errorf("moderation: list drivers: %w", err)
@@ -243,7 +250,11 @@ func List(ctx context.Context, q db.Querier, f ListFilter) ([]ListItem, int, err
 		it.LastHeartbeatAt, it.SubmittedAt, it.ApprovedAt = drivers.UTCPtr(it.LastHeartbeatAt), drivers.UTCPtr(it.SubmittedAt), drivers.UTCPtr(it.ApprovedAt)
 		it.CreatedAt = it.CreatedAt.UTC()
 		if vehicleID != nil {
-			v := vehicles.Vehicle{Make: deref(make_), Model: deref(model), Color: deref(color), PlateRaw: deref(raw), PlateNormalized: deref(plateNorm)}
+			v := vehicles.Vehicle{Make: deref(make_), Model: deref(model), Color: deref(color), PlateRaw: deref(raw), PlateNormalized: deref(plateNorm),
+				ClassCode: deref(classCode), ClassName: vehicles.ClassName{KK: deref(classKK), RU: deref(classRU), EN: deref(classEN)}}
+			if seats != nil && cargoL != nil {
+				v.Seats, v.CargoVolumeL = int(*seats), int(*cargoL)
+			}
 			it.Vehicle = drivers.NewVehicleView(&v)
 		}
 		items = append(items, it)

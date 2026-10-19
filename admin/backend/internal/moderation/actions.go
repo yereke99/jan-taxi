@@ -213,6 +213,9 @@ func (h *Handler) approve(w http.ResponseWriter, r *http.Request) error {
 			"moderation_approved:"+appID.String()); err != nil {
 			return err
 		}
+		if _, err := grantWelcomeBonus(ctx, tx, r, admin, p, v.PlateNormalized); err != nil {
+			return err
+		}
 		return publish(ctx, tx, realtime.ModerationApproved, p, map[string]any{"status": drivers.StatusApproved})
 	})
 }

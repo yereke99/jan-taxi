@@ -2,14 +2,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { isDefaultRegion, type CityRef } from '../../api/common'
 import type { AdminDriverDetail } from '../../api/drivers'
 import { Card, KeyValueList, type KeyValueItem } from '../../components'
 import { useFormat } from '../../composables/useFormat'
+import { welcomeState } from './bonus'
 
 const props = defineProps<{ driver: AdminDriverDetail }>()
 
 const { t } = useI18n()
 const fmt = useFormat()
+
+/** The driver's region (registered city, or the nationwide default region KAZ). */
+function regionText(c: CityRef | null): string | null {
+  if (!c) return null
+  const label = `${fmt.name(c.name)} · ${c.code}`
+  return isDefaultRegion(c) ? t('drivers.region_default', { region: label }) : label
+}
 
 const person = computed<KeyValueItem[]>(() => {
   const d = props.driver
@@ -18,7 +27,7 @@ const person = computed<KeyValueItem[]>(() => {
     { key: 'name', label: t('drivers.full_name'), value: `${d.first_name} ${d.last_name}`.trim() },
     { key: 'phone', label: t('common.phone'), value: d.phone, mono: true },
     { key: 'phone_verified', label: t('drivers.phone_verified'), value: d.phone_verified ? fmt.dateTime(d.phone_verified_at) : t('common.no') },
-    { key: 'city', label: t('common.city'), value: d.city ? `${fmt.name(d.city.name)} · ${d.city.code}` : null },
+    { key: 'city', label: t('drivers.region'), value: regionText(d.city) },
     { key: 'rating', label: t('drivers.rating'), value: d.rating === null ? null : `${d.rating.toFixed(2)} (${d.rating_count})` },
     { key: 'trips', label: t('drivers.trips'), value: fmt.count(d.completed_trips) },
   ]
@@ -35,6 +44,12 @@ const account = computed<KeyValueItem[]>(() => {
   ]
 })
 
+function welcomeText(): string {
+  const w = welcomeState(props.driver)
+  if (w.kind === 'granted') return `${fmt.money(w.amount)} · ${fmt.dateTime(w.at)}`
+  return w.kind === 'awaiting_approval' ? t('bonus.welcome_awaiting') : t('bonus.welcome_not_granted')
+}
+
 const activity = computed<KeyValueItem[]>(() => {
   const d = props.driver
   return [
@@ -44,8 +59,9 @@ const activity = computed<KeyValueItem[]>(() => {
     { key: 'created', label: t('drivers.registered_at'), value: fmt.dateTime(d.created_at) },
     { key: 'submitted', label: t('drivers.submitted'), value: fmt.dateTime(d.submitted_at) },
     { key: 'approved', label: t('drivers.approved_at'), value: fmt.dateTime(d.approved_at) },
+    { key: 'welcome', label: t('bonus.welcome_title'), value: welcomeText() },
     { key: 'suspended', label: t('drivers.suspended_at'), value: d.suspended_at ? `${fmt.dateTime(d.suspended_at)} — ${d.suspended_reason ?? ''}` : null },
-    { key: 'consent', label: t('drivers.pd_consent'), value: d.pd_consent_at ? `${fmt.dateTime(d.pd_consent_at)} · v${d.pd_consent_version ?? '?'}` : t('common.no') },
+    { key: 'consent', label: t('drivers.pd_consent'), value: d.pd_consent_at ? [fmt.dateTime(d.pd_consent_at), d.pd_consent_version].filter(Boolean).join(' · ') : t('common.no') },
   ]
 })
 </script>

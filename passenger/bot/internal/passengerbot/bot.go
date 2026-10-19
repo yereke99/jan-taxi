@@ -24,6 +24,7 @@ type API interface {
 	SyncUser(ctx context.Context, in botapi.SyncUserRequest) (botapi.SyncUserResponse, error)
 	SetLanguage(ctx context.Context, tgID int64, lang string) (string, error)
 	PassengerOrders(ctx context.Context, tgID int64, limit int) ([]botapi.OrderSummary, error)
+	VerifyPassengerContact(ctx context.Context, tgID int64, phone string, contactUserID int64) (botapi.ContactResult, error)
 	Config(ctx context.Context) (botapi.Config, error)
 }
 
@@ -151,6 +152,9 @@ func (b *Bot) onMessage(ctx context.Context, msg *telegram.Message) error {
 	}
 	defer b.menus.Ensure(ctx, s.chatID)
 
+	if msg.Contact != nil {
+		return b.onContact(ctx, s, msg)
+	}
 	if cmd == "start" {
 		return b.start(ctx, s, payload)
 	}

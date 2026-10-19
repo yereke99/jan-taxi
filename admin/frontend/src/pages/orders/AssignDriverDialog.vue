@@ -5,17 +5,22 @@
   active-order and balance checks but skips the online, location and radius
   checks; it reports those as warnings (offline, location_required,
   location_stale, out_of_radius), which the dialog shows after assigning.
+  The vehicle must fit the order's class, seats and cargo (422
+  vehicle_mismatch). The new driver pays the commission at once; on a
+  re-assignment the previous driver's commission is refunded only when ticked.
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { driversApi, type AdminDriverListItem, type DriverLastLocation } from '../../api/drivers'
 import { ordersApi, type AdminOrder } from '../../api/orders'
-import { AppButton, AppSpinner, Modal, TextInput } from '../../components'
+import { AppButton, AppSpinner, Modal, TextInput, ToggleSwitch } from '../../components'
 import { useErrors } from '../../composables/useErrors'
 import { useFormat } from '../../composables/useFormat'
+import { useVehicleClasses } from '../../composables/useVehicleClasses'
 import { isAbortError, isApiError } from '../../services/api'
 import { distanceMeters } from '../../utils/geo'
+import { chargedCommission } from './commission'
 
 const props = defineProps<{ open: boolean; order: AdminOrder }>()
 const emit = defineEmits<{ 'update:open': [open: boolean]; assigned: [order: AdminOrder]; stale: [] }>()
@@ -23,7 +28,10 @@ const emit = defineEmits<{ 'update:open': [open: boolean]; assigned: [order: Adm
 const { t, te } = useI18n()
 const fmt = useFormat()
 const errors = useErrors()
+const vc = useVehicleClasses()
 const q = ref('')
+/** Refund the previous driver's commission on a re-assignment. */
+const refundPrevious = ref(false)
 const results = ref<AdminDriverListItem[]>([])
 const searching = ref(false)
 const selected = ref<AdminDriverListItem | null>(null)
@@ -46,6 +54,7 @@ watch(
     if (!open) return
     // Fixed while open: the order gains a driver once the assignment succeeds.
     reassign.value = props.order.driver !== null
+    refundPrevious.value = false
     q.value = ''
     selected.value = null
     formError.value = ''
@@ -106,6 +115,28 @@ function lacksFunds(d: AdminDriverListItem): boolean {
 
 const selectedRow = computed(() => rows.value.find((r) => r.d.id === selected.value?.id) ?? null)
 
+/** Commission the current driver paid, refundable on a re-assignment. */
+const previousCharge = computed(() => chargedCommission(props.order.ledger, props.order.driver?.id))
+
+/** What the order needs: class, and seats or cargo space. */
+const need = computed(() => {
+  const o = props.order
+  const load =
+    o.passenger_count !== null && o.passenger_count !== undefined
+      ? t('classes.seats_n', { n: o.passenger_count })
+      : o.cargo_volume_l > 0
+        ? t('classes.liters', { n: fmt.count(o.cargo_volume_l) })
+        : ''
+  return [vc.name(o.vehicle_class, o.vehicle_class_name), load].filter(Boolean).join(' · ')
+})
+
+function vehicleText(d: AdminDriverListItem): string {
+  const v = d.vehicle
+  if (!v) return ''
+  const cls = v.vehicle_class ? ` · ${vc.name(v.vehicle_class, v.vehicle_class_name)}${v.seats ? `, ${t('classes.seats_n', { n: v.seats })}` : ''}` : ''
+  return `${v.make} ${v.model} · ${v.plate}${cls}`
+}
+
 function warningText(code: string): string {
   return te(`orders.warning_${code}`, 'kk') ? t(`orders.warning_${code}`) : code
 }
@@ -116,7 +147,7 @@ async function assign(): Promise<void> {
   busy.value = true
   formError.value = ''
   try {
-    const updated = await ordersApi.assign(props.order.id, d.id)
+    const updated = await ordersApi.assign(props.order.id, d.id, reassign.value && refundPrevious.value && previousCharge.value > 0)
     emit('assigned', updated)
     const warnings = updated.warnings ?? []
     if (warnings.length > 0) result.value = { code: updated.driver?.code ?? d.code, warnings }
@@ -147,6 +178,7 @@ onBeforeUnmount(() => {
     </div>
     <div v-else class="assign">
       <p class="jt-muted">{{ t('orders.assign_hint', { commission: fmt.money(order.commission_amount) }) }}</p>
+      <p class="assign__need">{{ t('orders.assign_need', { need }) }}</p>
       <TextInput v-model="q" type="search" :placeholder="t('drivers.search_placeholder')" :aria-label="t('common.search')" />
       <div class="assign__list" role="listbox" :aria-label="t('orders.drivers_found')" :aria-busy="searching">
         <AppSpinner v-if="searching && results.length === 0" :size="18" />
@@ -164,7 +196,7 @@ onBeforeUnmount(() => {
           <span class="jt-mono assign__code">{{ r.d.code }}</span>
           <span class="assign__name">
             {{ r.d.first_name }} {{ r.d.last_name }}
-            <span class="jt-muted">{{ r.d.vehicle ? `${r.d.vehicle.make} ${r.d.vehicle.model} · ${r.d.vehicle.plate}` : '' }}</span>
+            <span class="jt-muted">{{ vehicleText(r.d) }}</span>
           </span>
           <span class="assign__where jt-muted">
             <template v-if="r.distance !== null && r.location">
@@ -180,7 +212,13 @@ onBeforeUnmount(() => {
       <p v-else-if="selected && selectedRow && !selectedRow.location" class="assign__warn">{{ t('orders.assign_no_location') }}</p>
       <p v-if="selected && lacksFunds(selected)" class="assign__warn">{{ t('orders.assign_funds_warning') }}</p>
       <p class="jt-muted assign__note">{{ t('orders.assign_checks_note') }}</p>
-      <p v-if="reassign" class="jt-muted">{{ t('orders.reassign_note', { code: order.driver?.code ?? '' }) }}</p>
+      <div v-if="reassign" class="assign__refund">
+        <p class="jt-muted">{{ t('orders.reassign_note', { code: order.driver?.code ?? '' }) }}</p>
+        <ToggleSwitch v-model="refundPrevious" :disabled="previousCharge === 0">
+          {{ t('orders.refund_commission_to', { code: order.driver?.code ?? '' }) }}
+          <template v-if="previousCharge > 0"> ({{ fmt.money(previousCharge) }})</template>
+        </ToggleSwitch>
+      </div>
       <p v-if="formError" class="assign__error" role="alert">{{ formError }}</p>
     </div>
     <template #footer>
@@ -275,6 +313,19 @@ onBeforeUnmount(() => {
 
 .assign__note {
   font: var(--jt-font-small);
+}
+
+.assign__need {
+  font: var(--jt-font-small);
+}
+
+.assign__refund {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--jt-radius-inner);
+  box-shadow: inset 0 0 0 1px var(--jt-color-border);
 }
 
 .assign__error {

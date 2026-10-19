@@ -1,12 +1,11 @@
 // The driver's active order (GET /driver/orders/active) and its transitions:
-// arriving → start → intermediate stops in seq order → complete; cancel before
-// the start. Every action returns the updated order from the server.
+// arriving → start → intermediate stops in seq order → complete. Drivers
+// cannot cancel (§22.3). Every action returns the updated order from the server.
 
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import {
   acceptOrder,
-  cancelOrder,
   completeStop,
   completeTrip,
   getActive,
@@ -93,15 +92,9 @@ export const useTripStore = defineStore('trip', () => {
     }
   }
 
-  function cancel(reason: string): Promise<DriverOrderDetail> {
-    const o = active.value
-    if (!o) return Promise.reject(new Error('no active trip'))
-    return guarded(() => cancelOrder(o.id, reason))
-  }
-
   function clearFinished(): void {
     finished.value = null
   }
 
-  return { active, finished, loaded, busy, error, hasActive, refresh, accept, perform, cancel, clearFinished, apply }
+  return { active, finished, loaded, busy, error, hasActive, refresh, accept, perform, clearFinished, apply }
 })

@@ -7,8 +7,10 @@ import { CircleAlert, CircleCheck } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RegistrationField } from '../../../api/types'
-import { formatPlate, isCorrectionMode, isStepComplete, type StepId } from '../../../features/registration/form'
+import { formatPlate, isCorrectionMode, isStepComplete, parseLitres, type StepId } from '../../../features/registration/form'
+import { useVehicleText } from '../../../features/vehicle/useVehicleText'
 import { useRegistrationStore } from '../../../stores/registration'
+import { useSessionStore } from '../../../stores/session'
 import { formatKzPhone } from '../../../utils/phone'
 import { JListGroup, JListRow } from '../../ui'
 import CorrectionNotes from './CorrectionNotes.vue'
@@ -18,9 +20,16 @@ const emit = defineEmits<{ edit: [step: StepId] }>()
 
 const { t } = useI18n()
 const reg = useRegistrationStore()
+const session = useSessionStore()
+const vt = useVehicleText()
 const r = computed(() => reg.registration!)
 const correction = computed(() => isCorrectionMode(r.value))
-const ctx = computed(() => ({ registration: r.value, form: reg.form, consentGiven: reg.consentGiven || reg.consentRecorded }))
+const ctx = computed(() => ({
+  registration: r.value,
+  form: reg.form,
+  consentGiven: reg.consentGiven || reg.consentRecorded,
+  classes: session.extras.vehicleClasses,
+}))
 
 const missing = computed(() => {
   const set = new Set<RegistrationField>([...r.value.missing_fields, ...props.problemFields])
@@ -38,6 +47,11 @@ function summary(step: StepId): string {
       return [r.value.documents.id_front ? t('registration.documents.front') : '', r.value.documents.id_back ? t('registration.documents.back') : '']
         .filter(Boolean)
         .join(', ')
+    case 'vehicle_class': {
+      if (!f.vehicle_class) return ''
+      const name = vt.className(f.vehicle_class, f.vehicle_class === r.value.vehicle.vehicle_class ? r.value.vehicle.vehicle_class_name : null)
+      return [name, vt.capacity(f.seats, parseLitres(f.cargo_volume_l))].filter(Boolean).join(' · ')
+    }
     case 'vehicle':
       return [[f.make, f.model].filter(Boolean).join(' '), f.color, formatPlate(f.plate) ?? f.plate].filter(Boolean).join(' · ')
     case 'photos':

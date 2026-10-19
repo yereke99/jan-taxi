@@ -95,6 +95,7 @@ func (s *Service) MountAdmin(r chi.Router) {
 	view.Get("/ledger", httpx.H(s.adminListLedger))
 	view.Get("/drivers/{id}/ledger", httpx.H(s.adminDriverLedger))
 	manage.Post("/drivers/{id}/wallet/adjustments", httpx.H(s.adminAdjustWallet))
+	manage.Post("/drivers/{id}/bonus", httpx.H(s.adminGrantBonus))
 	view.Get("/wallets/reconciliation", httpx.H(s.adminReconcile))
 }
 

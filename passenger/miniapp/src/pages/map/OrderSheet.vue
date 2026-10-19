@@ -1,27 +1,33 @@
 <!--
   Live order ("Сапарым" tab). Searching: pulsing pickup, elapsed time, the
-  route summary, cancel. Accepted / driver arriving / in progress: the trip
-  screen — driver, car and plate over the live map, safety / share / call,
-  the parcel protection note for deliveries, the order card (price, date,
-  category, stops, comment) and cancel + "more" at the bottom. Completed: summary, rating and
+  route summary with the vehicle class, cancel. Accepted / driver arriving /
+  in progress: the trip screen — driver, car and plate over the live map, the
+  arrival estimate ("arrives in N min", §22.6), safety / share / call, the
+  parcel protection note for deliveries, the order card (price, date,
+  category and class, stops, comment) and cancel + "more" at the bottom.
+  Cancelling opens the reasons sheet (§22.3). Completed: summary, rating and
   "report a problem". Cancelled: the reason and "order again". State follows
   realtime events with REST re-sync and a polling fallback (useLiveOrder).
+  Pickup A carries the order's place under its address: the settlement from
+  the API (`locality`), else the pickup's locality line seen while booking.
 -->
 <script setup lang="ts">
 import { Banknote, ChevronRight, Ellipsis, ShieldCheck } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { cancelOrder } from '../../api/orders'
 import type { Order } from '../../api/types'
+import CancelOrderSheet from '../../components/order/CancelOrderSheet.vue'
 import DisputeForm from '../../components/order/DisputeForm.vue'
 import OrderStopList from '../../components/order/OrderStopList.vue'
 import RatingForm from '../../components/order/RatingForm.vue'
 import TripDriverCard from '../../components/order/TripDriverCard.vue'
-import { confirmDestructive, JButton, JEmptyState, JSheet, JSkeleton, JSpinner, showActionSheet, toast, type SheetSnap } from '../../components/ui'
+import { JButton, JEmptyState, JSheet, JSkeleton, JSpinner, showActionSheet, toast, type SheetSnap } from '../../components/ui'
+import VehicleClassIcon from '../../components/VehicleClassIcon.vue'
 import { useDriverPhoto } from '../../composables/useDriverPhoto'
 import { useLiveOrder } from '../../composables/useLiveOrder'
-import { cancelInfo, framingPoints, hasActiveDriver, headlineKey, isDeliveryOrder, orderMarkers } from '../../domain/orderView'
+import { useVehicleText } from '../../composables/useVehicleText'
+import { arrivalMinutes, cancelInfo, framingPoints, hasActiveDriver, headlineKey, isDeliveryOrder, orderLocality, orderMarkers } from '../../domain/orderView'
 import { placesOfStops } from '../../domain/places'
 import { useAddressText, useErrorText } from '../../i18n/core'
 import { straightLine } from '../../maps'
@@ -32,12 +38,13 @@ import { useBookingStore } from '../../stores/booking'
 import { useOrdersStore } from '../../stores/orders'
 import { useSessionStore } from '../../stores/session'
 import { callPhone, haptics, openTelegram } from '../../telegram'
+import { VEHICLE_ICONS, type VehicleIcon } from '../../services/config'
 import { formatDateTime, formatMoney } from '../../utils/format'
-import { haversineMeters } from '../../utils/geo'
 import { formatKzPhone, telHref } from '../../utils/phone'
 
 const { t } = useI18n()
 const addr = useAddressText()
+const vehicleText = useVehicleText()
 const errorText = useErrorText()
 const route = useRoute()
 const router = useRouter()
@@ -78,19 +85,19 @@ const categoryChip = computed(() => {
   const c = order.value?.category
   return c === 'parcel' ? t('order.chip_parcel') : c === 'other' ? t('order.chip_other') : t('order.chip_taxi')
 })
+/** The ordered vehicle class and its load ("Minivan", "Passengers: 6"). */
+const className = computed(() => (order.value ? vehicleText.className(order.value.vehicle_class, order.value.vehicle_class_name) : ''))
+const classIcon = computed<VehicleIcon>(() => VEHICLE_ICONS.find((i) => i === order.value?.vehicle_class) ?? (delivery.value ? 'cargo_van' : 'sedan'))
+const loadLine = computed(() => (order.value ? vehicleText.loadText(order.value) : ''))
+/** Settlement of pickup A ("Алматы"), or the locality line seen while booking; never coordinates. */
+const locality = computed(() => (order.value ? orderLocality(order.value, orders.pickupSubtitle(order.value.id)) : null))
 
-/** Average town speed for the arrival estimate, m/s (~25 km/h along streets). */
-const TOWN_SPEED_MPS = 7
-const ROAD_FACTOR = 1.3
 const headline = computed(() => {
   const o = order.value
   if (!o) return ''
-  const loc = o.driver_location
-  const pickup = o.stops[0]
-  if (o.status === 'accepted' && loc && pickup) {
-    const minutes = Math.max(1, Math.round((haversineMeters(loc, pickup) * ROAD_FACTOR) / TOWN_SPEED_MPS / 60))
-    return t('order.arrives_in', { n: minutes })
-  }
+  // The API's road estimate (§22.6), counted down between updates.
+  const minutes = arrivalMinutes(o, now.value)
+  if (minutes !== null) return t('order.arrives_in', { n: minutes })
   return t(headlineKey(o))
 })
 
@@ -139,15 +146,16 @@ watch(
   },
 )
 
-// --- Searching timer ---------------------------------------------------------------
+// --- Searching timer and arrival countdown ------------------------------------------
 
 const now = ref(Date.now())
 let ticker: ReturnType<typeof setInterval> | undefined
 watch(
-  () => order.value?.status === 'searching',
-  (searching) => {
+  () => order.value?.status === 'searching' || order.value?.status === 'accepted',
+  (ticking) => {
     clearInterval(ticker)
-    if (searching) ticker = setInterval(() => (now.value = Date.now()), 1000)
+    now.value = Date.now()
+    if (ticking) ticker = setInterval(() => (now.value = Date.now()), 1000)
   },
   { immediate: true },
 )
@@ -164,28 +172,30 @@ const elapsed = computed(() => {
 
 // --- Actions -----------------------------------------------------------------------
 
-const cancelling = ref(false)
-async function cancelTrip(): Promise<void> {
-  const o = order.value
-  if (!o || !o.can_cancel || cancelling.value) return
-  const ok = await confirmDestructive({
-    title: t('order.cancel_confirm_title'),
-    message: o.status === 'searching' ? t('order.cancel_confirm_searching') : t('order.cancel_confirm_assigned'),
-    confirmLabel: t('order.cancel_confirm'),
-    cancelLabel: t('order.cancel_keep'),
-  })
-  if (!ok) return
-  cancelling.value = true
-  try {
-    live.accept(await cancelOrder(o.id))
-    toast.show(t('order.cancelled_toast'))
-  } catch (err) {
-    toast.error(errorText(err))
-    live.refresh()
-  } finally {
-    cancelling.value = false
-  }
+// Only the passenger cancels, with a reason (§22.3).
+const cancelOpen = ref(false)
+function cancelTrip(): void {
+  if (order.value?.can_cancel) cancelOpen.value = true
 }
+
+function onCancelled(o: Order): void {
+  cancelOpen.value = false
+  live.accept(o)
+  toast.show(t('order.cancelled_toast'))
+}
+
+function onCancelFailed(): void {
+  cancelOpen.value = false
+  live.refresh()
+}
+
+// The order may stop being cancellable while the sheet is open (driver arrived and started).
+watch(
+  () => order.value?.can_cancel,
+  (can) => {
+    if (!can) cancelOpen.value = false
+  },
+)
 
 const disputeOpen = ref(false)
 function onDisputeSent(o: Order): void {
@@ -196,7 +206,7 @@ function onDisputeSent(o: Order): void {
 function orderAgain(): void {
   const o = order.value
   if (!o) return
-  booking.prefill(o.category, placesOfStops(o.stops))
+  booking.prefill(o.category, placesOfStops(o.stops), { vehicleClass: o.vehicle_class, passengerCount: o.passenger_count, cargoSize: o.cargo_size })
   void router.replace({ name: ROUTE.book, query: { category: o.category } })
 }
 
@@ -309,11 +319,18 @@ function toHome(): void {
 
       <section class="trip-order">
         <p class="trip-order__fare jt-tabular">{{ formatMoney(order.fare, lang) }} · {{ t(`payment_method.${order.payment_method}`) }}</p>
-        <span class="trip-order__chip">{{ categoryChip }}</span>
+        <span class="trip-order__chips">
+          <span class="trip-order__chip">{{ categoryChip }}</span>
+          <span class="trip-order__chip">{{ className }}</span>
+          <span v-if="loadLine" class="trip-order__chip">{{ loadLine }}</span>
+        </span>
         <ol class="trip-route">
           <li v-if="firstStop" class="trip-route__row">
             <span class="trip-route__dot is-start" aria-hidden="true" />
-            <span class="trip-route__address">{{ addr(firstStop.address) }}</span>
+            <span class="trip-route__address">
+              {{ addr(firstStop.address) }}
+              <span v-if="locality" class="trip-place">{{ locality }}</span>
+            </span>
           </li>
           <li v-if="lastStop" class="trip-route__row">
             <span class="trip-route__dot is-end" aria-hidden="true" />
@@ -335,12 +352,20 @@ function toHome(): void {
       <section v-if="order.status === 'searching'" class="trip-list">
         <div v-if="firstStop" class="trip-list__row">
           <span class="trip-list__badge" aria-hidden="true">A</span>
-          <span class="trip-list__text">{{ addr(firstStop.address) }}</span>
+          <span class="trip-list__text">
+            {{ addr(firstStop.address) }}
+            <span v-if="locality" class="trip-place">{{ locality }}</span>
+          </span>
         </div>
         <div v-if="lastStop" class="trip-list__row">
           <span class="trip-list__badge" aria-hidden="true">{{ String.fromCharCode(64 + order.stops.length) }}</span>
           <span class="trip-list__text">{{ addr(lastStop.address) }}</span>
           <span v-if="extraStops > 0" class="trip-list__meta">{{ t('order.extra_stops', { n: extraStops }, extraStops) }}</span>
+        </div>
+        <div class="trip-list__row">
+          <VehicleClassIcon :icon="classIcon" :size="28" class="trip-list__icon" />
+          <span class="trip-list__text">{{ className }}</span>
+          <span v-if="loadLine" class="trip-list__meta">{{ loadLine }}</span>
         </div>
         <div class="trip-list__row">
           <Banknote :size="24" :stroke-width="1.8" class="trip-list__icon" aria-hidden="true" />
@@ -352,7 +377,8 @@ function toHome(): void {
       <div v-if="order.status === 'cancelled' && cancel" class="trip-cancel">
         <p v-if="cancel.byKey" class="trip-text">{{ t(cancel.byKey) }}</p>
         <p v-if="cancel.reasonKey" class="trip-text" :class="{ 'is-secondary': cancel.byKey }">{{ t(cancel.reasonKey) }}</p>
-        <p v-if="cancel.text" class="trip-text is-secondary">{{ t('order.reason_text', { reason: cancel.text }) }}</p>
+        <p v-if="cancel.labelKey" class="trip-text is-secondary">{{ t('order.reason_text', { reason: t(cancel.labelKey) }) }}</p>
+        <p v-if="cancel.text" class="trip-text is-secondary">{{ cancel.labelKey ? cancel.text : t('order.reason_text', { reason: cancel.text }) }}</p>
       </div>
 
       <!-- Disputed -->
@@ -364,8 +390,11 @@ function toHome(): void {
 
       <!-- Finished orders: route and facts -->
       <section v-if="order.status !== 'searching'" class="trip-card">
-        <OrderStopList :stops="order.stops" :show-done="order.status === 'in_progress'" />
+        <OrderStopList :stops="order.stops" :show-done="order.status === 'in_progress'" :pickup-locality="locality" />
         <p class="trip-card__fare jt-tabular">{{ farePayment }}</p>
+        <p class="trip-card__line">
+          <span class="trip-card__label">{{ t('confirm.vehicle_class') }}</span> {{ className }}<template v-if="loadLine"> · {{ loadLine }}</template>
+        </p>
         <p v-if="delivery && order.cargo_description" class="trip-card__line">
           <span class="trip-card__label">{{ t('confirm.description') }}</span> {{ order.cargo_description }}
         </p>
@@ -389,7 +418,7 @@ function toHome(): void {
         <JButton v-if="order.can_dispute && !disputeOpen" block variant="secondary" @click="disputeOpen = true">
           {{ t('dispute.action') }}
         </JButton>
-        <JButton v-if="order.can_cancel" block variant="secondary" :loading="cancelling" @click="cancelTrip">
+        <JButton v-if="order.can_cancel" block variant="secondary" @click="cancelTrip">
           {{ t('order.cancel') }}
         </JButton>
         <JButton v-if="order.status === 'completed' || order.status === 'cancelled' || order.status === 'disputed'" block variant="plain" @click="toHome">
@@ -400,7 +429,7 @@ function toHome(): void {
 
     <template v-if="liveTrip && order" #footer>
       <div class="trip-footer">
-        <JButton v-if="order.can_cancel" class="trip-footer__main" variant="secondary" :loading="cancelling" @click="cancelTrip">
+        <JButton v-if="order.can_cancel" class="trip-footer__main" variant="secondary" @click="cancelTrip">
           {{ t('order.cancel_trip') }}
         </JButton>
         <button type="button" class="trip-footer__more" :aria-label="t('order.more')" @click="more">
@@ -409,6 +438,7 @@ function toHome(): void {
       </div>
     </template>
   </JSheet>
+  <CancelOrderSheet v-if="order" :open="cancelOpen" :order="order" @close="cancelOpen = false" @cancelled="onCancelled" @failed="onCancelFailed" />
 </template>
 
 <style scoped>
@@ -470,6 +500,12 @@ function toHome(): void {
 .trip-order__fare {
   font: var(--jt-font-headline);
   font-size: 19px;
+}
+
+.trip-order__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--jt-space-2);
 }
 
 .trip-order__chip {
@@ -591,6 +627,15 @@ function toHome(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The settlement of pickup A under its address ("Алматы"). */
+.trip-place {
+  display: block;
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .trip-footer {

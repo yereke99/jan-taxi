@@ -1,4 +1,7 @@
-<!-- Read-only route of an order: letters in order, completed stops greyed while the trip runs. -->
+<!--
+  Read-only route of an order: letters in order, completed stops greyed while
+  the trip runs, and the settlement of pickup A under its address when given.
+-->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import type { OrderStop } from '../../api/types'
@@ -6,7 +9,15 @@ import { STOP_LETTERS } from '../../maps/constants'
 import StopBadge from '../StopBadge.vue'
 import { useAddressText } from '../../i18n/core'
 
-withDefaults(defineProps<{ stops: OrderStop[]; showDone?: boolean }>(), { showDone: false })
+withDefaults(
+  defineProps<{
+    stops: OrderStop[]
+    showDone?: boolean
+    /** Settlement of pickup A ("Алматы"), shown under its address. */
+    pickupLocality?: string | null
+  }>(),
+  { showDone: false, pickupLocality: null },
+)
 const { t } = useI18n()
 const addr = useAddressText()
 </script>
@@ -18,6 +29,7 @@ const addr = useAddressText()
       <span class="order-stops__text">
         <span class="order-stops__address">{{ addr(s.address) }}</span>
         <span v-if="s.address_details" class="order-stops__details">{{ s.address_details }}</span>
+        <span v-if="i === 0 && pickupLocality" class="order-stops__details">{{ pickupLocality }}</span>
       </span>
       <span v-if="showDone && s.completed_at" class="order-stops__done">{{ t('order.stop_done') }}</span>
     </li>

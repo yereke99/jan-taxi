@@ -1,4 +1,5 @@
-// Session bootstrap for the driver app: public config, Telegram
+// Session bootstrap for the driver app: public config (with the driver-only
+// extras: vehicle classes, commission policy, welcome bonus), Telegram
 // authentication, the current user with the driver summary (GET /me, a flat
 // object) and the UI language.
 
@@ -8,8 +9,9 @@ import { getMe, updateLanguage, type Me } from '../api/me'
 import { i18n } from '../i18n'
 import { applyLocale, isLocale, type Locale } from '../i18n/core'
 import { authenticate } from '../services/auth'
-import { defaultPublicConfig, fetchPublicConfig, type PublicConfig } from '../services/config'
-import { isApiError } from '../services/http'
+import { emptyDriverExtras, normalizeDriverExtras, type DriverConfigExtras } from '../features/vehicle/classes'
+import { defaultPublicConfig, normalizePublicConfig, type PublicConfig } from '../services/config'
+import { http, isApiError } from '../services/http'
 import type { ModerationStatus } from '../utils/status'
 
 export type SessionStatus = 'idle' | 'loading' | 'ready' | 'outside_telegram' | 'error'
@@ -22,7 +24,9 @@ export const useSessionStore = defineStore('session', () => {
   const error = shallowRef<unknown>(null)
   const me = ref<Me | null>(null)
   const config = ref<PublicConfig>(defaultPublicConfig())
+  const extras = ref<DriverConfigExtras>(emptyDriverExtras())
   const configLoaded = ref(false)
+  const configLoading = ref(false)
   const language = ref<Locale>('kk')
   const savingLanguage = ref(false)
 
@@ -35,12 +39,20 @@ export const useSessionStore = defineStore('session', () => {
   const isApproved = computed(() => driverState.value === 'approved')
 
   async function loadConfig(): Promise<void> {
+    configLoading.value = true
     try {
-      config.value = await fetchPublicConfig('driver')
+      // One request: the shared fields go through the shared normaliser, the
+      // driver-only ones (§21, §22) through features/vehicle.
+      const raw = await http.get<unknown>('/public/config', { query: { app: 'driver' } })
+      config.value = normalizePublicConfig(raw)
+      extras.value = normalizeDriverExtras(raw)
       configLoaded.value = true
     } catch (err) {
-      // Map and navigation fall back to documented defaults; top-ups wait for a retry.
+      // Map and navigation fall back to documented defaults; top-ups and the
+      // vehicle class step wait for a retry.
       console.warn('[session] public config unavailable, using defaults', err)
+    } finally {
+      configLoading.value = false
     }
   }
 
@@ -127,7 +139,9 @@ export const useSessionStore = defineStore('session', () => {
     error,
     me,
     config,
+    extras,
     configLoaded,
+    configLoading,
     language,
     savingLanguage,
     isReady,

@@ -161,6 +161,56 @@ func DefaultCommissionBps(ctx context.Context, q db.Querier) int64 {
 	return effectiveInt(ctx, q, "commission.default_bps")
 }
 
+// Commission modes (setting commission.mode, orders.commission_mode).
+const (
+	CommissionFixed   = "fixed"
+	CommissionPercent = "percent"
+)
+
+// CommissionPolicy is how the commission of a new order is computed
+// (ARCHITECTURE §22.2): a fixed amount per order, or the tariff's
+// commission_bps of the fare. It is charged when a driver takes the order.
+type CommissionPolicy struct {
+	Mode        string `json:"mode"`
+	FixedAmount int64  `json:"fixed_amount"`
+}
+
+// CommissionBounds returns the range an admin may set the fixed commission
+// in (commission.fixed_min..commission.fixed_max, §22.7: 50..100 KZT).
+func CommissionBounds(ctx context.Context, q db.Querier) (lo, hi int64) {
+	lo, hi = effectiveInt(ctx, q, "commission.fixed_min"), effectiveInt(ctx, q, "commission.fixed_max")
+	if hi < lo {
+		hi = lo
+	}
+	return lo, hi
+}
+
+// Commission returns the effective commission policy. The fixed amount is
+// kept within CommissionBounds even when a stored value is not.
+func Commission(ctx context.Context, q db.Querier) CommissionPolicy {
+	lo, hi := CommissionBounds(ctx, q)
+	p := CommissionPolicy{Mode: CommissionFixed, FixedAmount: min(max(effectiveInt(ctx, q, "commission.fixed_amount"), lo), hi)}
+	var mode string
+	if Effective(ctx, q, "commission.mode", &mode) == nil && mode == CommissionPercent {
+		p.Mode = CommissionPercent
+	}
+	return p
+}
+
+// WelcomeBonus returns the bonus credited to a new driver on first approval
+// (0 disables it).
+func WelcomeBonus(ctx context.Context, q db.Querier) int64 {
+	return max(effectiveInt(ctx, q, "driver.welcome_bonus"), 0)
+}
+
+// PassengerCancelsAfterAcceptPerDay returns how many orders a passenger may
+// cancel after a driver accepted them (the driver keeps paying the
+// commission, §22.2) within 24 hours before new orders are refused; 0 means
+// no limit.
+func PassengerCancelsAfterAcceptPerDay(ctx context.Context, q db.Querier) int64 {
+	return max(effectiveInt(ctx, q, "orders.passenger_cancels_after_accept_per_day"), 0)
+}
+
 // MinOnlineBalance returns the minimum available balance required to go online.
 func MinOnlineBalance(ctx context.Context, q db.Querier) int64 {
 	return effectiveInt(ctx, q, "driver.min_online_balance")

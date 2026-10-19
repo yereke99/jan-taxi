@@ -32,8 +32,21 @@ type AssignResult struct {
 	DistanceToPickupM *int
 	// PreviousDriverID is set when the order was taken from another driver.
 	PreviousDriverID *uuid.UUID
-	// Released is the commission returned to the previous driver.
+	// Released is a reservation (earlier commission model) returned to the
+	// previous driver.
 	Released int64
+	// Refunded is the commission refunded to the previous driver on the
+	// operator's request.
+	Refunded int64
+	// Charged is the commission charged to the new driver (§22.2).
+	Charged int64
+}
+
+// AssignOptions are the operator's choices for an assignment.
+type AssignOptions struct {
+	// RefundPrevious returns the commission the previous driver paid when the
+	// order is taken from them.
+	RefundPrevious bool
 }
 
 func invalidDriver(reason string) *httpx.Error {
@@ -45,11 +58,13 @@ func invalidDriver(reason string) *httpx.Error {
 // goes through the same checks as Accept (approval, active order, balance)
 // except that the driver need not be online, nor have a fresh location within
 // the order's radius: DriverOffline and LocationWarning report those, so the
-// operator sees that the driver may be far away. An accepted or
-// driver_arriving order is re-assigned: the previous driver's reservation is
-// released, the new driver's reserved, and the order restarts at accepted. Locks are taken in the same
+// operator sees that the driver may be far away. The new driver pays the
+// commission as if they had taken the order (§22.2). An accepted or
+// driver_arriving order is re-assigned: the previous driver keeps having paid
+// unless opts.RefundPrevious (a reservation of the earlier model is
+// released), and the order restarts at accepted. Locks are taken in the same
 // order as Accept (wallet, then order) so the two never deadlock.
-func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID) (AssignResult, error) {
+func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID, opts AssignOptions) (AssignResult, error) {
 	drv, err := lockDriver(ctx, tx, driverID)
 	if err != nil {
 		if httpx.AsError(err).Status == 404 {
@@ -74,6 +89,13 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 		return AssignResult{}, err
 	} else if active != uuid.Nil {
 		return AssignResult{}, lifecycle.ErrDriverHasActiveOrder(active)
+	}
+	// Seats and cargo space are physical limits: unlike location, an operator
+	// cannot override them (§21.4).
+	if ok, err := fits(ctx, tx, orderID, driverID); err != nil {
+		return AssignResult{}, lifecycle.DBError(err)
+	} else if !ok {
+		return AssignResult{}, invalidDriver(ReasonVehicleMismatch)
 	}
 	if err := checkFunds(ctx, tx, driverID, peek.CommissionAmount); err != nil {
 		return AssignResult{}, err
@@ -105,6 +127,11 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 		if res.Released, err = wallets.ReleaseForOrder(ctx, tx, orderID, "order re-assigned by operator"); err != nil {
 			return AssignResult{}, lifecycle.DBError(err)
 		}
+		if opts.RefundPrevious {
+			if res.Refunded, err = wallets.RefundCommission(ctx, tx, orderID, *before.DriverID, adminID); err != nil {
+				return AssignResult{}, lifecycle.DBError(err)
+			}
+		}
 	default:
 		return AssignResult{}, lifecycle.InvalidTransition(before.Status, "assign")
 	}
@@ -126,11 +153,11 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 	res.After = after
 
 	if res.PreviousDriverID != nil {
-		if err := releasedFromDriver(ctx, tx, after, *res.PreviousDriverID, res.Released > 0); err != nil {
+		if err := releasedFromDriver(ctx, tx, after, *res.PreviousDriverID, res.Released, res.Refunded); err != nil {
 			return AssignResult{}, err
 		}
 	}
-	if err := assigned(ctx, tx, before, after, lifecycle.Admin(adminID), res.PreviousDriverID); err != nil {
+	if res.Charged, err = assigned(ctx, tx, before, after, lifecycle.Admin(adminID), res.PreviousDriverID, AcceptOptions{}); err != nil {
 		return AssignResult{}, err
 	}
 	return res, nil
@@ -138,7 +165,7 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 
 // releasedFromDriver closes the previous driver's part of a re-assigned order:
 // their offer is cancelled and they are told the order is no longer theirs.
-func releasedFromDriver(ctx context.Context, tx pgx.Tx, after lifecycle.Core, prevID uuid.UUID, walletChanged bool) error {
+func releasedFromDriver(ctx context.Context, tx pgx.Tx, after lifecycle.Core, prevID uuid.UUID, released, refunded int64) error {
 	if _, err := tx.Exec(ctx, `
 		UPDATE order_offers SET status = 'cancelled', closed_at = now()
 		WHERE order_id = $1 AND driver_id = $2`, after.ID, prevID); err != nil {
@@ -148,18 +175,28 @@ func releasedFromDriver(ctx context.Context, tx pgx.Tx, after lifecycle.Core, pr
 	if err != nil {
 		return err
 	}
+	params := map[string]any{"order_number": after.Number}
+	if refunded > 0 {
+		params["refunded"] = refunded
+	}
 	if err := lifecycle.Notify(ctx, tx, notifications.DriverBot, prev.UserID, notifications.TplOrderCancelledDriver,
-		map[string]any{"order_number": after.Number},
-		"order_cancelled_driver:"+after.ID.String()+":"+prevID.String()+":"+strconv.Itoa(after.Version)); err != nil {
+		params, "order_cancelled_driver:"+after.ID.String()+":"+prevID.String()+":"+strconv.Itoa(after.Version)); err != nil {
 		return err
 	}
+	if err := lifecycle.CloseOfferMessage(ctx, tx, after.ID, prevID, lifecycle.OfferMessageCancelled); err != nil {
+		return err
+	}
+	walletChanged := released > 0 || refunded > 0
 	data := map[string]any{"order_id": after.ID.String(), "order_number": after.Number,
 		"status": after.Status, "reassigned": true}
 	if err := lifecycle.Publish(ctx, tx, realtime.OrderCancelled, data, realtime.DriverScope(prevID)); err != nil {
 		return err
 	}
-	if walletChanged {
-		return lifecycle.PublishWallet(ctx, tx, prevID, after.ID, "commission_release")
+	switch {
+	case refunded > 0:
+		return lifecycle.PublishWallet(ctx, tx, prevID, after.ID, wallets.EntryCommissionRefund)
+	case walletChanged:
+		return lifecycle.PublishWallet(ctx, tx, prevID, after.ID, wallets.EntryCommissionRelease)
 	}
 	return nil
 }

@@ -53,10 +53,26 @@ type Vehicle struct {
 	Color           string
 	PlateRaw        string
 	PlateNormalized string
-	Status          string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// ClassCode is the vehicle class (ARCHITECTURE §21), "" until the driver
+	// chose one; Seats and CargoVolumeL are 0 then.
+	ClassCode    string
+	ClassName    ClassName
+	Seats        int
+	CargoVolumeL int
+	Status       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
+
+// ClassName is the localized name of the vehicle's class (empty without one).
+type ClassName struct {
+	KK string `json:"kk"`
+	RU string `json:"ru"`
+	EN string `json:"en"`
+}
+
+// HasClass reports whether the driver declared the vehicle class.
+func (v Vehicle) HasClass() bool { return v.ClassCode != "" }
 
 // PlateDisplay is the plate as shown to people: "123 ABC 04" for a valid
 // plate, otherwise whatever the driver typed.
@@ -80,24 +96,54 @@ func (v Vehicle) PlateKind() string {
 	return string(p.Kind)
 }
 
-// Details are the editable text fields of a vehicle.
+// Details are the editable fields of a vehicle. ClassCode "" stores no class
+// (Seats and CargoVolumeL are then ignored).
 type Details struct {
 	Make, Model, Color, PlateRaw, PlateNormalized string
+	ClassCode                                     string
+	Seats, CargoVolumeL                           int
 }
 
-const vehicleColumns = `id, driver_id, make, model, color, plate_raw, COALESCE(plate_normalized, ''), status, created_at, updated_at`
+// Details returns the vehicle's editable fields.
+func (v Vehicle) Details() Details {
+	return Details{Make: v.Make, Model: v.Model, Color: v.Color, PlateRaw: v.PlateRaw, PlateNormalized: v.PlateNormalized,
+		ClassCode: v.ClassCode, Seats: v.Seats, CargoVolumeL: v.CargoVolumeL}
+}
+
+const vehicleColumns = `id, driver_id, make, model, color, plate_raw, COALESCE(plate_normalized, ''),
+	COALESCE(class_code, ''), COALESCE(seats, 0), COALESCE(cargo_volume_l, 0),
+	COALESCE((SELECT ARRAY[vc.name_kk, vc.name_ru, vc.name_en] FROM vehicle_classes vc WHERE vc.code = class_code),
+	         ARRAY['', '', '']),
+	status, created_at, updated_at`
 
 func scan(row interface{ Scan(...any) error }) (Vehicle, error) {
-	var v Vehicle
-	err := row.Scan(&v.ID, &v.DriverID, &v.Make, &v.Model, &v.Color, &v.PlateRaw, &v.PlateNormalized, &v.Status,
-		&v.CreatedAt, &v.UpdatedAt)
+	var (
+		v     Vehicle
+		seats int16
+		names []string
+	)
+	err := row.Scan(&v.ID, &v.DriverID, &v.Make, &v.Model, &v.Color, &v.PlateRaw, &v.PlateNormalized,
+		&v.ClassCode, &seats, &v.CargoVolumeL, &names, &v.Status, &v.CreatedAt, &v.UpdatedAt)
 	if db.IsNoRows(err) {
 		return Vehicle{}, ErrNotFound
 	}
 	if err != nil {
 		return Vehicle{}, fmt.Errorf("vehicles: scan: %w", err)
 	}
+	v.Seats = int(seats)
+	if len(names) == 3 {
+		v.ClassName = ClassName{KK: names[0], RU: names[1], EN: names[2]}
+	}
 	return v, nil
+}
+
+// classArgs returns the class columns to store: NULLs without a class.
+func (d Details) classArgs() (class *string, seats, cargo *int) {
+	if d.ClassCode == "" {
+		return nil, nil, nil
+	}
+	c, s, l := d.ClassCode, d.Seats, d.CargoVolumeL
+	return &c, &s, &l
 }
 
 // Current returns the driver's current (non-archived) vehicle, or ErrNotFound.
@@ -133,18 +179,23 @@ func CurrentByDriver(ctx context.Context, q db.Querier, driverIDs []uuid.UUID) (
 
 // Create inserts a draft vehicle for the driver.
 func Create(ctx context.Context, q db.Querier, driverID uuid.UUID, d Details) (Vehicle, error) {
+	class, seats, cargo := d.classArgs()
 	return scan(q.QueryRow(ctx, `
-		INSERT INTO vehicles (driver_id, make, model, color, plate_raw, plate_normalized, status)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), 'draft')
-		RETURNING `+vehicleColumns, driverID, d.Make, d.Model, d.Color, d.PlateRaw, d.PlateNormalized))
+		INSERT INTO vehicles (driver_id, make, model, color, plate_raw, plate_normalized, class_code, seats,
+		                      cargo_volume_l, status)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, 'draft')
+		RETURNING `+vehicleColumns, driverID, d.Make, d.Model, d.Color, d.PlateRaw, d.PlateNormalized,
+		class, seats, cargo))
 }
 
-// UpdateDetails replaces the text fields. Changing the plate of a claimed
+// UpdateDetails replaces the editable fields. Changing the plate of a claimed
 // vehicle to one claimed by another driver fails with ErrPlateTaken.
 func UpdateDetails(ctx context.Context, q db.Querier, vehicleID uuid.UUID, d Details) error {
+	class, seats, cargo := d.classArgs()
 	tag, err := q.Exec(ctx, `
-		UPDATE vehicles SET make = $2, model = $3, color = $4, plate_raw = $5, plate_normalized = NULLIF($6, '')
-		WHERE id = $1`, vehicleID, d.Make, d.Model, d.Color, d.PlateRaw, d.PlateNormalized)
+		UPDATE vehicles SET make = $2, model = $3, color = $4, plate_raw = $5, plate_normalized = NULLIF($6, ''),
+		       class_code = $7, seats = $8, cargo_volume_l = $9
+		WHERE id = $1`, vehicleID, d.Make, d.Model, d.Color, d.PlateRaw, d.PlateNormalized, class, seats, cargo)
 	if db.IsUniqueViolation(err, plateUniqueIndex) {
 		return ErrPlateTaken
 	}

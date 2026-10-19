@@ -109,6 +109,49 @@ config: ## Validate compose.yaml against the env file
 	$(require_env_file)
 	$(COMPOSE) config -q && echo "compose configuration is valid"
 
+##@ Local live stack (Docker + Cloudflare quick tunnel, development only; docs/DEPLOYMENT.md §10)
+
+# State directory outside the repository: compose.env (secrets), tunnel.env,
+# logs, backups. Example: make local-up STACK_DIR=../jan-taxi-local
+STACK_DIR ?=
+LOCAL_STACK = JT_STACK_DIR="$(STACK_DIR)" sh deploy/local/stack.sh
+
+define require_stack_dir
+	@test -n "$(STACK_DIR)" || { echo "set STACK_DIR to a directory outside the repository, e.g. make $@ STACK_DIR=../jan-taxi-local"; exit 2; }
+endef
+
+.PHONY: local-env local-up local-rebuild local-retunnel local-status local-verify local-down local-test
+local-env: ## Write STACK_DIR/compose.env from .env (or JT_SOURCE_ENV)
+	$(require_stack_dir)
+	$(LOCAL_STACK) env
+
+local-up: ## Start everything behind a quick tunnel, point the bots at it, start the watchdog
+	$(require_stack_dir)
+	$(LOCAL_STACK) up
+
+local-rebuild: ## Rebuild api/bots/web from the current tree, migrate, restart them (tunnel URL kept)
+	$(require_stack_dir)
+	$(LOCAL_STACK) rebuild
+
+local-retunnel: ## New quick tunnel; api, bots and menu buttons follow it
+	$(require_stack_dir)
+	$(LOCAL_STACK) retunnel
+
+local-status: ## Health of every service, tunnel URL, bot health JSON, menu buttons
+	$(require_stack_dir)
+	$(LOCAL_STACK) status
+
+local-verify: ## Deep links and WebSocket through the tunnel, client IP, admin login
+	$(require_stack_dir)
+	$(LOCAL_STACK) verify
+
+local-down: ## Stop the watchdog and remove the local stack's containers (volumes kept)
+	$(require_stack_dir)
+	$(LOCAL_STACK) down
+
+local-test: ## Test deploy/local/stack.sh without Docker (stub docker; migration redo is opt-in, backup first)
+	sh deploy/local/stack_test.sh
+
 ##@ Database and administration
 
 .PHONY: migrate migrate-status admin-create backup restore
@@ -248,11 +291,15 @@ fe-lint: ## Run the frontend lint scripts
 	$(PNPM) -r lint
 
 CADDY_IMAGE ?= caddy:2-alpine
-caddy-validate: ## Validate the Caddyfile (production domains and the local http variant)
+caddy-validate: ## Validate the Caddyfile (production domains, local http and local tunnel variants)
 	docker run --rm -v "$(CURDIR)/Caddyfile:/etc/caddy/Caddyfile:ro" \
 		-e APP_DOMAIN=app.jantaxi.example -e ADMIN_DOMAIN=admin.jantaxi.example -e ACME_EMAIL=ops@jantaxi.example \
 		$(CADDY_IMAGE) caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 	docker run --rm -v "$(CURDIR)/Caddyfile:/etc/caddy/Caddyfile:ro" \
 		-e APP_DOMAIN=http://localhost:8088 -e ADMIN_DOMAIN=http://localhost:8089 -e ACME_EMAIL=dev@localhost \
 		-e "CADDY_GLOBAL_OPTIONS=auto_https off" \
+		$(CADDY_IMAGE) caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+	docker run --rm -v "$(CURDIR)/Caddyfile:/etc/caddy/Caddyfile:ro" \
+		-e APP_DOMAIN=:8088 -e ADMIN_DOMAIN=:8089 -e ACME_EMAIL=dev@localhost \
+		-e "CADDY_GLOBAL_OPTIONS=auto_https off" -e "CADDY_SERVER_OPTIONS=trusted_proxies static private_ranges" \
 		$(CADDY_IMAGE) caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile

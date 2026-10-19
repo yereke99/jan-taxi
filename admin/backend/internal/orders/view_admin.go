@@ -73,12 +73,14 @@ type LedgerRow struct {
 // AdminOrder is the complete order for operators (openapi AdminOrder) plus the
 // ledger rows of its commission and, after an assignment, warnings.
 type AdminOrder struct {
-	ID                 uuid.UUID          `json:"id"`
-	Number             int64              `json:"number"`
-	Status             string             `json:"status"`
-	Category           string             `json:"category"`
-	ServiceType        string             `json:"service_type"`
-	CargoType          string             `json:"cargo_type"`
+	ID          uuid.UUID `json:"id"`
+	Number      int64     `json:"number"`
+	Status      string    `json:"status"`
+	Category    string    `json:"category"`
+	ServiceType string    `json:"service_type"`
+	CargoType   string    `json:"cargo_type"`
+	OrderLoad
+	OrderPlace
 	CargoDescription   *string            `json:"cargo_description"`
 	RecipientPhone     *string            `json:"recipient_phone"`
 	ProhibitedItemsAck bool               `json:"prohibited_items_ack"`
@@ -87,6 +89,7 @@ type AdminOrder struct {
 	Currency           string             `json:"currency"`
 	CommissionBps      int                `json:"commission_bps"`
 	CommissionAmount   int64              `json:"commission_amount"`
+	CommissionMode     string             `json:"commission_mode"`
 	PaymentMethod      string             `json:"payment_method"`
 	TariffID           uuid.UUID          `json:"tariff_id"`
 	QuoteID            *uuid.UUID         `json:"quote_id"`
@@ -107,7 +110,10 @@ type AdminOrder struct {
 	Dispute            *Dispute           `json:"dispute"`
 	Rating             *OrderRating       `json:"rating"`
 	CancelReason       *string            `json:"cancel_reason"`
+	CancelReasonCode   *string            `json:"cancel_reason_code"`
 	CancelledBy        *string            `json:"cancelled_by"`
+	DriverETAS         *int               `json:"driver_eta_s"`
+	DriverETAAt        *time.Time         `json:"driver_eta_at"`
 	Version            int                `json:"version"`
 	CreatedAt          time.Time          `json:"created_at"`
 	UpdatedAt          time.Time          `json:"updated_at"`
@@ -148,13 +154,15 @@ func adminOrder(ctx context.Context, q db.Querier, id uuid.UUID) (AdminOrder, er
 	}
 	o := AdminOrder{
 		ID: r.ID, Number: r.Number, Status: r.Status, Category: r.Category, ServiceType: r.ServiceType,
-		CargoType: r.CargoType, CargoDescription: r.CargoDescription, RecipientPhone: r.RecipientPhone,
-		ProhibitedItemsAck: r.ProhibitedItemsAck, Comment: r.Comment, Fare: r.Fare, Currency: r.Currency,
-		CommissionBps: r.CommissionBps, CommissionAmount: r.CommissionAmount, PaymentMethod: r.PaymentMethod,
-		TariffID: r.TariffID, QuoteID: r.QuoteID, DistanceM: r.DistanceM, DurationS: r.DurationS,
+		CargoType: r.CargoType, OrderLoad: r.Load, OrderPlace: r.Place, CargoDescription: r.CargoDescription,
+		RecipientPhone: r.RecipientPhone, ProhibitedItemsAck: r.ProhibitedItemsAck, Comment: r.Comment, Fare: r.Fare, Currency: r.Currency,
+		CommissionBps: r.CommissionBps, CommissionAmount: r.CommissionAmount, CommissionMode: r.CommissionMode,
+		PaymentMethod: r.PaymentMethod,
+		TariffID:      r.TariffID, QuoteID: r.QuoteID, DistanceM: r.DistanceM, DurationS: r.DurationS,
 		StopCount: r.StopCount, City: r.City, Stops: d.Stops, Route: d.Route, Passenger: adminPassenger(r),
 		Driver: driverRef(r.Driver), Vehicle: r.Vehicle, Events: d.Events, Rating: d.Rating,
-		CancelReason: r.CancelReason, CancelledBy: r.CancelledBy, Version: r.Version, CreatedAt: r.CreatedAt,
+		CancelReason: r.CancelReason, CancelReasonCode: r.CancelReasonCode, CancelledBy: r.CancelledBy,
+		DriverETAS: r.DriverETAS, DriverETAAt: r.DriverETAAt, Version: r.Version, CreatedAt: r.CreatedAt,
 		UpdatedAt: r.UpdatedAt, SearchExpiresAt: r.SearchExpiresAt, AcceptedAt: r.AcceptedAt,
 		ArrivedAt: r.ArrivedAt, StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, CancelledAt: r.CancelledAt,
 	}
@@ -252,11 +260,13 @@ func loadOrderLedger(ctx context.Context, q db.Querier, orderID uuid.UUID) ([]Le
 
 // AdminOrderListItem is an operator list row (openapi AdminOrderListItem).
 type AdminOrderListItem struct {
-	ID               uuid.UUID         `json:"id"`
-	Number           int64             `json:"number"`
-	Status           string            `json:"status"`
-	Category         string            `json:"category"`
-	ServiceType      string            `json:"service_type"`
+	ID          uuid.UUID `json:"id"`
+	Number      int64     `json:"number"`
+	Status      string    `json:"status"`
+	Category    string    `json:"category"`
+	ServiceType string    `json:"service_type"`
+	OrderLoad
+	OrderPlace
 	City             CityRef           `json:"city"`
 	Fare             int64             `json:"fare"`
 	Currency         string            `json:"currency"`
@@ -274,6 +284,7 @@ type AdminOrderListItem struct {
 	CompletedAt      *time.Time        `json:"completed_at"`
 	CancelledAt      *time.Time        `json:"cancelled_at"`
 	CancelledBy      *string           `json:"cancelled_by"`
+	CancelReasonCode *string           `json:"cancel_reason_code"`
 }
 
 // adminFilter selects orders for the operator list.
@@ -284,10 +295,12 @@ type adminFilter struct {
 	DriverID *uuid.UUID
 	From, To *time.Time
 	// Search terms derived from q; empty fields do not match.
-	Number   *int64
-	OrderID  *uuid.UUID
-	Phone    string
-	Code     string
+	Number  *int64
+	OrderID *uuid.UUID
+	Phone   string
+	Code    string
+	// Locality is q as an ILIKE pattern on orders.locality ("" matches nothing).
+	Locality string
 	HasQuery bool
 }
 
@@ -301,10 +314,12 @@ const adminWhere = `
 	AND (NOT $7 OR o.number = $8 OR o.id = $9
 	     OR ($10 <> '' AND (pu.phone_e164 = $10 OR o.recipient_phone = $10
 	                        OR COALESCE(d.phone_e164, du.phone_e164) = $10))
-	     OR ($11 <> '' AND d.code = $11))`
+	     OR ($11 <> '' AND d.code = $11)
+	     OR ($12 <> '' AND o.locality ILIKE $12))`
 
 func (f adminFilter) args() []any {
-	return []any{f.Status, f.CityID, f.Category, f.DriverID, f.From, f.To, f.HasQuery, f.Number, f.OrderID, f.Phone, f.Code}
+	return []any{f.Status, f.CityID, f.Category, f.DriverID, f.From, f.To, f.HasQuery, f.Number, f.OrderID, f.Phone,
+		f.Code, f.Locality}
 }
 
 // listAdminOrders returns one page of orders matching f, newest first.
@@ -327,10 +342,12 @@ func listAdminOrders(ctx context.Context, q db.Querier, f adminFilter, limit, of
 		       d.id, d.code, d.first_name, d.last_name, COALESCE(d.phone_e164, du.phone_e164),
 		       o.stop_count, o.distance_m,
 		       EXISTS (SELECT 1 FROM disputes ds WHERE ds.order_id = o.id AND ds.status = 'open'),
-		       o.created_at, o.accepted_at, o.completed_at, o.cancelled_at, o.cancelled_by, `+endpointColumns+from+endpointJoins+`
+		       o.created_at, o.accepted_at, o.completed_at, o.cancelled_at, o.cancelled_by, o.cancel_reason_code,
+		       `+endpointColumns+`,
+		       `+loadColumns+`, `+placeColumns+from+endpointJoins+loadJoin+placeJoin+`
 		WHERE `+adminWhere+`
 		ORDER BY o.created_at DESC, o.id DESC
-		LIMIT $12 OFFSET $13`, args...)
+		LIMIT $13 OFFSET $14`, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("orders: list admin orders: %w", err)
 	}
@@ -353,8 +370,10 @@ func scanAdminListItem(row pgx.CollectableRow) (AdminOrderListItem, error) {
 		&it.PaymentMethod, &it.Passenger.ID, &it.Passenger.TelegramUserID, &it.Passenger.FirstName,
 		&it.Passenger.LastName, &it.Passenger.Username, &it.Passenger.Phone, &it.Passenger.IsBlocked,
 		&dID, &dCode, &dFirst, &dLast, &dPhone, &it.StopCount, &it.DistanceM, &it.HasOpenDispute,
-		&it.CreatedAt, &it.AcceptedAt, &it.CompletedAt, &it.CancelledAt, &it.CancelledBy}
-	if err := row.Scan(append(dest, endpointDest(&it.Pickup, &it.Destination)...)...); err != nil {
+		&it.CreatedAt, &it.AcceptedAt, &it.CompletedAt, &it.CancelledAt, &it.CancelledBy, &it.CancelReasonCode}
+	dest = append(dest, endpointDest(&it.Pickup, &it.Destination)...)
+	dest = append(dest, loadDest(&it.OrderLoad)...)
+	if err := row.Scan(append(dest, placeDest(&it.OrderPlace)...)...); err != nil {
 		return it, err
 	}
 	utc(&it.CreatedAt, it.AcceptedAt, it.CompletedAt, it.CancelledAt)

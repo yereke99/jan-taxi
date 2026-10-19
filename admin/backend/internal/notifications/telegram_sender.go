@@ -50,3 +50,16 @@ func (s *TelegramSender) Send(ctx context.Context, bot Bot, chatID int64, text s
 	}
 	return msg.MessageID, nil
 }
+
+// Edit implements Editor with editMessageText in HTML parse mode; a nil
+// markup removes the inline keyboard.
+func (s *TelegramSender) Edit(ctx context.Context, bot Bot, chatID, messageID int64, text string, markup *telegram.InlineKeyboardMarkup) error {
+	c := s.clients[bot]
+	if c == nil {
+		return ErrBotNotConfigured
+	}
+	return c.EditMessageText(ctx, telegram.EditMessageTextParams{
+		ChatID: chatID, MessageID: messageID, Text: text, ParseMode: "HTML", ReplyMarkup: markup,
+		DisableWebPagePreview: true,
+	})
+}

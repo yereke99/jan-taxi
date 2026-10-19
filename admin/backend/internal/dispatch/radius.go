@@ -36,6 +36,18 @@ const withinRadius = `ST_DWithin(dl.location, o.pickup, @radius_max_m::float8)
 // distanceToPickup is the rounded distance from the driver to the pickup of o.
 const distanceToPickup = `round(ST_Distance(dl.location, o.pickup))::int`
 
+// vehicleFits holds when the current vehicle of driver d can take order o
+// (ARCHITECTURE §21.4): the vehicle's class serves the order's class, it has
+// at least as many seats as the order has passengers and at least as much
+// cargo space as the order's cargo needs. A vehicle without a class fits
+// nothing.
+const vehicleFits = `EXISTS (
+	SELECT 1 FROM vehicles fv JOIN vehicle_classes fvc ON fvc.code = fv.class_code
+	WHERE fv.driver_id = d.id AND fv.status <> 'archived'
+	  AND o.vehicle_class = ANY (fvc.serves)
+	  AND fv.seats >= COALESCE(o.passenger_count, 0)
+	  AND fv.cargo_volume_l >= o.cargo_volume_l)`
+
 // policyArgs returns the named arguments of the radius fragments plus extra.
 func policyArgs(p settings.DispatchSettings, extra pgx.NamedArgs) pgx.NamedArgs {
 	args := pgx.NamedArgs{
@@ -93,4 +105,23 @@ func loadReach(ctx context.Context, q db.Querier, orderID, driverID uuid.UUID, p
 		return reach{}, fmt.Errorf("dispatch: driver reach: %w", err)
 	}
 	return r, nil
+}
+
+// ReasonVehicleMismatch tells an operator that the driver's vehicle cannot
+// take the order: its class does not serve the order's class, or it has too
+// few seats or too little cargo space.
+const ReasonVehicleMismatch = "vehicle_mismatch"
+
+// fits reports whether driverID's current vehicle can take orderID.
+func fits(ctx context.Context, q db.Querier, orderID, driverID uuid.UUID) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT `+vehicleFits+` FROM orders o, driver_profiles d WHERE o.id = $1 AND d.id = $2`,
+		orderID, driverID).Scan(&ok)
+	if db.IsNoRows(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("dispatch: vehicle fit: %w", err)
+	}
+	return ok, nil
 }

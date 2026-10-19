@@ -58,12 +58,48 @@ func (s *Service) getOrder(w http.ResponseWriter, r *http.Request) error {
 }
 
 type passengerCancelRequest struct {
-	Reason *string `json:"reason"`
+	ReasonCode *string `json:"reason_code"`
+	Comment    *string `json:"comment"`
+	// ExpectedStatus is the status the passenger saw when confirming. When
+	// the order has moved on since (typically: a driver accepted a searching
+	// order), the cancellation is refused with 409 conflict
+	// {reason: order_changed, status} so the app shows the driver first.
+	ExpectedStatus *string `json:"expected_status"`
+}
+
+// parse validates the cancellation reason (§22.3): reason_code is one of
+// lifecycle.CancelReasonCodes; comment is optional free text (≤ 120 code
+// points) and required for "other"; expected_status, when sent, is an order
+// status.
+func (req passengerCancelRequest) parse() (code string, comment *string, err error) {
+	fields := map[string]string{}
+	if req.ExpectedStatus != nil && !lifecycle.ValidStatus(*req.ExpectedStatus) {
+		fields["expected_status"] = "invalid"
+	}
+	switch {
+	case req.ReasonCode == nil || strings.TrimSpace(*req.ReasonCode) == "":
+		fields["reason_code"] = "required"
+	case !lifecycle.ValidCancelReason(*req.ReasonCode):
+		fields["reason_code"] = "invalid"
+	default:
+		code = *req.ReasonCode
+	}
+	comment = cleanField(fields, "comment", req.Comment, textutil.MaxFreeText)
+	if code == lifecycle.CancelOther && comment == nil && fields["comment"] == "" {
+		fields["comment"] = "required"
+	}
+	if len(fields) > 0 {
+		return "", nil, httpx.Validation(fields)
+	}
+	return code, comment, nil
 }
 
 // cancelOrder handles POST /orders/{id}/cancel: searching, accepted or
-// driver_arriving → cancelled. The driver's reservation is released and the
-// driver is told.
+// driver_arriving → cancelled with the passenger's reason. Only passengers
+// cancel (§22.3); the commission the driver paid is not returned (§22.2) and
+// the driver is told. With expected_status the cancellation applies only to
+// the order as the passenger saw it: a driver who accepted meanwhile is not
+// charged for a cancellation meant for a search.
 func (s *Service) cancelOrder(w http.ResponseWriter, r *http.Request) error {
 	p, err := auth.RequirePrincipal(r)
 	if err != nil {
@@ -74,25 +110,27 @@ func (s *Service) cancelOrder(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var req passengerCancelRequest
-	if err := decodeOptionalJSON(w, r, &req); err != nil {
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		return err
 	}
-	fields := map[string]string{}
-	reason := cleanField(fields, "reason", req.Reason, textutil.MaxFreeText)
-	if len(fields) > 0 {
-		return httpx.Validation(fields)
+	code, comment, err := req.parse()
+	if err != nil {
+		return err
 	}
 	ctx := r.Context()
 	err = s.tx(ctx, func(tx pgx.Tx) error {
 		res, err := lifecycle.Cancel(ctx, tx, lifecycle.CancelInput{Change: lifecycle.Change{
-			OrderID: id, OnlyPassenger: &p.UserID, Actor: lifecycle.Passenger(p.UserID), Reason: reason,
+			OrderID: id, OnlyPassenger: &p.UserID, Actor: lifecycle.Passenger(p.UserID), Reason: comment,
+			ReasonCode: &code, Meta: map[string]any{"reason_code": code}, ExpectStatus: req.ExpectedStatus,
 			From: []string{lifecycle.StatusSearching, lifecycle.StatusAccepted, lifecycle.StatusDriverArriving},
 		}})
 		if err != nil {
 			return err
 		}
 		if res.After.DriverID != nil {
-			return notifyDriverCancelled(ctx, tx, res.After, *res.After.DriverID, reason)
+			// The passenger's reason may be about the driver: it stays with
+			// the operators.
+			return notifyDriverCancelled(ctx, tx, res.After, *res.After.DriverID, nil, 0)
 		}
 		return nil
 	})
@@ -106,7 +144,7 @@ func (s *Service) cancelOrder(w http.ResponseWriter, r *http.Request) error {
 	return httpx.OK(w, o)
 }
 
-func notifyDriverCancelled(ctx context.Context, tx pgx.Tx, o lifecycle.Core, driverID uuid.UUID, reason *string) error {
+func notifyDriverCancelled(ctx context.Context, tx pgx.Tx, o lifecycle.Core, driverID uuid.UUID, reason *string, refunded int64) error {
 	info, err := lifecycle.LoadDriverInfo(ctx, tx, driverID)
 	if err != nil {
 		return err
@@ -114,6 +152,9 @@ func notifyDriverCancelled(ctx context.Context, tx pgx.Tx, o lifecycle.Core, dri
 	params := map[string]any{"order_number": o.Number}
 	if reason != nil {
 		params["reason"] = *reason
+	}
+	if refunded > 0 {
+		params["refunded"] = refunded
 	}
 	return lifecycle.Notify(ctx, tx, notifications.DriverBot, info.UserID, notifications.TplOrderCancelledDriver,
 		params, "order_cancelled_driver:"+o.ID.String()+":"+driverID.String())

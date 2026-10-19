@@ -191,7 +191,7 @@ func TestZeroCommissionWritesNoLedgerRows(t *testing.T) {
 	}
 	var refunded int64
 	e.mustTx(func(tx pgx.Tx) (err error) {
-		refunded, err = wallets.RefundCommission(e.ctx, tx, o, uuid.Nil)
+		refunded, err = wallets.RefundCommission(e.ctx, tx, o, d.DriverID, uuid.Nil)
 		return err
 	})
 	if refunded != 0 {
@@ -277,7 +277,7 @@ func TestRefundCommission(t *testing.T) {
 	for i := range 2 {
 		var refunded int64
 		e.mustTx(func(tx pgx.Tx) (err error) {
-			refunded, err = wallets.RefundCommission(e.ctx, tx, o, admin)
+			refunded, err = wallets.RefundCommission(e.ctx, tx, o, d.DriverID, admin)
 			return err
 		})
 		if refunded != 100 {
@@ -288,8 +288,12 @@ func TestRefundCommission(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM wallet_ledger WHERE idempotency_key = $1 AND admin_id = $2`, "commission_refund:"+o.String(), admin); n != 1 {
 		t.Fatalf("refund entries = %d, want 1", n)
 	}
-	if err := e.tx(func(tx pgx.Tx) error { _, err := wallets.RefundCommission(e.ctx, tx, e.order(), admin); return err }); !errors.Is(err, wallets.ErrNotFound) {
-		t.Fatalf("refund of uncharged order: %v, want ErrNotFound", err)
+	var none int64
+	if err := e.tx(func(tx pgx.Tx) (err error) {
+		none, err = wallets.RefundCommission(e.ctx, tx, e.order(), d.DriverID, admin)
+		return err
+	}); err != nil || none != 0 {
+		t.Fatalf("refund of uncharged order: %d %v, want 0", none, err)
 	}
 	e.expectReconciled()
 }

@@ -70,6 +70,10 @@ var texts = runtime.Catalog{
 		"help":         "Төмендегі мәзірден әрекетті таңдаңыз немесе қосымшаны ашыңыз.",
 		"blocked":      "Аккаунтыңыз шектелген. Толығырақ ақпаратты қолдау қызметінен біліңіз.",
 		"error":        "Қызмет уақытша қолжетімсіз. Біраздан соң қайталап көріңіз.",
+
+		"phone_saved":    "<b>Рахмет!</b> Телефон нөміріңіз сақталды: <b>%s</b>.\nТапсырысыңызды алған жүргізуші сізге қоңырау шала алады.",
+		"phone_own_only": "Тек өз нөміріңізді бөлісе аласыз. Қосымшадағы «Нөмірді бөлісу» батырмасын басыңыз.",
+		"phone_invalid":  "Тек Қазақстанның ұялы байланыс нөмірлері (+7 7xx…) қабылданады.",
 	},
 	"ru": {
 		"kb_taxi":        "🚕 Вызвать такси",
@@ -136,6 +140,10 @@ var texts = runtime.Catalog{
 		"help":         "Выберите действие в меню ниже или откройте приложение.",
 		"blocked":      "Ваш аккаунт ограничен. Подробности можно узнать в поддержке.",
 		"error":        "Сервис временно недоступен. Попробуйте чуть позже.",
+
+		"phone_saved":    "<b>Спасибо!</b> Номер телефона сохранён: <b>%s</b>.\nВодитель, принявший ваш заказ, сможет вам позвонить.",
+		"phone_own_only": "Можно поделиться только своим номером. Нажмите «Поделиться номером» в приложении.",
+		"phone_invalid":  "Принимаются только мобильные номера Казахстана (+7 7xx…).",
 	},
 	"en": {
 		"kb_taxi":        "🚕 Order a taxi",
@@ -202,5 +210,9 @@ var texts = runtime.Catalog{
 		"help":         "Choose an action from the menu below or open the app.",
 		"blocked":      "Your account is restricted. Please contact support for details.",
 		"error":        "The service is temporarily unavailable. Please try again shortly.",
+
+		"phone_saved":    "<b>Thank you!</b> Your phone number is saved: <b>%s</b>.\nThe driver who takes your order will be able to call you.",
+		"phone_own_only": "You can only share your own number. Tap “Share phone number” in the app.",
+		"phone_invalid":  "Only Kazakhstan mobile numbers (+7 7xx…) are accepted.",
 	},
 }

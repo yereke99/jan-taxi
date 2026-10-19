@@ -73,7 +73,7 @@ func TestOrderThroughApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	cityID := testutil.CityID(t, pool, "EMB")
-	tariff, err := pricing.ActiveTariff(ctx, pool, cityID, "taxi")
+	tariff, err := pricing.ActiveTariff(ctx, pool, cityID, "taxi", "sedan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,8 @@ func TestOrderThroughApp(t *testing.T) {
 	if code, l, _ := call(http.MethodGet, "/api/v1/admin/orders?q=%23"+number, nil, session); code != http.StatusOK || l["total"].(float64) != 1 {
 		t.Fatalf("admin search: %d %v", code, l)
 	}
-	if code, d, _ := call(http.MethodGet, "/api/v1/admin/orders/"+id, nil, session); code != http.StatusOK || d["commission_amount"].(float64) != 80 {
+	if code, d, _ := call(http.MethodGet, "/api/v1/admin/orders/"+id, nil, session); code != http.StatusOK || d["commission_amount"].(float64) != 50 ||
+		d["commission_mode"] != "fixed" {
 		t.Fatalf("admin detail: %d %v", code, d)
 	}
 	reason := map[string]any{"reason": "Жолаушы шағымы"}

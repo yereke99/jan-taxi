@@ -5,6 +5,7 @@
 
 import type { CorrectionItem, CorrectionReason, RegistrationField } from '../api/drivers'
 import type { ExtraFee, TariffInput } from '../api/config'
+import { VEHICLE_CLASS_ICONS, type VehicleClassInput } from '../api/vehicleClasses'
 import type { Category } from '../utils/status'
 import { codePoints } from '../utils/text'
 import { parseInteger, percentToBps } from './numbers'
@@ -33,6 +34,14 @@ export const LIMITS = {
   tariffExtraFees: 10,
   feeName: 60,
   maxCommissionBps: 5000,
+  className: 40,
+  classExamples: 80,
+  classSeats: 60,
+  classCargoL: 100_000,
+  classServes: 10,
+  classSort: 1000,
+  maxBonus: 1_000_000,
+  bonusComment: 200,
 } as const
 
 /** Same normalisation as the API (§11) for counting: trim + collapse spaces. */
@@ -192,6 +201,7 @@ export interface FeeRow {
 export interface TariffForm {
   city_id: string
   category: Category
+  vehicle_class: string
   min_fare: string
   max_fare: string
   fare_step: string
@@ -223,6 +233,7 @@ function money(errors: FieldErrors, name: string, raw: string, min: number, requ
 export function validateTariffForm(form: TariffForm): { errors: FieldErrors; payload: TariffInput | null } {
   const errors: FieldErrors = {}
   if (!form.city_id) errors.city_id = 'required'
+  if (!form.vehicle_class) errors.vehicle_class = 'required'
   const min = money(errors, 'min_fare', form.min_fare, 1, true)
   const max = money(errors, 'max_fare', form.max_fare, 1, true)
   const step = money(errors, 'fare_step', form.fare_step, 1, true)
@@ -272,6 +283,7 @@ export function validateTariffForm(form: TariffForm): { errors: FieldErrors; pay
     payload: {
       city_id: form.city_id,
       category: form.category,
+      vehicle_class: form.vehicle_class,
       min_fare: min,
       max_fare: max,
       fare_step: step,
@@ -283,6 +295,122 @@ export function validateTariffForm(form: TariffForm): { errors: FieldErrors; pay
       commission_bps: bps,
     },
   }
+}
+
+// --- vehicle classes (§21) ---------------------------------------------------
+
+export interface VehicleClassForm {
+  code: string
+  nameKk: string
+  nameRu: string
+  nameEn: string
+  examples: string
+  seats_default: string
+  seats_max: string
+  cargo_volume_l_default: string
+  passenger_capable: boolean
+  cargo_capable: boolean
+  icon: string
+  /** Other classes whose orders this class may take (the class itself is implied). */
+  serves: string[]
+  sort: string
+  is_active: boolean
+}
+
+export const CLASS_CODE_RE = /^[a-z_]{2,20}$/
+
+function intIn(errors: FieldErrors, name: string, raw: string, lo: number, hi: number, required: boolean): number | null {
+  if (raw.trim() === '') {
+    if (required) errors[name] = 'required'
+    return null
+  }
+  const n = parseInteger(raw)
+  if (n === null) errors[name] = 'integer'
+  else if (n < lo) errors[name] = 'too_small'
+  else if (n > hi) errors[name] = 'too_large'
+  return n !== null && n >= lo && n <= hi ? n : null
+}
+
+/**
+ * Same rules as POST/PATCH /admin/vehicle-classes: code ^[a-z_]{2,20}$ (new
+ * classes only), names ≤ 40 in every language, seats 1..60 with the default
+ * not above the maximum, cargo 0..100 000 L, passengers or cargo (at least
+ * one), a known icon, ≤ 10 served classes, sort 0..1000.
+ */
+export function validateVehicleClassForm(form: VehicleClassForm, creating: boolean): { errors: FieldErrors; payload: VehicleClassInput | null } {
+  const errors: FieldErrors = {}
+  const code = form.code.trim()
+  if (creating) {
+    if (!code) errors.code = 'required'
+    else if (!CLASS_CODE_RE.test(code)) errors.code = 'invalid'
+  }
+  const name = { kk: cleaned(form.nameKk), ru: cleaned(form.nameRu), en: cleaned(form.nameEn) }
+  for (const lang of ['kk', 'ru', 'en'] as const) {
+    const problem = textProblem(name[lang], LIMITS.className, true)
+    if (problem) errors[`name.${lang}`] = problem
+  }
+  const examples = textProblem(form.examples, LIMITS.classExamples, false)
+  if (examples) errors.examples = examples
+  const seatsMax = intIn(errors, 'seats_max', form.seats_max, 1, LIMITS.classSeats, true)
+  const seatsDefault = intIn(errors, 'seats_default', form.seats_default, 1, LIMITS.classSeats, true)
+  if (seatsMax !== null && seatsDefault !== null && seatsDefault > seatsMax) errors.seats_default = 'too_large'
+  const cargo = intIn(errors, 'cargo_volume_l_default', form.cargo_volume_l_default, 0, LIMITS.classCargoL, true)
+  if (!form.passenger_capable && !form.cargo_capable) {
+    errors.passenger_capable = 'one_required'
+    errors.cargo_capable = 'one_required'
+  }
+  if (!form.icon) errors.icon = 'required'
+  else if (!(VEHICLE_CLASS_ICONS as readonly string[]).includes(form.icon)) errors.icon = 'invalid'
+  const serves = [...new Set(form.serves.map((s) => s.trim()).filter((s) => s && s !== code))]
+  if (serves.length + 1 > LIMITS.classServes) errors.serves = 'too_many'
+  else if (serves.some((s) => !CLASS_CODE_RE.test(s))) errors.serves = 'invalid'
+  const sort = form.sort.trim() === '' ? 100 : intIn(errors, 'sort', form.sort, 0, LIMITS.classSort, false)
+  if (errors.sort === 'too_small' || errors.sort === 'too_large') errors.sort = 'out_of_range'
+
+  if (Object.keys(errors).length > 0 || seatsMax === null || seatsDefault === null || cargo === null || sort === null) return { errors, payload: null }
+  const payload: VehicleClassInput = {
+    name,
+    examples: cleaned(form.examples),
+    seats_default: seatsDefault,
+    seats_max: seatsMax,
+    cargo_volume_l_default: cargo,
+    passenger_capable: form.passenger_capable,
+    cargo_capable: form.cargo_capable,
+    serves,
+    icon: form.icon,
+    sort,
+    is_active: form.is_active,
+  }
+  if (creating) payload.code = code
+  return { errors, payload }
+}
+
+// --- bonuses and commission (§22.7) -------------------------------------------
+
+export interface BonusForm {
+  amount: string
+  comment: string
+}
+
+/** POST /admin/drivers/{id}/bonus: whole tenge 1..1 000 000, optional comment ≤ 200. */
+export function validateBonus(form: BonusForm): { errors: FieldErrors; amount: number | null; comment: string } {
+  const errors: FieldErrors = {}
+  const n = parseInteger(form.amount)
+  if (form.amount.trim() === '') errors.amount = 'required'
+  else if (n === null) errors.amount = 'integer'
+  else if (n < 1) errors.amount = 'positive'
+  else if (n > LIMITS.maxBonus) errors.amount = 'too_large'
+  const comment = textProblem(form.comment, LIMITS.bonusComment, false)
+  if (comment) errors.comment = comment
+  return { errors, amount: Object.keys(errors).length ? null : n, comment: cleaned(form.comment) }
+}
+
+/** A setting amount in [min, max] (e.g. commission.fixed_amount within 50..100 ₸); null when fine. */
+export function amountInRange(raw: string, min: number, max: number): string | null {
+  if (raw.trim() === '') return 'required'
+  const n = parseInteger(raw)
+  if (n === null) return 'integer'
+  return n < min || n > max ? 'out_of_range' : null
 }
 
 // --- generic reason text --------------------------------------------------

@@ -11,6 +11,7 @@ import (
 // wireOrders constructs the orders, dispatch and ratings services and mounts their routes.
 func (a *App) wireOrders() error {
 	svc := orders.New(a.Pool, a.Log)
+	svc.SetArrivalETA(a.ETA)
 	// /api/v1/orders*, passenger token
 	svc.MountPassenger(a.Passenger)
 	// /api/v1/driver/orders*, driver token (+ profile)

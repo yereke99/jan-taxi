@@ -1,8 +1,12 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"mime/multipart"
+	"strconv"
 	"time"
 )
 
@@ -72,17 +76,94 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*Message
 	return &m, nil
 }
 
+// SendPhoto sends a photo with an HTML caption: by the file_id Telegram gave
+// for an earlier upload, or by uploading Photo.Data (multipart). The result's
+// Photo sizes carry the file_id to reuse next time.
+func (c *Client) SendPhoto(ctx context.Context, p SendPhotoParams) (*Message, error) {
+	var m Message
+	if p.Photo.FileID != "" {
+		body := struct {
+			ChatID      int64  `json:"chat_id"`
+			Photo       string `json:"photo"`
+			Caption     string `json:"caption,omitempty"`
+			ParseMode   string `json:"parse_mode,omitempty"`
+			ReplyMarkup any    `json:"reply_markup,omitempty"`
+		}{p.ChatID, p.Photo.FileID, p.Caption, p.ParseMode, p.ReplyMarkup}
+		if err := c.call(ctx, "sendPhoto", body, &m, 0); err != nil {
+			return nil, err
+		}
+		return &m, nil
+	}
+	if len(p.Photo.Data) == 0 {
+		return nil, fmt.Errorf("telegram sendPhoto: no photo")
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("chat_id", strconv.FormatInt(p.ChatID, 10))
+	if p.Caption != "" {
+		_ = mw.WriteField("caption", p.Caption)
+	}
+	if p.ParseMode != "" {
+		_ = mw.WriteField("parse_mode", p.ParseMode)
+	}
+	if p.ReplyMarkup != nil {
+		raw, err := json.Marshal(p.ReplyMarkup)
+		if err != nil {
+			return nil, fmt.Errorf("telegram sendPhoto: encode markup: %w", err)
+		}
+		_ = mw.WriteField("reply_markup", string(raw))
+	}
+	name := p.Photo.FileName
+	if name == "" {
+		name = "photo.jpg"
+	}
+	fw, err := mw.CreateFormFile("photo", name)
+	if err != nil {
+		return nil, fmt.Errorf("telegram sendPhoto: %w", err)
+	}
+	if _, err := fw.Write(p.Photo.Data); err != nil {
+		return nil, fmt.Errorf("telegram sendPhoto: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return nil, fmt.Errorf("telegram sendPhoto: %w", err)
+	}
+	start := time.Now()
+	err = c.send(ctx, c.http, "sendPhoto", buf.Bytes(), mw.FormDataContentType(), &m, 0)
+	c.log.Debug("telegram call", "method", "sendPhoto", "dur", time.Since(start), "upload", true)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // EditMessageText replaces the text (and inline keyboard) of a sent message.
+// Without ReplyMarkup the message loses its inline keyboard.
 func (c *Client) EditMessageText(ctx context.Context, p EditMessageTextParams) error {
+	body := struct {
+		ChatID             int64                 `json:"chat_id"`
+		MessageID          int64                 `json:"message_id"`
+		Text               string                `json:"text"`
+		ParseMode          string                `json:"parse_mode,omitempty"`
+		ReplyMarkup        *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+		LinkPreviewOptions *linkPreviewOptions   `json:"link_preview_options,omitempty"`
+	}{ChatID: p.ChatID, MessageID: p.MessageID, Text: p.Text, ParseMode: p.ParseMode, ReplyMarkup: p.ReplyMarkup}
+	if p.DisableWebPagePreview {
+		body.LinkPreviewOptions = &linkPreviewOptions{IsDisabled: true}
+	}
+	var ignored json.RawMessage
+	return c.call(ctx, "editMessageText", body, &ignored, 0)
+}
+
+// EditMessageReplyMarkup replaces or (with a nil markup) removes the inline
+// keyboard of a sent message.
+func (c *Client) EditMessageReplyMarkup(ctx context.Context, chatID, messageID int64, markup *InlineKeyboardMarkup) error {
 	body := struct {
 		ChatID      int64                 `json:"chat_id"`
 		MessageID   int64                 `json:"message_id"`
-		Text        string                `json:"text"`
-		ParseMode   string                `json:"parse_mode,omitempty"`
 		ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
-	}{p.ChatID, p.MessageID, p.Text, p.ParseMode, p.ReplyMarkup}
+	}{chatID, messageID, markup}
 	var ignored json.RawMessage
-	return c.call(ctx, "editMessageText", body, &ignored, 0)
+	return c.call(ctx, "editMessageReplyMarkup", body, &ignored, 0)
 }
 
 // AnswerCallbackQuery acknowledges an inline button press.

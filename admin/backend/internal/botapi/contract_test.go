@@ -105,9 +105,21 @@ func TestClientAgainstWiredApp(t *testing.T) {
 		t.Fatalf("required amount: %v", e.Details)
 	}
 
+	// «Алу» on an order the driver cannot see.
+	if _, err := drv.AcceptOrder(ctx, d.TelegramID, "0a6f4c4e-6f1b-4b8e-9a52-3c1d2e7f9b10"); botapi.ErrorCode(err) != "not_found" {
+		t.Fatalf("accept unknown order: %v", err)
+	}
+
 	// Passenger side and the X-Jantaxi-Bot route restrictions.
 	if items, err := pas.PassengerOrders(ctx, d.TelegramID, 5); err != nil || len(items) != 0 {
 		t.Fatalf("passenger orders: %v %v", items, err)
+	}
+	_, ptg := testutil.CreateUser(t, pool)
+	if res, err := pas.VerifyPassengerContact(ctx, ptg, "+77015556677", ptg); err != nil || res.Phone != "+77015556677" || !res.PhoneVerified {
+		t.Fatalf("passenger contact: %+v %v", res, err)
+	}
+	if _, err := drv.VerifyPassengerContact(ctx, ptg, "+77015556677", ptg); botapi.ErrorCode(err) != "forbidden" {
+		t.Fatalf("driver bot on a passenger route: %v", err)
 	}
 	if _, err := pas.DriverSummary(ctx, d.TelegramID); botapi.ErrorCode(err) != "forbidden" {
 		t.Fatalf("passenger bot on a driver route: %v", err)

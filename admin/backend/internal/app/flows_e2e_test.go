@@ -65,21 +65,29 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	c := e.registerDriver("Нұрлан", "+77471234502", "456 def 02")
 	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+c.driverID+"/reject", map[string]any{"reason": "Құжаттар анық емес"}, http.StatusOK)
 
+	// A's approval credited the welcome bonus (§22.1); C was rejected.
+	e.wallet(a, 500, 0)
+
 	// Top-ups: "I paid" never credits; the finance admin credits the verified
 	// amount once; a second top-up is rejected.
 	t1 := e.must(http.StatusCreated, e.call(e.h, http.MethodPost, "/api/v1/driver/wallet/topups",
 		map[string]any{"amount": 500, "idempotency_key": uuid.NewString()}, a.auth), "create top-up").str("id")
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/wallet/topups/"+t1+"/submit",
 		map[string]any{"payment_reference": "KASPI 0001"}, a.auth), "submit top-up")
-	e.wallet(a, 0, 0)
+	e.wallet(a, 500, 0)
 	e.admin(http.MethodPost, "/api/v1/admin/topups/"+t1+"/confirm", map[string]any{
 		"verified_amount": 120, "provider_transaction_id": "KSP-0001", "paid_at": time.Now().Add(-time.Minute).UTC(),
 	}, http.StatusOK)
-	e.wallet(a, 120, 0)
+	e.wallet(a, 620, 0)
 	t2 := e.must(http.StatusCreated, e.call(e.h, http.MethodPost, "/api/v1/driver/wallet/topups",
 		map[string]any{"amount": 1000, "idempotency_key": uuid.NewString()}, a.auth), "second top-up").str("id")
 	e.admin(http.MethodPost, "/api/v1/admin/topups/"+t2+"/reject", map[string]any{"reason": "Төлем табылмады"}, http.StatusOK)
-	e.wallet(a, 120, 0)
+	e.wallet(a, 620, 0)
+	// A finance correction leaves A just enough for one commission.
+	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+a.driverID+"/wallet/adjustments", map[string]any{
+		"amount": -530, "reason": "Түзету", "idempotency_key": uuid.NewString(),
+	}, http.StatusCreated)
+	e.wallet(a, 90, 0)
 
 	// A reports a location and goes online (dispatch is by distance to the
 	// pickup, so going online without a fresh fix is refused); B is an
@@ -92,11 +100,15 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	b := flowDriver{userID: bFix.UserID, tgID: bFix.TelegramID, driverID: bFix.DriverID.String(),
 		auth: e.signIn("driver", config.TestDriverBotToken, bFix.TelegramID)}
 
-	// Passenger 1: a three-stop ride with driver A.
+	// Passenger 1: a three-stop ride with driver A. Both offers reached the
+	// driver bot; the commission is charged when A takes the order, which
+	// leaves A below the next commission (one low-balance message), and B's
+	// offer is marked taken.
 	p1 := e.passenger()
 	o1 := e.createOrder(p1, 3, 800)
+	e.offersSent(o1)
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o1+"/accept", nil, a.auth), "A accepts")
-	e.wallet(a, 120, 80)
+	e.wallet(a, 40, 0)
 	e.must(http.StatusConflict, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o1+"/accept", nil, b.auth), "B loses")
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o1+"/arriving", nil, a.auth), "arriving")
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o1+"/start", nil, a.auth), "start")
@@ -109,7 +121,7 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	}
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o1+"/stops/"+stopID+"/complete", nil, a.auth), "stop")
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o1+"/complete", nil, a.auth), "complete")
-	e.wallet(a, 40, 0) // charged once; now below driver.min_online_balance (50)
+	e.wallet(a, 40, 0) // nothing more on completion
 
 	// The passenger disputes; the operator cancels the ride and refunds the
 	// commission.
@@ -120,25 +132,32 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	e.admin(http.MethodPost, "/api/v1/admin/disputes/"+disputeID+"/resolve", map[string]any{
 		"outcome": "cancelled", "resolution": "Комиссия қайтарылды", "refund_commission": true,
 	}, http.StatusOK)
-	e.wallet(a, 120, 0)
-	e.ledgerTypes(a, o1, "commission_charge", "commission_refund", "commission_reserve")
+	e.wallet(a, 90, 0)
+	e.ledgerTypes(a, o1, "commission_charge", "commission_refund")
 
 	// Suspension and restoration (A has no active order).
 	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+a.driverID+"/suspend", map[string]any{"reason": "Шағымды тексеру"}, http.StatusOK)
 	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+a.driverID+"/restore", nil, http.StatusOK)
 
-	// Passenger 2 with driver B: passenger cancel, driver cancel, no driver.
+	// Passenger 2 with driver B: a passenger cancellation keeps the
+	// commission (§22.2), an operator cancellation refunds it, and a search
+	// that finds nobody closes the offers.
 	p2 := e.passenger()
 	o2 := e.createOrder(p2, 2, 500)
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o2+"/accept", nil, b.auth), "B accepts o2")
-	e.wallet(b, 1000, 50)
-	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/orders/"+o2+"/cancel", map[string]any{"reason": "Жоспар өзгерді"}, p2.auth), "passenger cancel")
-	e.wallet(b, 1000, 0)
+	e.wallet(b, 950, 0)
+	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/orders/"+o2+"/cancel",
+		map[string]any{"reason_code": "changed_plans"}, p2.auth), "passenger cancel")
+	e.wallet(b, 950, 0)
 	o3 := e.createOrder(p2, 2, 500)
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o3+"/accept", nil, b.auth), "B accepts o3")
-	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o3+"/cancel", map[string]any{"reason": "Көлік бұзылды"}, b.auth), "driver cancel")
-	e.wallet(b, 1000, 0)
+	e.must(http.StatusNotFound, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o3+"/cancel",
+		map[string]any{"reason": "Көлік бұзылды"}, b.auth), "driver cancel")
+	e.admin(http.MethodPost, "/api/v1/admin/orders/"+o3+"/cancel",
+		map[string]any{"reason": "Жүргізуші көлігі бұзылды", "refund_commission": true}, http.StatusOK)
+	e.wallet(b, 950, 0)
 	o4 := e.createOrder(p2, 2, 500)
+	e.offersSent(o4)
 	if _, err := e.pool.Exec(ctx, `UPDATE orders SET search_expires_at = now() - interval '1 second' WHERE id = $1`, o4); err != nil {
 		t.Fatal(err)
 	}
@@ -146,30 +165,41 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		t.Fatalf("search expiry: %d %v", n, err)
 	}
 
-	// Operator paths: re-assign an accepted order from B to A (A is offline,
-	// which an operator may override), cancel it, then dispute B's completed
-	// ride and resolve it as completed.
+	// Operator paths: re-assign an accepted order from B to A with a refund
+	// for B (A is offline, which an operator may override, and pays the
+	// commission), cancel it, then dispute B's completed ride and resolve it
+	// as completed.
 	o5 := e.createOrder(p2, 2, 500)
 	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o5+"/accept", nil, b.auth), "B accepts o5")
-	e.admin(http.MethodPost, "/api/v1/admin/orders/"+o5+"/assign", map[string]any{"driver_id": a.driverID}, http.StatusOK)
-	e.wallet(b, 1000, 0)
-	e.wallet(a, 120, 50)
+	e.wallet(b, 900, 0)
+	e.admin(http.MethodPost, "/api/v1/admin/orders/"+o5+"/assign", map[string]any{"driver_id": a.driverID, "refund_commission": true}, http.StatusOK)
+	e.wallet(b, 950, 0)
+	e.wallet(a, 40, 0)
 	e.admin(http.MethodPost, "/api/v1/admin/orders/"+o5+"/cancel", map[string]any{"reason": "Жолаушы бас тартты"}, http.StatusOK)
-	e.wallet(a, 120, 0)
+	e.wallet(a, 40, 0)
 	p3 := e.passenger()
 	o6 := e.createOrder(p3, 2, 500)
 	for _, step := range []string{"accept", "arriving", "start", "complete"} {
 		e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o6+"/"+step, nil, b.auth), "o6 "+step)
 	}
-	e.wallet(b, 950, 0)
+	e.wallet(b, 900, 0)
 	e.admin(http.MethodPost, "/api/v1/admin/orders/"+o6+"/dispute", map[string]any{"reason": "Бағасы туралы шағым"}, http.StatusOK)
 	disputes = e.admin(http.MethodGet, "/api/v1/admin/disputes?status=open", nil, http.StatusOK)
 	disputeID = disputes.body["items"].([]any)[0].(map[string]any)["id"].(string)
 	e.admin(http.MethodPost, "/api/v1/admin/disputes/"+disputeID+"/resolve", map[string]any{
 		"outcome": "completed", "resolution": "Сапар дұрыс орындалған", "refund_commission": false,
 	}, http.StatusOK)
-	e.wallet(b, 950, 0) // charged once, not again on resolution
-	e.ledgerTypes(b, o6, "commission_charge", "commission_reserve")
+	e.wallet(b, 900, 0) // charged once, not again on resolution
+	e.ledgerTypes(b, o6, "commission_charge")
+
+	// The company credits B a bonus (§22.7); a repeated click changes nothing.
+	bonusKey := uuid.NewString()
+	for _, status := range []int{http.StatusCreated, http.StatusOK} {
+		e.admin(http.MethodPost, "/api/v1/admin/drivers/"+b.driverID+"/bonus", map[string]any{
+			"amount": 1000, "comment": "Үздік жүргізуші", "idempotency_key": bonusKey,
+		}, status)
+	}
+	e.wallet(b, 1900, 0)
 
 	// Ledger and wallets agree.
 	rec := e.admin(http.MethodGet, "/api/v1/admin/wallets/reconciliation", nil, http.StatusOK)
@@ -189,6 +219,8 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		{notifications.TplModerationSubmitted, a.userID, notifications.DriverBot},
 		{notifications.TplModerationChangesRequested, a.userID, notifications.DriverBot},
 		{notifications.TplModerationApproved, a.userID, notifications.DriverBot},
+		{notifications.TplDriverWelcomeBonus, a.userID, notifications.DriverBot},
+		{notifications.TplDriverBonusGranted, b.userID, notifications.DriverBot},
 		{notifications.TplModerationSubmitted, c.userID, notifications.DriverBot},
 		{notifications.TplModerationRejected, c.userID, notifications.DriverBot},
 		{notifications.TplTopUpCreated, a.userID, notifications.DriverBot},
@@ -199,7 +231,9 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		{notifications.TplOrderAvailableDriver, b.userID, notifications.DriverBot},
 		{notifications.TplOrderAcceptedPassenger, p1.userID, notifications.PassengerBot},
 		{notifications.TplOrderAcceptedDriver, a.userID, notifications.DriverBot},
-		{notifications.TplOrderTakenDriver, b.userID, notifications.DriverBot},
+		{notifications.TplOrderOfferWon, a.userID, notifications.DriverBot},
+		{notifications.TplOrderOfferTaken, b.userID, notifications.DriverBot},
+		{notifications.TplOrderOfferCancelled, b.userID, notifications.DriverBot},
 		{notifications.TplOrderDriverArriving, p1.userID, notifications.PassengerBot},
 		{notifications.TplOrderStarted, p1.userID, notifications.PassengerBot},
 		{notifications.TplOrderStopCompleted, p1.userID, notifications.PassengerBot},
@@ -230,8 +264,8 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		}
 	}
 	// The passenger who opened the dispute is not told about it; B hears about
-	// both the passenger's cancellation and the re-assignment; P2 about the
-	// driver's and the operator's cancellation.
+	// the passenger's and the operator's cancellation and the re-assignment;
+	// P2 about the two operator cancellations.
 	count := func(template string, user uuid.UUID) int {
 		n := 0
 		for _, r := range rows {
@@ -244,8 +278,14 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	if n := count(notifications.TplDisputeOpened, p1.userID); n != 0 {
 		t.Error("dispute_opened sent to the passenger who opened it")
 	}
-	if n := count(notifications.TplOrderCancelledDriver, b.userID); n != 2 {
-		t.Errorf("order_cancelled_driver to B: %d, want 2", n)
+	if n := count(notifications.TplOrderCancelledDriver, b.userID); n != 3 {
+		t.Errorf("order_cancelled_driver to B: %d, want 3", n)
+	}
+	if n := count(notifications.TplWalletLowBalance, a.userID); n != 1 {
+		t.Errorf("wallet_low_balance to A: %d, want 1 (once a day)", n)
+	}
+	if n := count(notifications.TplDriverWelcomeBonus, c.userID); n != 0 {
+		t.Error("welcome bonus for a rejected driver")
 	}
 	if n := count(notifications.TplOrderCancelledPassenger, p2.userID); n != 2 {
 		t.Errorf("order_cancelled_passenger to P2: %d, want 2", n)
@@ -469,7 +509,7 @@ func (e *flowEnv) registerDriver(name, phone, plate string) flowDriver {
 		map[string]string{"Authorization": "Bearer " + config.TestServiceSecret, auth.BotHeader: "driver"}), "verify phone")
 	e.must(http.StatusOK, e.call(e.h, http.MethodPut, "/api/v1/driver/registration", map[string]any{
 		"first_name": name, "last_name": "Бекенов",
-		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": plate},
+		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": plate, "vehicle_class": "sedan"},
 	}, h), "save registration")
 	for i, kind := range []string{"avatar", "id_front", "id_back", "vehicle_main"} {
 		var buf bytes.Buffer
@@ -523,6 +563,17 @@ func (e *flowEnv) wallet(d flowDriver, balance, reserved int64) {
 	if int64(w.body["balance"].(float64)) != balance || int64(w.body["reserved"].(float64)) != reserved ||
 		int64(w.body["available"].(float64)) != balance-reserved {
 		e.t.Fatalf("wallet of %s: %s, want balance %d reserved %d", d.driverID, w.raw, balance, reserved)
+	}
+}
+
+// offersSent marks the order's offer messages as delivered by the driver bot,
+// as the notification worker would.
+func (e *flowEnv) offersSent(orderID string) {
+	e.t.Helper()
+	if _, err := e.pool.Exec(context.Background(), `
+		UPDATE notification_outbox SET status = 'sent', sent_at = now(), telegram_message_id = 4242
+		WHERE template = 'order_available_driver' AND params->>'order_id' = $1`, orderID); err != nil {
+		e.t.Fatal(err)
 	}
 }
 

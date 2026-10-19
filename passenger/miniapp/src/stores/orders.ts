@@ -20,6 +20,22 @@ export const useOrdersStore = defineStore('orders', () => {
   let historyRequest = 0
   let activeRequest = 0
 
+  /**
+   * Locality line of pickup A for orders placed in this session, as the
+   * passenger saw it while booking; shown when the API has no locality for
+   * the order. Kept in memory only.
+   */
+  const pickupSubtitles = ref<Record<string, string>>({})
+
+  function rememberPickupSubtitle(orderId: string, subtitle: string | null | undefined): void {
+    const text = subtitle?.trim()
+    if (text) pickupSubtitles.value = { ...pickupSubtitles.value, [orderId]: text }
+  }
+
+  function pickupSubtitle(orderId: string): string | null {
+    return pickupSubtitles.value[orderId] ?? null
+  }
+
   const hasMore = computed(() => nextCursor.value !== null)
   const destinations = computed(() => recentDestinations(history.value))
   const places = computed(() => recentPlaces(history.value))
@@ -96,5 +112,7 @@ export const useOrdersStore = defineStore('orders', () => {
     loadHistory,
     loadMore,
     ensureLoaded,
+    rememberPickupSubtitle,
+    pickupSubtitle,
   }
 })

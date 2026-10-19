@@ -54,6 +54,16 @@ func Commission(fare, bps int) int {
 	return int((int64(fare)*int64(bps) + 5000) / 10000)
 }
 
+// OrderCommission is the commission snapshotted on a new order (ARCHITECTURE
+// §22.2): with mode "fixed" the fixed amount, capped at the fare; otherwise the
+// tariff percentage (Commission).
+func OrderCommission(mode string, fixedAmount int64, fare, bps int) int {
+	if mode == "fixed" {
+		return int(max(min(fixedAmount, int64(max(fare, 0))), 0))
+	}
+	return Commission(fare, bps)
+}
+
 // ceilDiv divides non-negative a by positive b, rounding up.
 func ceilDiv(a, b int64) int64 {
 	if a <= 0 {

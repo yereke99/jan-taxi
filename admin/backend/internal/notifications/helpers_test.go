@@ -16,12 +16,14 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/pkg/telegram"
 )
 
-// sent is one message accepted by fakeSender.
+// sent is one message accepted by fakeSender; editOf is the message id an
+// edit changed (0 for a new message).
 type sent struct {
 	bot    Bot
 	chatID int64
 	text   string
 	markup *telegram.InlineKeyboardMarkup
+	editOf int64
 }
 
 // fakeSender records sends and returns scripted errors per chat (consumed in
@@ -67,6 +69,19 @@ func (f *fakeSender) Send(ctx context.Context, bot Bot, chatID int64, text strin
 	f.nextID++
 	f.sent = append(f.sent, sent{bot: bot, chatID: chatID, text: text, markup: markup})
 	return 1000 + f.nextID, nil
+}
+
+// Edit implements Editor; scripted errors apply to edits too.
+func (f *fakeSender) Edit(ctx context.Context, bot Bot, chatID, messageID int64, text string, markup *telegram.InlineKeyboardMarkup) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[chatID]++
+	if s := f.script[chatID]; len(s) > 0 {
+		f.script[chatID] = s[1:]
+		return s[0]
+	}
+	f.sent = append(f.sent, sent{bot: bot, chatID: chatID, text: text, markup: markup, editOf: messageID})
+	return nil
 }
 
 func (f *fakeSender) sentTo(chatID int64) []sent {

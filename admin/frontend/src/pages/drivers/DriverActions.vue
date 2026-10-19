@@ -1,7 +1,8 @@
 <!--
   Moderation and management actions for one driver, each behind its
   permission and the statuses the API accepts: approve / request corrections /
-  reject (drivers.moderate), suspend / restore / change city (drivers.manage).
+  reject (drivers.moderate), suspend / restore / change city (drivers.manage),
+  company bonus (finance.manage).
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
@@ -13,12 +14,13 @@ import { useErrors } from '../../composables/useErrors'
 import { useFormat } from '../../composables/useFormat'
 import { LIMITS, validateReason } from '../../forms/validation'
 import { useAuthStore } from '../../stores/auth'
+import BonusDialog from './BonusDialog.vue'
 import CorrectionsDialog from './CorrectionsDialog.vue'
 
-type DriverAction = 'approve' | 'corrections' | 'reject' | 'suspend' | 'restore' | 'city'
+type DriverAction = 'approve' | 'corrections' | 'reject' | 'suspend' | 'restore' | 'city' | 'bonus'
 
 const props = withDefaults(defineProps<{ driver: AdminDriverDetail; only?: 'moderation' | 'all' }>(), { only: 'all' })
-const emit = defineEmits<{ updated: [driver: AdminDriverDetail] }>()
+const emit = defineEmits<{ updated: [driver: AdminDriverDetail]; changed: [] }>()
 
 const { t } = useI18n()
 const errors = useErrors()
@@ -37,6 +39,7 @@ const cityOpen = ref(false)
 const cityId = ref<string | null>(null)
 const cityBusy = ref(false)
 const cityError = ref('')
+const bonusOpen = ref(false)
 
 const status = computed(() => props.driver.status)
 const available = computed<Record<DriverAction, boolean>>(() => ({
@@ -46,6 +49,17 @@ const available = computed<Record<DriverAction, boolean>>(() => ({
   suspend: props.only === 'all' && auth.can('drivers.manage') && status.value === 'approved',
   restore: props.only === 'all' && auth.can('drivers.manage') && status.value === 'suspended',
   city: props.only === 'all' && auth.can('drivers.manage'),
+  bonus: props.only === 'all' && auth.can('finance.manage') && (status.value === 'approved' || status.value === 'suspended'),
+}))
+
+const bonusTarget = computed(() => ({
+  id: props.driver.id,
+  code: props.driver.code,
+  first_name: props.driver.first_name,
+  last_name: props.driver.last_name,
+  phone: props.driver.phone,
+  status: props.driver.status,
+  balance: props.driver.wallet?.balance ?? null,
 }))
 
 const cityOptions = computed(() => cities.value.filter((c) => c.is_active).map((c) => ({ value: c.id, label: `${fmt.name(c.name)} · ${c.code}` })))
@@ -141,17 +155,21 @@ function run(action: DriverAction): void {
       cityError.value = ''
       cityOpen.value = true
       break
+    case 'bonus':
+      bonusOpen.value = true
+      break
   }
 }
 
 /** True while any dialog of this component is open (keyboard shortcuts pause). */
-const busyDialog = computed(() => approveOpen.value || correctionsOpen.value || rejectOpen.value || suspendOpen.value || cityOpen.value)
+const busyDialog = computed(() => approveOpen.value || correctionsOpen.value || rejectOpen.value || suspendOpen.value || cityOpen.value || bonusOpen.value)
 
 defineExpose({ run, busyDialog })
 </script>
 
 <template>
   <div class="actions">
+    <AppButton v-if="available.bonus" @click="run('bonus')">{{ t('bonus.grant') }}</AppButton>
     <AppButton v-if="available.city" @click="run('city')">{{ t('drivers.change_city') }}</AppButton>
     <AppButton v-if="available.restore" @click="run('restore')">{{ t('drivers.restore') }}</AppButton>
     <AppButton v-if="available.suspend" variant="destructive" @click="run('suspend')">{{ t('drivers.suspend') }}</AppButton>
@@ -162,6 +180,7 @@ defineExpose({ run, busyDialog })
     <Modal v-model:open="approveOpen" :title="t('drivers.approve_title', { code: driver.code })" :persistent="approving">
       <div class="jt-form">
         <p class="jt-muted">{{ t('drivers.approve_message') }}</p>
+        <p v-if="!driver.welcome_bonus" class="jt-muted">{{ t('bonus.approve_note') }}</p>
         <FormField v-slot="f" :label="t('drivers.approve_comment')" :error="approveError">
           <TextArea :id="f.id" v-model="approveComment" :rows="2" :max-length="LIMITS.decisionComment" :invalid="f.invalid" />
         </FormField>
@@ -171,6 +190,8 @@ defineExpose({ run, busyDialog })
         <AppButton variant="primary" :loading="approving" @click="approve">{{ t('drivers.approve') }}</AppButton>
       </template>
     </Modal>
+
+    <BonusDialog v-if="available.bonus" v-model:open="bonusOpen" :driver="bonusTarget" @done="emit('changed')" />
 
     <CorrectionsDialog v-model:open="correctionsOpen" :driver="driver" @done="(d) => updated(d, t('drivers.corrections_sent', { code: d.code }))" />
 
@@ -196,7 +217,7 @@ defineExpose({ run, busyDialog })
     <Modal v-model:open="cityOpen" :title="t('drivers.change_city')" :persistent="cityBusy">
       <div class="jt-form">
         <p class="jt-muted">{{ t('drivers.change_city_message') }}</p>
-        <FormField v-slot="f" :label="t('common.city')" :error="cityError">
+        <FormField v-slot="f" :label="t('drivers.region')" :error="cityError">
           <SelectInput :id="f.id" v-model="cityId" :options="cityOptions" :invalid="f.invalid" />
         </FormField>
       </div>

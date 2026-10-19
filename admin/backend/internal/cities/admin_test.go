@@ -145,8 +145,65 @@ func TestAdminCities(t *testing.T) {
 	}
 
 	code, list := c.do(http.MethodGet, "/cities?page_size=1", "")
-	if code != http.StatusOK || list["total"] != float64(2) || len(list["items"].([]any)) != 1 {
+	if code != http.StatusOK || list["total"] != float64(3) || len(list["items"].([]any)) != 1 {
 		t.Fatalf("list: %d %v", code, list)
+	}
+}
+
+func TestAdminDefaultRegionLocked(t *testing.T) {
+	pool := testutil.NewDB(t)
+	c, _ := newAdminClient(t, pool, auth.RoleSuperAdmin)
+	kaz, err := GetByCode(context.Background(), pool, DefaultRegionCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/cities/" + kaz.ID.String()
+	code, body := c.do(http.MethodPatch, path, `{"is_active":false}`)
+	if code != http.StatusConflict || body["error"].(map[string]any)["code"] != "default_region_locked" {
+		t.Fatalf("deactivate KAZ: %d %v", code, body)
+	}
+	if got, _ := Get(context.Background(), pool, kaz.ID); !got.IsActive {
+		t.Fatal("KAZ was deactivated")
+	}
+	if auditCount(t, pool, "city.update") != 0 {
+		t.Fatal("refused change was audited")
+	}
+	// Other fields stay editable.
+	code, body = c.do(http.MethodPatch, path, `{"search_timeout_s":1200,"is_active":true}`)
+	if code != http.StatusOK || body["search_timeout_s"] != float64(1200) || body["is_default_region"] != true {
+		t.Fatalf("edit KAZ: %d %v", code, body)
+	}
+	// Its zone is the Kazakhstan boundary: visible, but not editable.
+	code, list := c.do(http.MethodGet, path+"/zones", "")
+	items, _ := list["items"].([]any)
+	if code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("KAZ zones: %d %d", code, len(items))
+	}
+	zonePath := "/zones/" + items[0].(map[string]any)["id"].(string)
+	for _, tt := range []struct{ method, path, body string }{
+		{http.MethodPost, path + "/zones", `{"name":"Орталық","geometry":` + embiSquare + `}`},
+		{http.MethodPatch, zonePath, `{"is_active":false}`},
+		{http.MethodPatch, zonePath, `{"geometry":` + embiSquare + `}`},
+		{http.MethodDelete, zonePath, ""},
+	} {
+		code, body := c.do(tt.method, tt.path, tt.body)
+		if code != http.StatusConflict || body["error"].(map[string]any)["code"] != "default_region_locked" {
+			t.Fatalf("%s %s: %d %v", tt.method, tt.path, code, body)
+		}
+	}
+	if zones, err := ListZones(context.Background(), pool, kaz.ID); err != nil || len(zones) != 1 || !zones[0].IsActive ||
+		zones[0].AreaKM2 < 2_500_000 {
+		t.Fatalf("KAZ zone changed: %v", err)
+	}
+	if auditCount(t, pool, "zone.create")+auditCount(t, pool, "zone.update")+auditCount(t, pool, "zone.delete") != 0 {
+		t.Fatal("refused zone change was audited")
+	}
+
+	// Ordinary cities can still be switched off.
+	emb, _ := GetByCode(context.Background(), pool, "EMB")
+	if code, body := c.do(http.MethodPatch, "/cities/"+emb.ID.String(), `{"is_active":false}`); code != http.StatusOK ||
+		body["is_active"] != false || body["is_default_region"] != false {
+		t.Fatalf("deactivate EMB: %d %v", code, body)
 	}
 }
 

@@ -49,6 +49,8 @@ func (a *App) wireNotifications() error {
 		PassengerMiniAppURL: a.Cfg.PassengerMiniAppURL,
 		DriverMiniAppURL:    a.Cfg.DriverMiniAppURL,
 		Log:                 a.Log,
+		// Driver photos in the passenger's "driver found" message (§22.6).
+		Photos: notifications.NewFilePhotos(a.Pool, a.Store),
 	})
 
 	// One replica drains the outbox at a time (advisory lock), so the in-process

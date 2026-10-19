@@ -1,8 +1,10 @@
 // Keeps one order in sync with the server (ARCHITECTURE §9): realtime events
 // are hints that trigger a REST re-fetch; a resync (reconnect, server resync,
 // app back in the foreground) re-fetches too; while the socket is not open the
-// order is polled every 10 s. Driver positions arrive as
-// driver.location_updated and are applied directly. A response older than
+// order is polled every 10 s. Driver positions and the arrival estimate
+// (§22.6) arrive as driver.location_updated and are applied directly; an
+// estimate-only event (the API's periodic refresh) carries no position. A
+// response older than
 // what is already shown (lower version, or an outdated request) is ignored.
 
 import type { DriverLocation, Order } from '../api/types'
@@ -80,6 +82,15 @@ export function locationFromEvent(order: Order | null, e: RealtimeEvent): Driver
   }
 }
 
+/** Arrival estimate in seconds from a driver.location_updated event for `order`, or null. */
+export function etaFromEvent(order: Order | null, e: RealtimeEvent): number | null {
+  if (!order || order.status !== 'accepted' || eventOrderId(e) !== order.id) return null
+  const d = e.data
+  if (order.driver && typeof d.driver_id === 'string' && d.driver_id !== order.driver.id) return null
+  const eta = d.driver_eta_s
+  return typeof eta === 'number' && Number.isFinite(eta) && eta >= 0 ? Math.round(eta) : null
+}
+
 /** The part of the realtime client the sync needs (lets tests pass a fake). */
 export interface RealtimeSource {
   readonly status: RealtimeStatus
@@ -138,10 +149,15 @@ export class LiveOrderSync {
     }
     this.offs.push(
       rt.on(DRIVER_LOCATION_EVENT, (e) => {
-        const loc = locationFromEvent(this.order, e)
-        if (!loc || !this.order) return
-        this.order = { ...this.order, driver_location: loc }
-        this.opts.onOrder(this.order)
+        const current = this.order
+        if (!current) return
+        const loc = locationFromEvent(current, e)
+        const eta = etaFromEvent(current, e)
+        if (!loc && eta === null) return
+        let next: Order = loc ? { ...current, driver_location: loc } : current
+        if (eta !== null) next = { ...next, driver_eta_s: eta, driver_eta_at: new Date().toISOString() }
+        this.order = next
+        this.opts.onOrder(next)
       }),
     )
     this.offs.push(rt.onResync(() => this.refresh()))

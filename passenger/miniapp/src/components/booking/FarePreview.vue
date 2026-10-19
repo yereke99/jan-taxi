@@ -14,6 +14,8 @@ const booking = useBookingStore()
 const session = useSessionStore()
 
 const q = computed(() => (booking.quoteCurrent ? booking.quote : null))
+/** The cheapest class's recommended fare ("from …"). */
+const fromFare = computed(() => (q.value ? Math.min(...q.value.options.map((o) => o.fare.recommended), q.value.fare.recommended) : 0))
 </script>
 
 <template>
@@ -27,7 +29,7 @@ const q = computed(() => (booking.quoteCurrent ? booking.quote : null))
       <span class="quote__trip jt-tabular">
         {{ t('booking.summary', { distance: formatDistance(q.distance_m, session.language), duration: formatDuration(q.duration_s, session.language) }) }}
       </span>
-      <span class="quote__fare jt-tabular">{{ t('booking.fare_from', { fare: formatMoney(q.fare.recommended, session.language) }) }}</span>
+      <span class="quote__fare jt-tabular">{{ t('booking.fare_from', { fare: formatMoney(fromFare, session.language) }) }}</span>
     </div>
     <p v-else-if="booking.blockedStops.length === 0" class="quote__hint">{{ t('booking.fill_route') }}</p>
   </div>

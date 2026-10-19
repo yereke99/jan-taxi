@@ -41,20 +41,23 @@ type DriverDetail struct {
 	Applications     []ApplicationView                `json:"applications"`
 	ModerationEvents []EventView                      `json:"moderation_events"`
 	Wallet           *WalletView                      `json:"wallet"`
-	Stats            Stats                            `json:"stats"`
-	LastLocation     *drivers.LastLocation            `json:"last_location"`
-	ActiveOrder      *drivers.OrderRef                `json:"active_order"`
-	Rating           *float64                         `json:"rating"`
-	RatingCount      int                              `json:"rating_count"`
-	CompletedTrips   int                              `json:"completed_trips"`
-	SubmittedAt      *time.Time                       `json:"submitted_at"`
-	ApprovedAt       *time.Time                       `json:"approved_at"`
-	SuspendedAt      *time.Time                       `json:"suspended_at"`
-	SuspendedReason  *string                          `json:"suspended_reason"`
-	PDConsentAt      *time.Time                       `json:"pd_consent_at"`
-	PDConsentVersion *string                          `json:"pd_consent_version"`
-	CreatedAt        time.Time                        `json:"created_at"`
-	UpdatedAt        time.Time                        `json:"updated_at"`
+	WelcomeBonus     *WelcomeBonusView                `json:"welcome_bonus"`
+	// Bonuses is the driver's bonus history, newest first (§22.7).
+	Bonuses          []BonusView           `json:"bonuses"`
+	Stats            Stats                 `json:"stats"`
+	LastLocation     *drivers.LastLocation `json:"last_location"`
+	ActiveOrder      *drivers.OrderRef     `json:"active_order"`
+	Rating           *float64              `json:"rating"`
+	RatingCount      int                   `json:"rating_count"`
+	CompletedTrips   int                   `json:"completed_trips"`
+	SubmittedAt      *time.Time            `json:"submitted_at"`
+	ApprovedAt       *time.Time            `json:"approved_at"`
+	SuspendedAt      *time.Time            `json:"suspended_at"`
+	SuspendedReason  *string               `json:"suspended_reason"`
+	PDConsentAt      *time.Time            `json:"pd_consent_at"`
+	PDConsentVersion *string               `json:"pd_consent_version"`
+	CreatedAt        time.Time             `json:"created_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
 }
 
 // UserView is the Telegram account behind a driver.
@@ -105,6 +108,8 @@ type WalletView struct {
 }
 
 // Stats are the driver's order statistics (OpenAPI DriverStats).
+// TotalCommission is the commission the driver paid net of refunds (wallet
+// ledger), since commissions are charged when an order is taken (§22.2).
 type Stats struct {
 	CompletedTrips    int   `json:"completed_trips"`
 	AcceptedOrders    int   `json:"accepted_orders"`
@@ -177,6 +182,12 @@ func LoadDetail(ctx context.Context, q db.Querier, driverID uuid.UUID, admin aut
 	if d.Stats, err = loadStats(ctx, q, p.ID); err != nil {
 		return DriverDetail{}, err
 	}
+	if d.WelcomeBonus, err = loadWelcomeBonus(ctx, q, p.ID); err != nil {
+		return DriverDetail{}, err
+	}
+	if d.Bonuses, err = loadBonuses(ctx, q, p.ID); err != nil {
+		return DriverDetail{}, err
+	}
 	if d.LastLocation, err = drivers.GetLastLocation(ctx, q, p.ID); err != nil {
 		return DriverDetail{}, err
 	}
@@ -197,7 +208,8 @@ func loadStats(ctx context.Context, q db.Querier, driverID uuid.UUID) (Stats, er
 		       count(*) FILTER (WHERE accepted_at IS NOT NULL),
 		       count(*) FILTER (WHERE status = 'cancelled' AND cancelled_by = 'driver'),
 		       COALESCE(sum(fare) FILTER (WHERE status = 'completed'), 0),
-		       COALESCE(sum(commission_amount) FILTER (WHERE status = 'completed'), 0)
+		       (SELECT COALESCE(-sum(l.balance_delta), 0)::bigint FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id
+		         WHERE w.driver_id = $1 AND l.entry_type IN ('commission_charge', 'commission_refund'))
 		FROM orders WHERE driver_id = $1`, driverID).
 		Scan(&s.CompletedTrips, &s.AcceptedOrders, &s.CancelledByDriver, &s.TotalFares, &s.TotalCommission)
 	if err != nil {

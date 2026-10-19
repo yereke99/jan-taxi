@@ -51,7 +51,7 @@ func TestCursorLists(t *testing.T) {
 		r.decode(t, &o)
 		created = append(created, o.ID)
 		e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil), http.StatusOK, "")
-		e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/cancel", o.ID), map[string]any{"reason": "Көлік бұзылды"}), http.StatusOK, "")
+		e.expect(e.do(pc, http.MethodPost, path("/orders/%s/cancel", o.ID), cancelBody("changed_plans")), http.StatusOK, "")
 	}
 	want := []uuid.UUID{created[2], created[1], created[0]}
 	same := func(got []uuid.UUID) bool {

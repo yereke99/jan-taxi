@@ -8,14 +8,16 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AdminDriverDetail } from '../../api/drivers'
-import { ImageViewer, KeyValueList, SecureImage, type KeyValueItem, type ViewerImage } from '../../components'
+import { ImageViewer, KeyValueList, SecureImage, VehicleClassIcon, type KeyValueItem, type ViewerImage } from '../../components'
 import { useFormat } from '../../composables/useFormat'
+import { useVehicleClasses } from '../../composables/useVehicleClasses'
 import PlateBadge from './PlateBadge.vue'
 
 const props = withDefaults(defineProps<{ driver: AdminDriverDetail; section?: 'all' | 'identity' | 'vehicle' }>(), { section: 'all' })
 
 const { t, te } = useI18n()
 const fmt = useFormat()
+const vc = useVehicleClasses()
 const viewerIndex = ref<number | null>(null)
 
 const PHOTO_ORDER = ['plate', 'main', 'back', 'side', 'extra'] as const
@@ -61,7 +63,7 @@ const declaredPerson = computed<KeyValueItem[]>(() => {
   return [
     { key: 'name', label: t('drivers.full_name'), value: `${d.first_name} ${d.last_name}`.trim() },
     { key: 'phone', label: t('common.phone'), value: d.phone ? `${d.phone} · ${d.phone_verified ? t('drivers.verified') : t('drivers.unverified')}` : null, mono: true },
-    { key: 'city', label: t('common.city'), value: d.city ? fmt.name(d.city.name) : null },
+    { key: 'city', label: t('drivers.region'), value: d.city ? fmt.name(d.city.name) : null },
     { key: 'telegram', label: 'Telegram', value: d.user.username ? `@${d.user.username}` : String(d.user.telegram_user_id), mono: true },
   ]
 })
@@ -69,6 +71,9 @@ const declaredPerson = computed<KeyValueItem[]>(() => {
 const declaredVehicle = computed<KeyValueItem[]>(() => {
   const v = props.driver.vehicle
   return [
+    { key: 'class', label: t('classes.class'), value: v?.vehicle_class ? vc.name(v.vehicle_class, v.vehicle_class_name) : t('classes.not_chosen') },
+    { key: 'seats', label: t('classes.seats_declared'), value: v?.seats ?? null },
+    { key: 'cargo', label: t('classes.cargo_declared'), value: v?.cargo_volume_l === null || v?.cargo_volume_l === undefined ? null : t('classes.liters', { n: fmt.count(v.cargo_volume_l) }) },
     { key: 'make', label: t('correction_field.vehicle_make_model'), value: v ? `${v.make} ${v.model}`.trim() : null },
     { key: 'color', label: t('correction_field.vehicle_color'), value: v?.color ?? null },
     { key: 'normalized', label: t('drivers.plate_normalized'), value: v?.plate_normalized ?? null, mono: true },
@@ -104,7 +109,14 @@ const declaredVehicle = computed<KeyValueItem[]>(() => {
         <div class="review__plate">
           <p class="jt-muted">{{ t('drivers.declared_plate') }}</p>
           <PlateBadge :plate="driver.vehicle?.plate ?? ''" />
-          <KeyValueList :items="declaredVehicle" />
+          <KeyValueList :items="declaredVehicle">
+            <template #value-class="{ item }">
+              <span class="review__class">
+                <VehicleClassIcon v-if="driver.vehicle?.vehicle_class" :icon="vc.byCode(driver.vehicle.vehicle_class)?.icon ?? driver.vehicle.vehicle_class" :size="16" />
+                {{ item.value }}
+              </span>
+            </template>
+          </KeyValueList>
         </div>
         <SecureImage
           :url="platePhoto?.url ?? null"
@@ -189,6 +201,12 @@ const declaredVehicle = computed<KeyValueItem[]>(() => {
 
 .review__plate :deep(.kv) {
   align-self: stretch;
+}
+
+.review__class {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .review__photos {

@@ -2,8 +2,9 @@
 
 import { api } from '../services/api'
 import type { ModerationStatus } from '../utils/status'
-import type { AdminRef, CityRef, DriverRef, FileRef, OrderRef, Page, Vehicle } from './common'
+import type { AdminRef, CityRef, DriverRef, FileRef, OrderRef, Page, Vehicle, VehicleClassFields } from './common'
 import { opt } from './common'
+import type { AdminLedgerEntry } from './finance'
 import type { AdminOrderListItem } from './orders'
 
 export const REGISTRATION_FIELDS = [
@@ -13,6 +14,7 @@ export const REGISTRATION_FIELDS = [
   'phone',
   'id_front',
   'id_back',
+  'vehicle_class',
   'vehicle_make_model',
   'vehicle_color',
   'vehicle_plate',
@@ -47,7 +49,7 @@ export interface VehiclePhoto {
   created_at: string
 }
 
-export interface RegistrationVehicle extends Vehicle {
+export interface RegistrationVehicle extends Omit<Vehicle, keyof VehicleClassFields>, VehicleClassFields {
   plate_normalized: string | null
   /** Plate format detected by the API (admins only), e.g. "current". */
   plate_kind?: string | null
@@ -97,6 +99,23 @@ export interface Wallet {
   currency: string
   min_online_balance: number
   updated_at: string
+}
+
+/** Welcome balance credited on the first approval (§22.1). */
+export interface WelcomeBonus {
+  amount: number
+  granted_at: string
+}
+
+/** One bonus credited to a driver (OpenAPI DriverBonus), newest first on the detail. */
+export interface DriverBonus {
+  ledger_entry_id: number
+  kind: 'welcome' | 'manual'
+  amount: number
+  comment: string | null
+  admin_id: string | null
+  admin_name: string | null
+  created_at: string
 }
 
 export interface DriverStats {
@@ -169,6 +188,10 @@ export interface AdminDriverDetail {
   applications: DriverApplication[]
   moderation_events: ModerationEvent[]
   wallet: Wallet | null
+  /** Null until granted; it never is when the bonus was off or the phone/plate already had it. */
+  welcome_bonus: WelcomeBonus | null
+  /** Up to 50 latest bonuses; the full history is the ledger filtered by bonus_credit. */
+  bonuses: DriverBonus[]
   stats: DriverStats
   last_location: DriverLastLocation | null
   active_order: OrderRef | null
@@ -237,4 +260,29 @@ export const driversApi = {
   changeCity(id: string, cityId: string): Promise<AdminDriverDetail> {
     return api.patch(`/admin/drivers/${encodeURIComponent(id)}`, { city_id: cityId })
   },
+  /**
+   * Company bonus to one driver (finance.manage, §22.7). The idempotency key
+   * makes a repeated submit return the stored entry (200) instead of paying twice.
+   */
+  grantBonus(id: string, body: { amount: number; comment?: string; idempotency_key: string }): Promise<BonusResult> {
+    return api.post(`/admin/drivers/${encodeURIComponent(id)}/bonus`, body)
+  },
+}
+
+/** The driver a bonus goes to (a list row or the detail page's driver). */
+export interface BonusTarget {
+  id: string
+  code: string
+  first_name: string
+  last_name: string
+  phone: string | null
+  status?: ModerationStatus
+  /** Current balance, for the "balance after" line. */
+  balance?: number | null
+}
+
+/** POST /admin/drivers/{id}/bonus response: wallet after the credit and its ledger entry. */
+export interface BonusResult {
+  wallet: Wallet
+  entry: AdminLedgerEntry
 }

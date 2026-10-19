@@ -14,6 +14,11 @@ export interface City {
   default_zoom: number
   timezone: string
   is_active: boolean
+  /**
+   * The nationwide default region (code KAZ): its tariffs apply wherever no
+   * city zone covers pickup A; it cannot be switched off (409 default_region_locked).
+   */
+  is_default_region?: boolean
   /** Legacy per-city dispatch columns: no longer read (dispatch.* settings, ARCHITECTURE §7). */
   dispatch_radius_m?: number
   require_driver_location?: boolean
@@ -91,6 +96,8 @@ export interface Tariff {
   id: string
   city_id: string
   category: Category
+  /** Vehicle class the version prices (§21); versions are per city × category × class. */
+  vehicle_class: string
   version: number
   is_active: boolean
   min_fare: number
@@ -109,6 +116,7 @@ export interface Tariff {
 export interface TariffInput {
   city_id: string
   category: Category
+  vehicle_class: string
   min_fare: number
   max_fare: number
   fare_step: number
@@ -139,6 +147,8 @@ export interface SettingItem {
     max_items?: number
     required?: boolean
   }
+  /** Bounds such as commission.fixed_min/max: shown, never changed through PATCH. */
+  read_only?: boolean
   updated_at: string | null
   updated_by: string | null
 }
@@ -184,9 +194,14 @@ export const placesApi = {
 }
 
 export const tariffsApi = {
-  list(f: { city_id?: string; category?: string; include_inactive?: boolean }, signal?: AbortSignal): Promise<{ items: Tariff[] }> {
+  list(f: { city_id?: string; category?: string; vehicle_class?: string; include_inactive?: boolean }, signal?: AbortSignal): Promise<{ items: Tariff[] }> {
     return api.get('/admin/tariffs', {
-      query: { city_id: opt(f.city_id), category: opt(f.category), include_inactive: f.include_inactive ? 'true' : undefined },
+      query: {
+        city_id: opt(f.city_id),
+        category: opt(f.category),
+        vehicle_class: opt(f.vehicle_class),
+        include_inactive: f.include_inactive ? 'true' : undefined,
+      },
       signal,
     })
   },

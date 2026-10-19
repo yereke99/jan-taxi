@@ -7,18 +7,30 @@
 #   MAP_CONNECT_SRC       extra connect-src origins for map tiles, glyphs and sprites
 #                         (default https://tiles.openfreemap.org)
 #   CADDY_GLOBAL_OPTIONS  extra global options, empty in production
+#   CADDY_SERVER_OPTIONS  one extra server option, empty in production; behind a
+#                         proxy or tunnel on a private network use
+#                         "trusted_proxies static private_ranges" so the
+#                         client's X-Forwarded-For reaches the API
 #
 # Local development without TLS (see docs/DEPLOYMENT.md, "Local edge"):
 #   APP_DOMAIN=http://localhost:8088
 #   ADMIN_DOMAIN=http://localhost:8089
 #   CADDY_GLOBAL_OPTIONS="auto_https off"
 #
+# Local live stack behind a Cloudflare quick tunnel (compose.local.yaml,
+# docs/DEPLOYMENT.md §10): the tunnel's host name changes, so the sites listen
+# on ports only and accept any Host:
+#   APP_DOMAIN=:8088  ADMIN_DOMAIN=:8089
+#   CADDY_SERVER_OPTIONS="trusted_proxies static private_ranges"
+#
 # Only /api/* is proxied. The API's internal listener (:8081) and its probes
-# (/healthz, /readyz) are never exposed through Caddy.
+# (/healthz, /readyz) are never exposed through Caddy. The admin API
+# (/api/v1/admin*) is proxied on ADMIN_DOMAIN only.
 {
 	{$CADDY_GLOBAL_OPTIONS}
 	email {$ACME_EMAIL}
 	servers {
+		{$CADDY_SERVER_OPTIONS}
 		timeouts {
 			read_header 15s
 			idle 2m
@@ -102,6 +114,13 @@
 # Passenger and driver Telegram Mini Apps.
 {$APP_DOMAIN} {
 	import common
+
+	# The admin API exists only on ADMIN_DOMAIN. This host is public (and the
+	# local quick tunnel forwards to it), so admin login and the admin routes
+	# answer 404 here; the API applies the same rule by Host.
+	handle /api/v1/admin* {
+		respond "Not found" 404
+	}
 	import api_proxy
 
 	# Mini Apps are framed by Telegram Web (web.telegram.org) and opened in the

@@ -1,11 +1,85 @@
-# Jan Taxi — Handoff (status as of 2026-10-16, ~22:30 Asia/Aqtobe)
+# Jan Taxi — Handoff (status as of 2026-10-19, night Asia/Aqtobe)
 
 This file tells the next engineer exactly what is done, what is verified,
 and what is left. Read `docs/ARCHITECTURE.md` first — it is the binding design contract
 (module boundaries, order state machine, money model, auth, realtime, endpoint catalogue §19,
 cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 
-## 0. Latest status (2026-10-17 night, work paused)
+## 0. Latest status (2026-10-19 night)
+
+- Done (owner bug reports, ARCHITECTURE §3 and §22.8):
+  - Passenger class choice: every new booking starts on the first (cheapest fitting) class; an old
+    pick is restored only by "order again"; rows select only on a real tap (scrolls and sheet drags
+    never change the class); the confirm button names class and price; a 7+ seat class for ≤ 4
+    passengers asks first with an iOS action sheet.
+  - Nationwide region: migration **00009** adds region `KAZ` (whole country, base tariffs copied
+    from EMB). `cities.Resolve` = smallest active zone covering pickup A, else KAZ (no nearest-city
+    fallback); KAZ and its zone are locked in the admin API (`409 default_region_locked`).
+  - `orders.locality` (and `fare_quotes.locality`): the settlement of pickup A, preferring the
+    settlement whose outline covers it by its own name (Photon `layer=city`, so Embi reads «Ембі»,
+    not the «Эмба» some addresses carry). Shown in admin (with the tariff region separately), both
+    Mini Apps and the driver-bot texts; admin search `q` matches it; the CSV has a `locality` column.
+  - Driver codes: the driver Mini App sends the device position with the save that creates the
+    profile (first "Next" or first upload), so a driver in Almaty becomes `KAZ001`.
+- Done (review fixes, same night):
+  - Admin API off the public host: the Mini App site in the `Caddyfile` answers 404 for
+    `/api/v1/admin*` (the quick tunnel forwards to that site), and the API refuses admin requests
+    whose `Host` is the Mini App host (`internal/app/adminhost.go`). `stack.sh status` probes
+    `<tunnel>/api/v1/admin/auth/*` and expects 404.
+  - Passenger cancel race: the app sends `expected_status`; a changed order is `409 conflict
+    {reason: order_changed}` and is not cancelled, so a driver who just took a search is not charged
+    for it. Setting `orders.passenger_cancels_after_accept_per_day` (default 3, 0 = off) refuses new
+    orders after that many cancellations of driver-accepted orders in 24 h (`too_many_cancellations`).
+    No automatic refund: §22.2 keeps the commission on a passenger cancel.
+  - Preview `eta_s` is no longer a driver-location oracle: pickup snapped to a ~500 m grid, hourly
+    secret per-driver offset ≤ 500 m, 5-minute steps (`dispatch.PreviewETAs`).
+  - Tariff fallback: a zone city without a tariff for a class or category no longer switches it off;
+    KAZ prices it and the option's `tariff_region` (and the quote/order region) says so.
+  - `stack.sh rebuild` no longer rolls back edited applied migrations by default
+    (`JT_AUTO_REDO_MIGRATIONS=1` opts in, after a `pg_dump -Fc` into `<state>/backups/pre-redo/`);
+    `make local-test` covers it.
+  - Verified after these fixes: `go vet ./...`, `go test -race -count=1 ./...` (all packages ok),
+    `pnpm -r typecheck test build lint` (admin 109, passenger 305, driver 384 tests),
+    `verify-shared`, `make caddy-validate`, `make local-test`, `TestRoutesDocumented`.
+- Verified 2026-10-19 night: `gofmt -l`, `go vet ./...`, `go test -race -count=1 ./...` (41 packages),
+  `pnpm -r typecheck lint test build` (admin 109, driver 339, passenger 303 tests), `verify-shared`,
+  `JT_CHECK_OPENAPI=1 … TestRoutesDocumented`; an end-to-end run of the working tree on a separate
+  local API (fresh database in `jantaxi-devdb`, a stand-in Telegram Bot API, headless Chrome at
+  390×844 imitating Telegram iOS): Almaty taxi for 1 person stays Sedan 500 ₸ through scrolls and a
+  late click, microbus for 1 asks first, admin shows «Алматы · Тариф: Қазақстан» and «Ембі · Тариф:
+  Ембі», driver KAZ001 online in Almaty gets the offer «📍 Алматы» and accepts (Mini App and bot
+  «✅ Алу»), KAZ deactivation and zone edits are refused.
+- Local live stack rebuilt from this tree (2026-10-19 23:16): migration 00009 applied (schema 9,
+  regions EMB and KAZ with 16 active tariffs each), `stack.sh status` all green, including 404 for
+  `<tunnel>/api/v1/admin/auth/*`; the admin API still answers on `127.0.0.1:8089`.
+- Known gaps: orders created before 00009 have `locality = NULL` (admin shows "unknown"); public
+  Photon reverse lookups sometimes time out (pickup then reads «Картадағы нүкте» and the locality
+  may be `null`) — production needs a self-hosted Photon.
+
+## 0.0 Previous status (2026-10-19 evening)
+
+- Done: ARCHITECTURE §21 vehicle classes and §22 business rules v2 (500 ₸ welcome bonus once per
+  phone and plate, fixed 50 ₸ commission charged at acceptance and kept on passenger cancel,
+  admin controls 50–100 ₸ and manual bonus with a bot message, passenger-only cancel with 5
+  reasons, driver-bot «✅ Алу», passenger phone sharing, passenger push with the driver photo and
+  arrival time) in the API, both bots, both Mini Apps and the admin panel. Migrations 00007 and
+  00008 are applied on the local live stack.
+- Verified 2026-10-19: `gofmt -l`, `go vet ./...`, `go test -race -count=1 ./...` (40 packages),
+  `pnpm -r typecheck lint test build`, `verify-shared`, `JT_CHECK_OPENAPI=1 … TestRoutesDocumented`;
+  an end-to-end run on the live Docker stack through the public tunnel with a headless phone-sized
+  browser imitating Telegram iOS (registration with the class step and uploads, corrections,
+  approval and bonuses, taxi/minivan/parcel orders, bot «Алу», 402 and low-balance behaviour,
+  passenger cancel with reasons, Kaspi receipt top-up and duplicate rejection, language switch).
+  Real Telegram delivery was not exercised (test users have no chats with the bots).
+- Local live stack (developer machine only): `../jan-taxi-private/live/stack.sh up | rebuild |
+  status | logs <svc>` (Docker Compose project `jantaxi-local` + Cloudflare quick tunnel), see
+  docs/DEPLOYMENT.md §10. The old native scripts are retired.
+- Known gaps: min online balance (`driver.min_online_balance`, 50) is independent of the fixed
+  commission, so with a higher commission a driver can be online without receiving offers (they
+  get one low-balance message per day); a driver whose status changes while the app is open
+  learns it from the realtime `driver.status_changed` event only.
+
+## 0.1 Previous status (2026-10-17 night)
 
 - Done since the previous pause: Kaspi PDF receipts end to end (parser verified against a real receipt: number, amount, seller BIN, date; reused receipts rejected; edited PDFs flagged; automatic crediting when every check passes; driver bot accepts PDFs); bot polling recovers after network drops and menu buttons refresh on start; driver app onboarding/GPS/top-up fixes; passenger trip flow fixes; admin moderation, receipt review with inline PDF, dispatch and payee settings.
 - Interrupted: the integration run (full test suites, live redeploy, end-to-end smoke, adversarial review). Re-run before release: `gofmt -l`, `go vet ./...`, `go test -race ./...`, `pnpm -r typecheck lint test build`, `node passenger/miniapp/scripts/verify-shared.mjs`.
@@ -14,7 +88,7 @@ cross-package Go APIs §20, iOS 26 design system §15/§15.1).
   - Public config does not expose the payee BIN (`kaspi.recipient_bin`); the driver app falls back to the seeded value.
   - Production admin CSP needs `frame-src 'self' blob:` for the inline receipt PDF viewer.
   - ARCHITECTURE §6.1/§19/§20 and `openapi.yaml` need the receipt endpoints and flags documented.
-- Local live stack (developer machine only): scripts in `../jan-taxi-private/live/` (`build.sh`, `run.sh`, `retunnel.sh`, `watchdog.sh`), Cloudflare quick tunnel; production needs a real domain and a Kazakhstan-hosted server. Public OSRM/Photon servers are for development only.
+- Local live stack: replaced by `../jan-taxi-private/live/stack.sh` (see §0). Production needs a real domain and a Kazakhstan-hosted server. Public OSRM/Photon servers are for development only.
 
 ## 1. Repository map
 
@@ -23,7 +97,7 @@ cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 | `admin/backend/cmd/api` | Central Go API binary: `api serve`, `api migrate up\|status`, `api admin create`, `api healthcheck` |
 | `admin/backend/cmd/devlink` | Dev tool: prints locally signed Telegram Mini App URLs (no real Telegram needed) |
 | `admin/backend/internal/*` | Domain packages: auth, users, cities, settings, audit, realtime, notifications, wallets, routing, pricing, orders(+lifecycle), dispatch, stops, drivers, vehicles, moderation, payments, reports, botapi, app (wiring), platform/* |
-| `admin/backend/migrations` | goose SQL migrations 00001–00006 (schema, Kazakhstan boundary, seed for Embi, driver consent, retention indexes, Kaspi receipts + payee seed) |
+| `admin/backend/migrations` | goose SQL migrations 00001–00009 (schema, Kazakhstan boundary, seed for Embi, driver consent, retention indexes, Kaspi receipts + payee seed, vehicle classes, business rules, nationwide region KAZ + locality) |
 | `admin/backend/api/openapi.yaml` | OpenAPI 3.1 contract (served at `/api/v1/openapi.yaml`) |
 | `admin/backend/pkg/telegram` | Bot API client (used by API notification worker and both bots) |
 | `admin/backend/pkg/botapi` (+`/runtime`) | Internal-API client + shared long-polling bot runtime |

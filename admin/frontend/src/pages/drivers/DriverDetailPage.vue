@@ -8,6 +8,7 @@ import { DetailHeader, StateView, StatusBadge, Tabs } from '../../components'
 import { useFormat } from '../../composables/useFormat'
 import { useRealtimeEvents, useResync } from '../../composables/useRealtime'
 import { useResource } from '../../composables/useResource'
+import { useVehicleClasses } from '../../composables/useVehicleClasses'
 import { useAuthStore } from '../../stores/auth'
 import DriverActions from './DriverActions.vue'
 import DriverHistoryTab from './DriverHistoryTab.vue'
@@ -26,6 +27,7 @@ const fmt = useFormat()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const vc = useVehicleClasses()
 const res = useResource((signal) => driversApi.get(props.id, signal))
 void res.reload()
 
@@ -56,7 +58,7 @@ function onUpdated(d: AdminDriverDetail): void {
 }
 
 useRealtimeEvents(
-  ['driver.status_changed', 'moderation.submitted', 'moderation.approved', 'moderation.rejected', 'moderation.changes_requested', 'driver.phone_verified'],
+  ['driver.status_changed', 'moderation.submitted', 'moderation.approved', 'moderation.rejected', 'moderation.changes_requested', 'driver.phone_verified', 'wallet.updated'],
   (ev) => {
     if (ev.data.driver_id === props.id) void res.reload({ silent: true })
   },
@@ -74,12 +76,15 @@ useResync(() => void res.reload({ silent: true }))
           <span class="online" :class="{ 'is-on': driver.is_online }">{{ driver.is_online ? t('common.online') : t('common.offline') }}</span>
         </template>
         <template #subtitle>
-          {{ driver.city ? fmt.name(driver.city.name) : '—' }}
-          <template v-if="driver.vehicle"> · {{ driver.vehicle.make }} {{ driver.vehicle.model }} · <span class="jt-mono">{{ driver.vehicle.plate }}</span></template>
+          {{ t('drivers.region_value', { region: driver.city ? fmt.name(driver.city.name) : '—' }) }}
+          <template v-if="driver.vehicle">
+            · {{ driver.vehicle.make }} {{ driver.vehicle.model }} · <span class="jt-mono">{{ driver.vehicle.plate }}</span>
+            <template v-if="driver.vehicle.vehicle_class"> · {{ vc.name(driver.vehicle.vehicle_class, driver.vehicle.vehicle_class_name) }}</template>
+          </template>
           <template v-if="driver.wallet"> · {{ t('finance.available') }}: {{ fmt.money(driver.wallet.available) }}</template>
         </template>
         <template #actions>
-          <DriverActions :driver="driver" @updated="onUpdated" />
+          <DriverActions :driver="driver" @updated="onUpdated" @changed="res.reload({ silent: true })" />
         </template>
       </DetailHeader>
 

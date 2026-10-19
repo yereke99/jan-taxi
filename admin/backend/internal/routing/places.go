@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -297,6 +298,108 @@ func (s *Places) providerSearch(ctx context.Context, query string, near *geo.Poi
 }
 
 func (s *Places) providerReverse(ctx context.Context, p geo.Point, lang string) *Place {
+	return s.providerReverseWithin(ctx, p, lang, s.timeout)
+}
+
+// LocalityTimeout bounds the reverse lookup that names the locality of a
+// pickup during a route preview.
+const LocalityTimeout = 1500 * time.Millisecond
+
+// localityLang is the language localities are stored in (one per order):
+// Kazakh, which local-name providers answer with the official names.
+const localityLang = "kk"
+
+// maxLocalityLen matches the orders.locality check constraint.
+const maxLocalityLen = 120
+
+// Locality returns the settlement of p (city, town or village, else the
+// district) from a reverse lookup of the nearest address at the external
+// geocoder, cached and bounded by LocalityTimeout. It returns nil when the provider is off, fails,
+// times out or has no answer; it never returns coordinates.
+//
+// A provider that can name the settlement covering p (SettlementFinder) is
+// asked at the same time, within the same budget, and its answer wins: it
+// is the settlement's own official name («Ембі»), where the nearest address
+// may carry another form («Эмба»).
+func (s *Places) Locality(ctx context.Context, p geo.Point) *string {
+	p = p.Rounded()
+	timeout := min(s.timeout, LocalityTimeout)
+	sf, ok := s.provider.(SettlementFinder)
+	if !ok {
+		return s.addressLocality(ctx, p, timeout)
+	}
+	key := settlementKey(p)
+	if v, hit := s.reverse.get(key); hit {
+		if v != nil {
+			if name := CleanLocality(v.Locality); name != nil {
+				return name
+			}
+		}
+		return s.addressLocality(ctx, p, timeout)
+	}
+	actx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	address := make(chan *string, 1)
+	go func() { address <- s.addressLocality(actx, p, timeout) }()
+	if v := s.settlement(ctx, sf, key, p, timeout); v != nil {
+		return v
+	}
+	return <-address
+}
+
+func settlementKey(p geo.Point) string {
+	return "settlement|" + localityLang + "|" + strconv.FormatFloat(p.Lat, 'f', 5, 64) + "," + strconv.FormatFloat(p.Lon, 'f', 5, 64)
+}
+
+// addressLocality is the locality of the nearest address to p.
+func (s *Places) addressLocality(ctx context.Context, p geo.Point, timeout time.Duration) *string {
+	pl := s.providerReverseWithin(ctx, p, localityLang, timeout)
+	if pl == nil {
+		return nil
+	}
+	return CleanLocality(pl.Locality)
+}
+
+// settlement asks the provider for the settlement covering p and caches the
+// answer under key like reverse lookups (also "none"); nil when none covers
+// p or the provider failed.
+func (s *Places) settlement(ctx context.Context, sf SettlementFinder, key string, p geo.Point, timeout time.Duration) *string {
+	var name string
+	ok := s.callWithin(ctx, "settlement", timeout, func(cctx context.Context) error {
+		var err error
+		name, err = sf.Settlement(cctx, p, localityLang)
+		return err
+	})
+	if !ok {
+		return nil
+	}
+	var found *Place
+	if name != "" {
+		found = &Place{Locality: name}
+	}
+	s.reverse.set(key, found)
+	return CleanLocality(name)
+}
+
+// coordsLikeRe matches text made of numbers, separators and hemisphere
+// letters with at least one digit, such as "43.2389, 76.8897" or
+// "43.2° N 76.9° E": a locality is a name, never coordinates.
+var coordsLikeRe = regexp.MustCompile(`^[\s.,;:°'"+\-NSEWnsew]*\d[\d\s.,;:°'"+\-NSEWnsew]*$`)
+
+// CleanLocality normalises a locality name: cleaned text cut to 120 code
+// points, nil when empty or when it looks like coordinates.
+func CleanLocality(name string) *string {
+	v := textutil.Clean(name)
+	if v == "" || coordsLikeRe.MatchString(v) {
+		return nil
+	}
+	if r := []rune(v); len(r) > maxLocalityLen {
+		v = strings.TrimSpace(string(r[:maxLocalityLen]))
+	}
+	return &v
+}
+
+func (s *Places) providerReverseWithin(ctx context.Context, p geo.Point, lang string, timeout time.Duration) *Place {
 	if _, ok := s.provider.(None); ok {
 		return nil
 	}
@@ -305,7 +408,7 @@ func (s *Places) providerReverse(ctx context.Context, p geo.Point, lang string) 
 		return copyPlace(v)
 	}
 	var out *Place
-	ok := s.call(ctx, "reverse", func(cctx context.Context) error {
+	ok := s.callWithin(ctx, "reverse", timeout, func(cctx context.Context) error {
 		var err error
 		out, err = s.provider.Reverse(cctx, p, lang)
 		return err
@@ -331,10 +434,15 @@ func copyPlace(p *Place) *Place {
 // call runs fn through the circuit breaker with the provider timeout and
 // reports whether it succeeded. Failures are logged, never returned.
 func (s *Places) call(ctx context.Context, op string, fn func(context.Context) error) bool {
+	return s.callWithin(ctx, op, s.timeout, fn)
+}
+
+// callWithin is call with its own timeout.
+func (s *Places) callWithin(ctx context.Context, op string, timeout time.Duration, fn func(context.Context) error) bool {
 	if !s.breaker.allow() {
 		return false
 	}
-	cctx, cancel := context.WithTimeout(ctx, s.timeout)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	err := fn(cctx)
 	switch {

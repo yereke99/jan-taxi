@@ -50,6 +50,15 @@ describe('intentLocation', () => {
   it('falls back to home for an unknown route', () => {
     expect(intentLocation({ kind: 'trip' }, { hasRoute: () => false })).toEqual({ name: ROUTE.home })
   })
+
+  it('opens the trip directly for the driver\'s own active order (bot «Тапсырысты ашу»)', () => {
+    const intent = parseStartParam(`order_${ID.toUpperCase()}`)
+    expect(intentLocation(intent, router, ID)).toEqual({ name: ROUTE.trip })
+    expect(intentLocation(intent, router, ID.toUpperCase())).toEqual({ name: ROUTE.trip })
+    // Another order (an offer from the bot) still opens its detail.
+    expect(intentLocation(intent, router, '11111111-2222-4333-8444-555555555555')).toEqual({ name: ROUTE.order, params: { id: ID } })
+    expect(intentLocation(intent, router, null)).toEqual({ name: ROUTE.order, params: { id: ID } })
+  })
 })
 
 describe('entry routing by driver status', () => {

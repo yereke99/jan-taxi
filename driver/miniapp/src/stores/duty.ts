@@ -2,10 +2,15 @@
 // fresh real location: dispatch offers orders by distance, and the API
 // rejects going online without a recent fix (422 location_required). While
 // online the location store keeps reporting every few seconds.
+//
+// The state shown is always the one the API confirmed: the PATCH answer,
+// GET /me, or driver.status_changed (the bot, the idle timeout). There is no
+// optimistic flip; a failed request re-reads the real state (reconcile).
 
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import { setAvailability } from '../api/driver'
+import { getMe } from '../api/me'
 import type { Availability } from '../api/types'
 import { isApiError } from '../services/http'
 import { useLocationStore } from './location'
@@ -48,12 +53,34 @@ export const useDutyStore = defineStore('duty', () => {
   const location = useLocationStore()
   const availability = shallowRef<Availability | null>(null)
   const switching = ref(false)
+  /** Target of the request in flight (for the "going online…" state), or null. */
+  const switchingTo = ref<boolean | null>(null)
+  /** Bumped by every confirmed change, so an older read cannot overwrite it. */
+  let epoch = 0
 
   const isOnline = computed(() => session.driver?.is_online === true)
 
   function apply(a: Availability): void {
+    epoch += 1
     availability.value = a
     session.setOnline(a.is_online)
+  }
+
+  /**
+   * Re-reads the availability from the API (GET /me): it may have changed
+   * elsewhere (driver bot, idle timeout) or a failed request may still have
+   * been applied. A toggle confirmed meanwhile wins over this read.
+   */
+  async function reconcile(): Promise<void> {
+    if (!session.isReady || switching.value) return
+    const started = epoch
+    try {
+      const me = await getMe()
+      if (started !== epoch || switching.value || !me.driver) return
+      session.setOnline(me.driver.is_online)
+    } catch {
+      // Offline network: keep the last confirmed state; resync runs on reconnect.
+    }
   }
 
   async function goOnline(): Promise<OnlineOutcome> {
@@ -93,16 +120,24 @@ export const useDutyStore = defineStore('duty', () => {
   async function setOnline(on: boolean): Promise<OnlineOutcome> {
     if (switching.value) return { ok: false, reason: 'error', error: null }
     switching.value = true
+    switchingTo.value = on
+    let outcome: OnlineOutcome
     try {
-      if (on) return await goOnline()
-      apply(await setAvailability(false))
-      return { ok: true, online: false, withoutLocation: false }
+      if (on) outcome = await goOnline()
+      else {
+        apply(await setAvailability(false))
+        outcome = { ok: true, online: false, withoutLocation: false }
+      }
     } catch (err) {
-      return classifyAvailabilityError(err)
+      outcome = classifyAvailabilityError(err)
     } finally {
       switching.value = false
+      switchingTo.value = null
     }
+    // Network failure or timeout: the server may have applied it anyway.
+    if (!outcome.ok && outcome.reason === 'error') void reconcile()
+    return outcome
   }
 
-  return { availability, switching, isOnline, setOnline }
+  return { availability, switching, switchingTo, isOnline, setOnline, reconcile }
 })

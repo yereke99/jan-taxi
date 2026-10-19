@@ -1,21 +1,27 @@
 <!--
-  Order detail for operators: route map, stops, parties, money, cargo,
-  history, offers, wallet reservation/ledger and the dispute, with the
-  operator actions (cancel, assign/reassign, open/resolve dispute).
+  Order detail for operators: route map, stops, parties, vehicle class and
+  load, money, cargo, history, offers, wallet ledger, the passenger's cancel
+  reason and the dispute, with the operator actions (cancel with an optional
+  commission refund, assign/reassign, open/resolve dispute).
 -->
 <script setup lang="ts">
+import { MapPin } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ordersApi, type AdminOrder, type Dispute } from '../../api/orders'
-import { AppButton, Card, DataTable, DetailHeader, KeyValueList, ReasonDialog, StateView, StatusBadge, Timeline, toast, type Column, type KeyValueItem, type TimelineItem } from '../../components'
+import { isDefaultRegion, localityText } from '../../api/common'
+import { orderTariffRegion, ordersApi, type AdminOrder, type Dispute } from '../../api/orders'
+import { AppButton, Card, DataTable, DetailHeader, KeyValueList, ReasonDialog, StateView, StatusBadge, Timeline, VehicleClassIcon, toast, type Column, type KeyValueItem, type TimelineItem } from '../../components'
 import { useFormat } from '../../composables/useFormat'
 import { useRealtimeEvents, useResync } from '../../composables/useRealtime'
 import { useResource } from '../../composables/useResource'
+import { useVehicleClasses } from '../../composables/useVehicleClasses'
 import { LIMITS } from '../../forms/validation'
 import { STOP_LETTERS } from '../../maps/constants'
 import { useAuthStore } from '../../stores/auth'
 import { isActiveOrderStatus } from '../../utils/status'
 import AssignDriverDialog from './AssignDriverDialog.vue'
+import CancelOrderDialog from './CancelOrderDialog.vue'
+import { chargedCommission } from './commission'
 import OrderRouteMap from './OrderRouteMap.vue'
 import ResolveDisputeDialog from './ResolveDisputeDialog.vue'
 
@@ -24,6 +30,7 @@ const props = defineProps<{ id: string }>()
 const { t, te } = useI18n()
 const fmt = useFormat()
 const auth = useAuthStore()
+const vc = useVehicleClasses()
 const res = useResource((signal) => ordersApi.get(props.id, signal))
 void res.reload()
 
@@ -49,17 +56,73 @@ function actorLabel(type: string | null | undefined): string {
   return type ? (te(`actor.${type}`, 'kk') ? t(`actor.${type}`) : type) : '—'
 }
 
+const className = computed(() => (order.value ? vc.name(order.value.vehicle_class, order.value.vehicle_class_name) : ''))
+
+/** Settlement of pickup A (reverse geocoding), never the tariff city. */
+const locality = computed(() => localityText(order.value?.locality))
+
+/** The city zone or the nationwide region whose tariff priced the order. */
+const tariffRegion = computed(() => (order.value ? orderTariffRegion(order.value) : null))
+const tariffText = computed(() => {
+  const r = tariffRegion.value
+  if (!r) return null
+  return isDefaultRegion(r) ? t('orders.tariff_region_default', { region: fmt.name(r.name) }) : `${fmt.name(r.name)} · ${r.code}`
+})
+
+/** Seats asked for a taxi order, cargo size and volume for a parcel/other one. */
+const loadText = computed(() => {
+  const o = order.value
+  if (!o) return null
+  if (o.passenger_count !== null && o.passenger_count !== undefined) return t('orders.passengers_n', { n: o.passenger_count })
+  if (o.cargo_size) return t('orders.cargo_size_value', { size: te(`cargo_size.${o.cargo_size}`, 'kk') ? t(`cargo_size.${o.cargo_size}`) : o.cargo_size.toUpperCase(), volume: t('classes.liters', { n: fmt.count(o.cargo_volume_l) }) })
+  return null
+})
+
+const commissionText = computed(() => {
+  const o = order.value
+  if (!o) return ''
+  return o.commission_mode === 'percent'
+    ? `${fmt.money(o.commission_amount)} · ${fmt.percentFromBps(o.commission_bps)}`
+    : `${fmt.money(o.commission_amount)} · ${t('orders.commission_fixed')}`
+})
+
+const charged = computed(() => chargedCommission(order.value?.ledger ?? [], order.value?.driver?.id))
+
 const fareItems = computed<KeyValueItem[]>(() => {
   const o = order.value
   if (!o) return []
   return [
     { key: 'fare', label: t('orders.fare'), value: fmt.money(o.fare) },
-    { key: 'commission', label: t('orders.commission'), value: `${fmt.money(o.commission_amount)} · ${fmt.percentFromBps(o.commission_bps)}` },
+    { key: 'commission', label: t('orders.commission'), value: commissionText.value },
+    { key: 'charged', label: t('orders.commission_charged'), value: o.driver ? (charged.value > 0 ? fmt.money(charged.value) : t('orders.commission_not_charged')) : null },
     { key: 'payment', label: t('orders.payment_method'), value: t(`payment_method.${o.payment_method}`) },
     { key: 'distance', label: t('orders.distance'), value: fmt.distance(o.distance_m) },
     { key: 'duration', label: t('orders.duration'), value: fmt.duration(o.duration_s) },
+    { key: 'tariff_region', label: t('orders.tariff_region'), value: tariffText.value },
     { key: 'category', label: t('orders.category'), value: t(`category.${o.category}`) },
+    { key: 'class', label: t('classes.class'), value: className.value },
+    { key: 'load', label: o.category === 'taxi' ? t('orders.passengers') : t('orders.cargo_size'), value: loadText.value },
   ]
+})
+
+const cancelItems = computed<KeyValueItem[]>(() => {
+  const o = order.value
+  if (!o) return []
+  const code = o.cancel_reason_code
+  return [
+    { key: 'by', label: t('orders.cancelled_by'), value: actorLabel(o.cancelled_by) },
+    ...(code ? [{ key: 'code', label: t('orders.cancel_reason_code'), value: te(`cancel_reason.${code}`, 'kk') ? t(`cancel_reason.${code}`) : code }] : []),
+    { key: 'reason', label: code ? t('orders.cancel_comment') : t('common.reason'), value: o.cancel_reason },
+    { key: 'at', label: t('orders.cancelled_at'), value: fmt.dateTime(o.cancelled_at) },
+    ...(o.cancelled_by === 'passenger' && o.driver ? [{ key: 'kept', label: t('orders.commission'), value: charged.value > 0 ? t('orders.commission_kept', { amount: fmt.money(charged.value) }) : t('orders.commission_not_charged') }] : []),
+  ]
+})
+
+/** Road time to pickup A while the driver is on the way (§22.6). */
+const etaText = computed(() => {
+  const o = order.value
+  if (!o || o.status !== 'accepted' || o.driver_eta_s === null || o.driver_eta_s === undefined) return null
+  return t('orders.eta_value', { min: Math.max(1, Math.ceil(o.driver_eta_s / 60)), at: o.driver_eta_at ? fmt.relative(o.driver_eta_at) : '—' })
 })
 
 const passengerItems = computed<KeyValueItem[]>(() => {
@@ -125,8 +188,8 @@ function apply(updated: AdminOrder): void {
   for (const w of updated.warnings ?? []) toast.show(te(`orders.warning_${w}`, 'kk') ? t(`orders.warning_${w}`) : w)
 }
 
-async function cancel(reason: string): Promise<void> {
-  apply(await ordersApi.cancel(props.id, reason))
+function onCancelled(updated: AdminOrder): void {
+  apply(updated)
   toast.success(t('orders.cancelled_ok'))
 }
 
@@ -165,7 +228,13 @@ useResync(() => void res.reload({ silent: true }))
           <StatusBadge kind="order" :status="order.status" />
         </template>
         <template #subtitle>
-          {{ t(`category.${order.category}`) }} · {{ fmt.name(order.city.name) }} · {{ fmt.dateTime(order.created_at) }}
+          <span class="place">
+            <MapPin :size="14" aria-hidden="true" />
+            <span class="jt-visually-hidden">{{ t('orders.locality') }}:</span>
+            <span :class="{ 'jt-muted': !locality }">{{ locality ?? t('orders.locality_unknown') }}</span>
+          </span>
+          <template v-if="tariffRegion"> · <span class="tariff">{{ t('orders.tariff_short', { region: fmt.name(tariffRegion.name) }) }}</span></template>
+          · {{ t(`category.${order.category}`) }} · {{ className }}<template v-if="loadText"> · {{ loadText }}</template> · {{ fmt.dateTime(order.created_at) }}
           <span class="jt-mono jt-muted"> · {{ order.id }}</span>
         </template>
         <template v-if="canManage" #actions>
@@ -187,7 +256,7 @@ useResync(() => void res.reload({ silent: true }))
                   <p>{{ s.address }}</p>
                   <p v-if="s.address_details" class="jt-muted">{{ s.address_details }}</p>
                   <p class="jt-muted stops__meta">
-                    {{ t(`stop_kind.${s.kind}`) }} · <span class="jt-mono">{{ s.lat.toFixed(6) }}, {{ s.lon.toFixed(6) }}</span>
+                    {{ t(`stop_kind.${s.kind}`) }}
                     <template v-if="s.completed_at"> · {{ t('orders.stop_completed_at', { time: fmt.dateTime(s.completed_at) }) }}</template>
                   </p>
                 </div>
@@ -206,17 +275,18 @@ useResync(() => void res.reload({ silent: true }))
 
         <aside class="detail__side">
           <Card :title="t('orders.money')">
-            <KeyValueList :items="fareItems" />
+            <KeyValueList :items="fareItems">
+              <template #value-class="{ item }">
+                <span class="cls">
+                  <VehicleClassIcon :icon="vc.byCode(order.vehicle_class)?.icon ?? order.vehicle_class" :size="16" />
+                  {{ item.value }}
+                </span>
+              </template>
+            </KeyValueList>
           </Card>
 
           <Card v-if="order.status === 'cancelled'" :title="t('orders.cancellation')">
-            <KeyValueList
-              :items="[
-                { key: 'by', label: t('orders.cancelled_by'), value: actorLabel(order.cancelled_by) },
-                { key: 'reason', label: t('common.reason'), value: order.cancel_reason },
-                { key: 'at', label: t('orders.cancelled_at'), value: fmt.dateTime(order.cancelled_at) },
-              ]"
-            />
+            <KeyValueList :items="cancelItems" />
           </Card>
 
           <Card v-if="order.dispute" :title="t('orders.dispute')">
@@ -255,6 +325,14 @@ useResync(() => void res.reload({ silent: true }))
                   { key: 'phone', label: t('common.phone'), value: order.driver.phone, mono: true },
                   { key: 'vehicle', label: t('drivers.vehicle'), value: order.vehicle ? `${order.vehicle.make} ${order.vehicle.model}, ${order.vehicle.color}` : null },
                   { key: 'plate', label: t('drivers.plate'), value: order.vehicle?.plate ?? null, mono: true },
+                  {
+                    key: 'vehicle_class',
+                    label: t('classes.class'),
+                    value: order.vehicle?.vehicle_class
+                      ? [vc.name(order.vehicle.vehicle_class, order.vehicle.vehicle_class_name), order.vehicle.seats ? t('classes.seats_n', { n: order.vehicle.seats }) : '', order.vehicle.cargo_volume_l !== null && order.vehicle.cargo_volume_l !== undefined ? t('classes.liters', { n: fmt.count(order.vehicle.cargo_volume_l) }) : ''].filter(Boolean).join(' · ')
+                      : null,
+                  },
+                  ...(etaText ? [{ key: 'eta', label: t('orders.eta'), value: etaText }] : []),
                   { key: 'location', label: t('orders.last_location'), value: order.driver_location ? fmt.relative(order.driver_location.recorded_at) : null },
                 ]"
               >
@@ -276,7 +354,8 @@ useResync(() => void res.reload({ silent: true }))
           </Card>
 
           <Card v-if="auth.can('finance.view') || order.reservation" :title="t('orders.wallet')" flush>
-            <div class="reservation">
+            <!-- Since §22.2 nothing is reserved: the ledger rows below say what was taken. -->
+            <div v-if="order.reservation || !order.ledger.length" class="reservation">
               <template v-if="order.reservation">
                 <span>{{ t('orders.reservation') }}: <strong class="jt-num">{{ fmt.money(order.reservation.amount) }}</strong></span>
                 <span class="jt-muted">{{ t(`reservation_status.${order.reservation.status}`) }}</span>
@@ -300,15 +379,7 @@ useResync(() => void res.reload({ silent: true }))
         </aside>
       </div>
 
-      <ReasonDialog
-        v-model:open="cancelOpen"
-        :title="t('orders.cancel_title', { n: order.number })"
-        :message="order.driver ? t('orders.cancel_message_driver') : t('orders.cancel_message')"
-        :max-length="LIMITS.orderCancelReason"
-        :confirm-label="t('orders.cancel_order')"
-        destructive
-        :submit="cancel"
-      />
+      <CancelOrderDialog v-model:open="cancelOpen" :order="order" @done="onCancelled" />
       <ReasonDialog
         v-model:open="disputeOpen"
         :title="t('orders.open_dispute_title', { n: order.number })"
@@ -318,7 +389,7 @@ useResync(() => void res.reload({ silent: true }))
         :submit="dispute"
       />
       <AssignDriverDialog v-model:open="assignOpen" :order="order" @assigned="onAssigned" @stale="res.reload({ silent: true })" />
-      <ResolveDisputeDialog v-model:open="resolveOpen" :dispute="openDispute" :commission="order.commission_amount" @resolved="onResolved" />
+      <ResolveDisputeDialog v-model:open="resolveOpen" :dispute="openDispute" :commission="charged" @resolved="onResolved" />
     </template>
   </section>
 </template>
@@ -421,6 +492,24 @@ useResync(() => void res.reload({ silent: true }))
 
 .rating {
   font: var(--jt-font-title3);
+}
+
+.place {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--jt-color-label);
+}
+
+.tariff {
+  white-space: nowrap;
+}
+
+.cls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .side-action {

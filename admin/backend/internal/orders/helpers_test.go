@@ -38,7 +38,7 @@ type env struct {
 	adminID uuid.UUID
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T, opts ...func(*orders.Service, *pgxpool.Pool)) *env {
 	t.Helper()
 	pool := testutil.NewDB(t)
 	log := slog.New(slog.DiscardHandler)
@@ -55,6 +55,9 @@ func newEnv(t *testing.T) *env {
 		t.Fatalf("auth service: %v", err)
 	}
 	svc := orders.New(pool, log)
+	for _, o := range opts {
+		o(svc, pool)
+	}
 
 	r := chi.NewRouter()
 	svc.MountPassenger(r.With(as.RequireApp(auth.AppPassenger)))
@@ -211,7 +214,7 @@ var embiStops = []pricing.QuoteStop{
 func (e *env) quote(userID uuid.UUID, category string, stops []pricing.QuoteStop) pricing.StoredQuote {
 	e.t.Helper()
 	ctx := context.Background()
-	tariff, err := pricing.ActiveTariff(ctx, e.pool, e.cityID, category)
+	tariff, err := pricing.ActiveTariff(ctx, e.pool, e.cityID, category, "sedan")
 	if err != nil {
 		e.t.Fatalf("tariff: %v", err)
 	}
@@ -291,3 +294,6 @@ func (e *env) outbox(template string, userID uuid.UUID) int {
 func path(format string, args ...any) string { return fmt.Sprintf(format, args...) }
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// cancelBody is a passenger cancellation with a reason (§22.3).
+func cancelBody(code string) map[string]any { return map[string]any{"reason_code": code} }

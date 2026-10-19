@@ -67,6 +67,13 @@ func ConflictReason(reason, message string) *httpx.Error {
 	return httpx.Conflict("conflict", message).WithDetails(map[string]any{"reason": reason})
 }
 
+// OrderChanged is 409 conflict {reason: order_changed, status}: the order is
+// no longer in the status the caller saw (Change.ExpectStatus).
+func OrderChanged(status string) *httpx.Error {
+	return httpx.Conflict("conflict", "the order changed meanwhile").
+		WithDetails(map[string]any{"reason": "order_changed", "status": status})
+}
+
 // Unique indexes whose violations have a meaning for the API.
 const (
 	IdxOneActivePerDriver    = "orders_one_active_per_driver"

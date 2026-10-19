@@ -2,7 +2,6 @@ package orders
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strconv"
 
@@ -14,9 +13,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
-	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
-	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/stops"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
@@ -99,11 +96,17 @@ func (s *Service) acceptOrder(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
+	var res dispatch.AcceptResult
 	if err := s.tx(ctx, func(tx pgx.Tx) error {
-		_, err := dispatch.Accept(ctx, tx, id, d.ID)
+		var err error
+		res, err = dispatch.Accept(ctx, tx, id, d.ID)
 		return err
 	}); err != nil {
 		return err
+	}
+	if !res.Replayed {
+		// The road estimate, after the commit (§22.6).
+		s.eta.Go(id)
 	}
 	return s.writeDriverOrder(w, r, id, d.ID)
 }
@@ -279,10 +282,13 @@ func complete(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) error
 	return err
 }
 
-// finishCompleted closes the remaining stops, counts the trip, settles the
-// commission (driver profile before wallet, the lock order every path uses)
-// and notifies both sides; it returns the commission charged. notify=false is
-// used by dispute resolution, which sends its own messages.
+// finishCompleted closes the remaining stops, counts the trip, settles what
+// is left of the commission (driver profile before wallet, the lock order
+// every path uses) and notifies both sides; it returns the commission the
+// driver paid for the order. The commission is charged when the driver takes
+// the order (§22.2); only a reservation left by an acceptance under the
+// earlier model is charged here, once. notify=false is used by dispute
+// resolution, which sends its own messages.
 func finishCompleted(ctx context.Context, tx pgx.Tx, after lifecycle.Core, notify bool) (int64, error) {
 	driverID := *after.DriverID
 	for _, kind := range []string{stops.KindIntermediate, stops.KindDestination} {
@@ -294,11 +300,8 @@ func finishCompleted(ctx context.Context, tx pgx.Tx, after lifecycle.Core, notif
 		driverID); err != nil {
 		return 0, err
 	}
-	charged, err := wallets.SettleForOrder(ctx, tx, after.ID)
+	charged, err := wallets.SettleOnComplete(ctx, tx, after.ID, driverID)
 	if err != nil {
-		if errors.Is(err, wallets.ErrNotFound) {
-			return 0, httpx.Internal(err)
-		}
 		return 0, lifecycle.DBError(err)
 	}
 	wal, err := wallets.Get(ctx, tx, driverID)
@@ -320,44 +323,10 @@ func finishCompleted(ctx context.Context, tx pgx.Tx, after lifecycle.Core, notif
 			"order_completed_driver:"+after.ID.String()); err != nil {
 			return 0, err
 		}
-		if wal.Available() < settings.MinOnlineBalance(ctx, tx) {
-			if err := lifecycle.Notify(ctx, tx, notifications.DriverBot, info.UserID, notifications.TplWalletLowBalance,
-				map[string]any{"available": wal.Available()}, "wallet_low_balance:"+after.ID.String()); err != nil {
-				return 0, err
-			}
-		}
 	}
 	if err := lifecycle.Publish(ctx, tx, realtime.OrderCompleted, lifecycle.EventData(after, nil),
 		lifecycle.PartyScopes(after)...); err != nil {
 		return 0, err
 	}
-	return charged, lifecycle.PublishWallet(ctx, tx, driverID, after.ID, "commission_charge")
-}
-
-type driverCancelRequest struct {
-	Reason *string `json:"reason"`
-}
-
-// cancelByDriver handles POST /driver/orders/{id}/cancel: accepted |
-// driver_arriving → cancelled with a reason; the order is not re-dispatched.
-func (s *Service) cancelByDriver(w http.ResponseWriter, r *http.Request) error {
-	var req driverCancelRequest
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		return err
-	}
-	fields := map[string]string{}
-	reason := cleanRequiredField(fields, "reason", req.Reason, textutil.MaxFreeText)
-	if len(fields) > 0 {
-		return httpx.Validation(fields)
-	}
-	return s.driverAction(w, r, func(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) error {
-		res, err := lifecycle.Cancel(ctx, tx, lifecycle.CancelInput{Change: lifecycle.Change{
-			OrderID: orderID, OnlyDriver: &driverID, Actor: lifecycle.Driver(driverID), Reason: &reason,
-			From: []string{lifecycle.StatusAccepted, lifecycle.StatusDriverArriving},
-		}})
-		if err != nil {
-			return err
-		}
-		return notifyPassengerCancelled(ctx, tx, res.After, &reason)
-	})
+	return charged, lifecycle.PublishWallet(ctx, tx, driverID, after.ID, wallets.EntryCommissionCharge)
 }

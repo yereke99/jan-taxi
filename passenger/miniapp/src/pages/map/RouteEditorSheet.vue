@@ -13,6 +13,7 @@ import { reverseGeocode } from '../../api/geo'
 import FarePreview from '../../components/booking/FarePreview.vue'
 import RouteStopList from '../../components/booking/RouteStopList.vue'
 import { JButton, JSheet, toast } from '../../components/ui'
+import { loadProblem } from '../../domain/vehicleClass'
 import { useErrorText } from '../../i18n/core'
 import { STOP_LETTERS } from '../../maps'
 import { ROUTE } from '../../router/names'
@@ -55,10 +56,19 @@ const stopErrorTexts = computed(() => {
   return out
 })
 
-/** Preview problems that are not tied to one stop (route unavailable, network…). */
+/** Preview problems that are not tied to one stop (route unavailable, network, the load…). */
 const generalError = computed(() => {
   if (booking.previewStatus !== 'error' || Object.keys(booking.stopErrors).length > 0) return ''
-  return errorText(booking.previewError)
+  switch (loadProblem(booking.previewError)) {
+    case 'passengers':
+      return t('confirm.load_passengers')
+    case 'cargo':
+      return t('confirm.load_cargo')
+    case 'unavailable':
+      return t('confirm.load_unavailable')
+    default:
+      return errorText(booking.previewError)
+  }
 })
 
 // --- Map ---------------------------------------------------------------------

@@ -1,7 +1,7 @@
 // Shared with the other Mini App — keep both copies identical (make verify-shared).
 
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, ref } from 'vue'
 import { createI18nInstance } from '../../i18n/core'
 import JSegmented from './JSegmented.vue'
@@ -86,5 +86,41 @@ describe('JSheet', () => {
     ready.value = false
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.jt-sheet__footer').exists()).toBe(false)
+  })
+
+  // iOS sends the click of a short swipe after a round trip to the UI
+  // process, later than a 0 ms timer; it must still not reach the control
+  // the swipe started on.
+  it('swallows the click that ends a drag, even when it arrives late', async () => {
+    vi.useFakeTimers()
+    try {
+      const tapped = vi.fn()
+      const wrapper = mount(JSheet, {
+        props: { snap: 'half', snapPoints: ['half', 'full'] },
+        slots: { default: () => h('button', { class: 'row', onClick: tapped }, 'row') },
+        global,
+        attachTo: document.body,
+      })
+      const row = wrapper.find('.row').element
+      const pointer = (target: EventTarget, type: string, y: number): void => {
+        target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 3, pointerType: 'touch', isPrimary: true, clientX: 100, clientY: y }))
+      }
+      pointer(row, 'pointerdown', 500)
+      pointer(window, 'pointermove', 492)
+      pointer(window, 'pointermove', 470)
+      pointer(window, 'pointerup', 470)
+      await vi.advanceTimersByTimeAsync(40)
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }))
+      expect(tapped).not.toHaveBeenCalled()
+
+      // The next touch is a new gesture: its click goes through.
+      pointer(row, 'pointerdown', 470)
+      pointer(window, 'pointerup', 470)
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }))
+      expect(tapped).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -252,9 +252,12 @@ func (e *Env) VerifyPhone(userID uuid.UUID, phone string) error {
 	})
 }
 
-// Registration describes the data CompleteDraft fills in.
+// Registration describes the data CompleteDraft fills in. VehicleClass
+// defaults to "sedan"; Seats 0 takes the class default.
 type Registration struct {
 	FirstName, LastName, Make, Model, Color, Plate, Phone string
+	VehicleClass                                          string
+	Seats                                                 int
 }
 
 // CompleteDraft fills in every required field and photo of a driver's
@@ -268,9 +271,16 @@ func (c *Client) CompleteDraft(reg Registration) uuid.UUID {
 	if reg.Make == "" {
 		reg.Make, reg.Model, reg.Color = "Toyota", "Camry", "Ақ"
 	}
+	if reg.VehicleClass == "" {
+		reg.VehicleClass = "sedan"
+	}
+	vehicle := map[string]any{"make": reg.Make, "model": reg.Model, "color": reg.Color, "plate": reg.Plate,
+		"vehicle_class": reg.VehicleClass}
+	if reg.Seats > 0 {
+		vehicle["seats"] = reg.Seats
+	}
 	res := c.Do(http.MethodPut, "/api/v1/driver/registration", map[string]any{
-		"first_name": reg.FirstName, "last_name": reg.LastName,
-		"vehicle": map[string]any{"make": reg.Make, "model": reg.Model, "color": reg.Color, "plate": reg.Plate},
+		"first_name": reg.FirstName, "last_name": reg.LastName, "vehicle": vehicle,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("save registration: %s", res)
@@ -310,11 +320,12 @@ func (e *Env) CreateOrder(passengerID, driverID uuid.UUID, status string) uuid.U
 	err := e.Pool.QueryRow(context.Background(), `
 		INSERT INTO orders (passenger_id, city_id, category, service_type, cargo_type, status, driver_id, fare,
 		                    commission_bps, commission_amount, payment_method, tariff_id, distance_m, duration_s,
-		                    stop_count, pickup_lat, pickup_lon, idempotency_key, accepted_at, cancelled_at, cancelled_by)
+		                    stop_count, pickup_lat, pickup_lon, idempotency_key, accepted_at, cancelled_at, cancelled_by,
+		                    vehicle_class, passenger_count)
 		SELECT $1, c.id, 'taxi', 'passenger', 'none', $3, $2, 800, 1000, 80, 'cash', t.id, 1200, 180, 2, 48.8264, 58.1442,
 		       'test-' || gen_random_uuid(), CASE WHEN $2::uuid IS NOT NULL THEN now() END,
-		       CASE WHEN $3 = 'cancelled' THEN now() END, CASE WHEN $3 = 'cancelled' THEN 'driver' END
-		FROM cities c JOIN tariffs t ON t.city_id = c.id AND t.category = 'taxi' AND t.is_active
+		       CASE WHEN $3 = 'cancelled' THEN now() END, CASE WHEN $3 = 'cancelled' THEN 'driver' END, 'sedan', 1
+		FROM cities c JOIN tariffs t ON t.city_id = c.id AND t.category = 'taxi' AND t.vehicle_class = 'sedan' AND t.is_active
 		WHERE c.code = 'EMB'
 		RETURNING id`, passengerID, driver, status).Scan(&id)
 	if err != nil {

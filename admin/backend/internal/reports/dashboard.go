@@ -35,17 +35,30 @@ type Dashboard struct {
 // uses completed_at, cancelled uses cancelled_at, disputed counts disputes
 // opened in the period.
 type OrderMetrics struct {
-	Created              int           `json:"created"`
-	Completed            int           `json:"completed"`
-	Cancelled            int           `json:"cancelled"`
-	CancelledByPassenger int           `json:"cancelled_by_passenger"`
-	CancelledByDriver    int           `json:"cancelled_by_driver"`
-	CancelledByAdmin     int           `json:"cancelled_by_admin"`
-	NoDriverFound        int           `json:"no_driver_found"`
-	Disputed             int           `json:"disputed"`
-	SearchingNow         int           `json:"searching_now"`
-	ActiveNow            int           `json:"active_now"`
-	ByCategory           CategoryCount `json:"by_category"`
+	Created              int `json:"created"`
+	Completed            int `json:"completed"`
+	Cancelled            int `json:"cancelled"`
+	CancelledByPassenger int `json:"cancelled_by_passenger"`
+	CancelledByDriver    int `json:"cancelled_by_driver"`
+	CancelledByAdmin     int `json:"cancelled_by_admin"`
+	NoDriverFound        int `json:"no_driver_found"`
+	// CancelledByReason splits passenger cancellations by the reason the
+	// passenger chose (§22.3); unspecified counts older cancellations.
+	CancelledByReason CancelReasonCount `json:"cancelled_by_reason"`
+	Disputed          int               `json:"disputed"`
+	SearchingNow      int               `json:"searching_now"`
+	ActiveNow         int               `json:"active_now"`
+	ByCategory        CategoryCount     `json:"by_category"`
+}
+
+// CancelReasonCount counts passenger cancellations per reason code.
+type CancelReasonCount struct {
+	LongWait     int `json:"long_wait"`
+	DriverIssue  int `json:"driver_issue"`
+	VehicleIssue int `json:"vehicle_issue"`
+	ChangedPlans int `json:"changed_plans"`
+	Other        int `json:"other"`
+	Unspecified  int `json:"unspecified"`
 }
 
 // CategoryCount splits created orders by category.
@@ -58,11 +71,15 @@ type CategoryCount struct {
 // Revenue is the platform's money in the period: GMV of completed orders and
 // commission charged minus commission refunded (from the ledger).
 type Revenue struct {
-	GMV                int64  `json:"gmv"`
-	CommissionCharged  int64  `json:"commission_charged"`
-	CommissionRefunded int64  `json:"commission_refunded"`
-	CommissionNet      int64  `json:"commission_net"`
-	Currency           string `json:"currency"`
+	GMV                int64 `json:"gmv"`
+	CommissionCharged  int64 `json:"commission_charged"`
+	CommissionRefunded int64 `json:"commission_refunded"`
+	CommissionNet      int64 `json:"commission_net"`
+	// WelcomeBonuses is the welcome balance credited to new drivers (§22.1);
+	// ManualBonuses the bonuses operators gave drivers (§22.7).
+	WelcomeBonuses int64  `json:"welcome_bonuses"`
+	ManualBonuses  int64  `json:"manual_bonuses"`
+	Currency       string `json:"currency"`
 }
 
 // DriverMetrics are point-in-time driver counts plus registrations in the period.
@@ -218,6 +235,12 @@ func loadPeriod(ctx context.Context, q db.Querier, from, to time.Time, cityID *u
 			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'driver'),
 			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'admin'),
 			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'system'),
+			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'passenger' AND cancel_reason_code = 'long_wait'),
+			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'passenger' AND cancel_reason_code = 'driver_issue'),
+			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'passenger' AND cancel_reason_code = 'vehicle_issue'),
+			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'passenger' AND cancel_reason_code = 'changed_plans'),
+			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'passenger' AND cancel_reason_code = 'other'),
+			count(*) FILTER (WHERE `+cancelled+` AND cancelled_by = 'passenger' AND cancel_reason_code IS NULL),
 			(avg(EXTRACT(EPOCH FROM accepted_at - created_at)) FILTER (WHERE `+period("accepted_at")+`))::float8,
 			(avg(EXTRACT(EPOCH FROM completed_at - started_at)) FILTER (WHERE `+completed+` AND started_at IS NOT NULL))::float8
 		FROM orders
@@ -228,6 +251,9 @@ func loadPeriod(ctx context.Context, q db.Querier, from, to time.Time, cityID *u
 		&m.orders.Created, &m.orders.ByCategory.Taxi, &m.orders.ByCategory.Parcel, &m.orders.ByCategory.Other,
 		&m.createdCompleted, &m.orders.Completed, &m.revenue.GMV, &m.orders.Cancelled,
 		&m.orders.CancelledByPassenger, &m.orders.CancelledByDriver, &m.orders.CancelledByAdmin, &m.orders.NoDriverFound,
+		&m.orders.CancelledByReason.LongWait, &m.orders.CancelledByReason.DriverIssue,
+		&m.orders.CancelledByReason.VehicleIssue, &m.orders.CancelledByReason.ChangedPlans,
+		&m.orders.CancelledByReason.Other, &m.orders.CancelledByReason.Unspecified,
 		&m.avgAccept, &m.avgTrip)
 	if err != nil {
 		return m, fmt.Errorf("reports: order metrics: %w", err)
@@ -248,6 +274,15 @@ func loadPeriod(ctx context.Context, q db.Querier, from, to time.Time, cityID *u
 		return m, fmt.Errorf("reports: commission metrics: %w", err)
 	}
 	m.revenue.CommissionNet = m.revenue.CommissionCharged - m.revenue.CommissionRefunded
+	if err := q.QueryRow(ctx, `
+		SELECT COALESCE(sum(l.balance_delta) FILTER (WHERE l.idempotency_key LIKE 'welcome\_bonus:%'), 0)::bigint,
+		       COALESCE(sum(l.balance_delta) FILTER (WHERE l.idempotency_key NOT LIKE 'welcome\_bonus:%'), 0)::bigint
+		FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id JOIN driver_profiles d ON d.id = w.driver_id
+		WHERE l.entry_type = 'bonus_credit' AND l.created_at >= $1 AND l.created_at < $2
+		  AND ($3::uuid IS NULL OR d.city_id = $3)`, from, to, cityID).
+		Scan(&m.revenue.WelcomeBonuses, &m.revenue.ManualBonuses); err != nil {
+		return m, fmt.Errorf("reports: bonuses: %w", err)
+	}
 	m.revenue.Currency = "KZT"
 	confirmed := "t.status IN ('confirmed', 'refunded') AND " + period("t.confirmed_at")
 	refunded := "t.status = 'refunded' AND " + period("t.refunded_at")

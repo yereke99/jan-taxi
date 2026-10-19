@@ -104,6 +104,25 @@ func (c *Client) VerifyContact(ctx context.Context, tgID int64, phone string, co
 	return out, err
 }
 
+// AcceptOrder takes an order for the driver after a tap on «Алу» (same
+// atomic acceptance as the Mini App). It is not retried: a lost response is
+// answered by the next tap, which reports Replayed.
+func (c *Client) AcceptOrder(ctx context.Context, tgID int64, orderID string) (AcceptResult, error) {
+	var out AcceptResult
+	path := tgPath("/driver", tgID, "/orders/"+url.PathEscape(orderID)+"/accept")
+	err := c.do(ctx, http.MethodPost, path, nil, nil, &out, false)
+	return out, err
+}
+
+// VerifyPassengerContact stores the phone a passenger shared with the
+// passenger bot (contact.user_id must equal the sender).
+func (c *Client) VerifyPassengerContact(ctx context.Context, tgID int64, phone string, contactUserID int64) (ContactResult, error) {
+	var out ContactResult
+	in := map[string]any{"phone": phone, "contact_user_id": contactUserID}
+	err := c.do(ctx, http.MethodPost, tgPath("/passenger", tgID, "/contact"), nil, in, &out, true)
+	return out, err
+}
+
 // ReportLocation stores a location shared in the driver bot. It is not
 // retried: a newer location will follow.
 func (c *Client) ReportLocation(ctx context.Context, tgID int64, in LocationReport) error {

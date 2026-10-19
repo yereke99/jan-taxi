@@ -5,7 +5,9 @@
 // (admin/backend/internal/cities/publicconfig.go). The payload is normalised
 // defensively so a missing optional field degrades to a documented default
 // instead of breaking the app. Map defaults follow §3/§14 (OpenFreeMap
-// Positron, Embi as the default map centre only).
+// Positron, Embi as the default map centre only). Vehicle classes, cargo sizes
+// and the passenger limit follow §21; cancel reasons, commission and the
+// welcome bonus follow §22.
 
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_STYLE_URL, DEFAULT_MAP_ZOOM } from '../maps/constants'
 import type { Locale } from '../utils/format'
@@ -60,6 +62,46 @@ export interface TopUpLimits {
   presets: number[]
 }
 
+/** Icon names the apps draw for a vehicle class (ARCHITECTURE §21.1). */
+export const VEHICLE_ICONS = ['sedan', 'universal', 'minivan', 'microbus', 'cargo_van', 'truck'] as const
+export type VehicleIcon = (typeof VEHICLE_ICONS)[number]
+
+/** An active vehicle class (body type) as GET /public/config lists it (§21). */
+export interface VehicleClassInfo {
+  code: string
+  name: LocalizedText
+  examples: string
+  icon: VehicleIcon
+  seats_default: number
+  seats_max: number
+  cargo_volume_l_default: number
+  passenger_capable: boolean
+  cargo_capable: boolean
+}
+
+export const CARGO_SIZE_CODES = ['s', 'm', 'l', 'xl'] as const
+export type CargoSize = (typeof CARGO_SIZE_CODES)[number]
+
+/** A parcel/other cargo size and its volume in litres (§21.2). */
+export interface CargoSizeInfo {
+  code: CargoSize
+  volume_l: number
+}
+
+/** Passenger cancellation reason (§22.3); a comment is required when comment_required. */
+export interface CancelReasonInfo {
+  code: string
+  label: LocalizedText
+  comment_required: boolean
+}
+
+/** How the driver's commission is charged at acceptance (§22.2). */
+export interface CommissionPolicy {
+  mode: 'fixed' | 'percent'
+  /** KZT charged per accepted order in 'fixed' mode. */
+  fixed_amount: number
+}
+
 export interface PublicConfig {
   app: string
   default_language: Locale
@@ -81,9 +123,29 @@ export interface PublicConfig {
   kaspi: KaspiPublic | null
   /** Top-up limits (driver app only). */
   topup: TopUpLimits | null
+  /** Active vehicle classes in display order (empty when the API sends none). */
+  vehicle_classes: VehicleClassInfo[]
+  /** Cargo sizes from small to extra large. */
+  cargo_sizes: CargoSizeInfo[]
+  /** Most passengers one taxi order may carry. */
+  max_passenger_count: number
+  /** Passenger cancellation reasons in display order (passenger app only). */
+  cancel_reasons: CancelReasonInfo[]
+  /** Commission charged when a driver takes an order (driver app only). */
+  commission: CommissionPolicy | null
+  /** One-time balance credited to a newly approved driver, KZT; 0 = off (driver app only). */
+  welcome_bonus: number | null
 }
 
 export const DEFAULT_MAX_ROUTE_POINTS = 5
+export const DEFAULT_MAX_PASSENGER_COUNT = 15
+/** Volumes of ARCHITECTURE §21.2, used when the API does not send cargo_sizes. */
+export const DEFAULT_CARGO_SIZES: readonly CargoSizeInfo[] = [
+  { code: 's', volume_l: 10 },
+  { code: 'm', volume_l: 60 },
+  { code: 'l', volume_l: 400 },
+  { code: 'xl', volume_l: 1500 },
+]
 const LOCALES: readonly Locale[] = ['kk', 'ru', 'en']
 
 function rec(v: unknown): Record<string, unknown> {
@@ -140,6 +202,12 @@ export function defaultPublicConfig(): PublicConfig {
     fare: null,
     kaspi: null,
     topup: null,
+    vehicle_classes: [],
+    cargo_sizes: DEFAULT_CARGO_SIZES.map((c) => ({ ...c })),
+    max_passenger_count: DEFAULT_MAX_PASSENGER_COUNT,
+    cancel_reasons: [],
+    commission: null,
+    welcome_bonus: null,
   }
 }
 
@@ -187,6 +255,64 @@ function normalizeTopUp(v: unknown): TopUpLimits | null {
   return { min, max, presets }
 }
 
+function nonNegativeInt(v: unknown): number | null {
+  const n = intOrNull(v)
+  return n !== null && n >= 0 ? n : null
+}
+
+function normalizeVehicleClass(v: unknown): VehicleClassInfo | null {
+  const r = rec(v)
+  const code = strOrNull(r.code)
+  const seatsMax = nonNegativeInt(r.seats_max)
+  if (!code || seatsMax === null) return null
+  const icon = VEHICLE_ICONS.find((i) => i === r.icon) ?? 'sedan'
+  const seatsDefault = nonNegativeInt(r.seats_default)
+  return {
+    code,
+    name: localizedOrNull(r.name) ?? { kk: code, ru: code, en: code },
+    examples: strOrNull(r.examples) ?? '',
+    icon,
+    seats_default: seatsDefault !== null && seatsDefault <= seatsMax ? seatsDefault : seatsMax,
+    seats_max: seatsMax,
+    cargo_volume_l_default: nonNegativeInt(r.cargo_volume_l_default) ?? 0,
+    passenger_capable: r.passenger_capable === true,
+    cargo_capable: r.cargo_capable === true,
+  }
+}
+
+function normalizeCargoSizes(v: unknown): CargoSizeInfo[] {
+  const list = Array.isArray(v) ? v : []
+  return DEFAULT_CARGO_SIZES.map((d) => {
+    const found = rec(list.find((x) => rec(x).code === d.code))
+    const volume = intOrNull(found.volume_l)
+    return { code: d.code, volume_l: volume !== null && volume > 0 ? volume : d.volume_l }
+  })
+}
+
+function normalizeCancelReason(v: unknown): CancelReasonInfo | null {
+  const r = rec(v)
+  const code = strOrNull(r.code)
+  const label = localizedOrNull(r.label)
+  if (!code || !label) return null
+  return { code, label, comment_required: r.comment_required === true }
+}
+
+function normalizeCommission(v: unknown): CommissionPolicy | null {
+  if (!v || typeof v !== 'object') return null
+  const r = rec(v)
+  const amount = nonNegativeInt(r.fixed_amount)
+  return { mode: r.mode === 'percent' ? 'percent' : 'fixed', fixed_amount: amount ?? 0 }
+}
+
+function uniqueBy<T>(items: Array<T | null>, key: (t: T) => string): T[] {
+  const seen = new Set<string>()
+  return items.filter((t): t is T => {
+    if (t === null || seen.has(key(t))) return false
+    seen.add(key(t))
+    return true
+  })
+}
+
 /** Maps an arbitrary payload onto PublicConfig, filling defaults. */
 export function normalizePublicConfig(raw: unknown): PublicConfig {
   const d = defaultPublicConfig()
@@ -199,6 +325,7 @@ export function normalizePublicConfig(raw: unknown): PublicConfig {
   const delivery = rec(r.delivery)
   const navigation = rec(r.navigation)
   const maxPoints = intOrNull(routing.max_points)
+  const maxPassengers = intOrNull(r.max_passenger_count)
   const languages = Array.isArray(r.languages) ? r.languages.map(locale).filter((l): l is Locale => l !== null) : []
   return {
     app: strOrNull(r.app) ?? d.app,
@@ -233,6 +360,12 @@ export function normalizePublicConfig(raw: unknown): PublicConfig {
     fare: normalizeFare(r.fare),
     kaspi: normalizeKaspi(r.kaspi),
     topup: r.topup ? normalizeTopUp(r.topup) : null,
+    vehicle_classes: uniqueBy(Array.isArray(r.vehicle_classes) ? r.vehicle_classes.map(normalizeVehicleClass) : [], (c) => c.code),
+    cargo_sizes: normalizeCargoSizes(r.cargo_sizes),
+    max_passenger_count: maxPassengers !== null && maxPassengers >= 1 && maxPassengers <= 60 ? maxPassengers : d.max_passenger_count,
+    cancel_reasons: uniqueBy(Array.isArray(r.cancel_reasons) ? r.cancel_reasons.map(normalizeCancelReason) : [], (c) => c.code),
+    commission: normalizeCommission(r.commission),
+    welcome_bonus: nonNegativeInt(r.welcome_bonus),
   }
 }
 

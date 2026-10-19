@@ -7,22 +7,26 @@ import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import * as api from '../api/driver'
 import type { UploadProgress } from '../api/upload'
-import type { DriverRegistration, FileRef, PlateCheck, RegistrationField, UploadKind } from '../api/types'
+import { REGISTRATION_FIELDS, type DriverRegistration, type FileRef, type PlateCheck, type RegistrationField, type UploadKind } from '../api/types'
 import { PD_CONSENT_VERSION } from '../features/registration/consent'
 import {
+  applyClass,
   buildUpdate,
   editableFields,
   formFromRegistration,
   isValidPlate,
   normalizePlateInput,
   sameUpdate,
+  seatsMaxFor,
   stepsForFields,
   validateName,
   type RegistrationForm,
   type StepId,
 } from '../features/registration/form'
+import { MAX_CARGO_VOLUME_L, type VehicleClassOption } from '../features/vehicle/classes'
 import { isAbortError, isApiError } from '../services/http'
-import { requestContact } from '../telegram'
+import { getLocation, requestContact } from '../telegram'
+import { roundCoord } from '../utils/geo'
 import { useSessionStore } from './session'
 
 export type PhoneFlow = 'idle' | 'requesting' | 'waiting' | 'verified' | 'cancelled' | 'failed' | 'unavailable' | 'timeout'
@@ -31,6 +35,24 @@ export const PHONE_POLL_MS = 3_000
 export const PHONE_WAIT_MS = 60_000
 const AUTOSAVE_MS = 1_500
 const PLATE_CHECK_MS = 450
+/** How long the profile-creating save waits for the device position. */
+export const PROFILE_LOCATION_TIMEOUT_MS = 8_000
+
+/**
+ * The device position for the save that creates the profile: the server
+ * takes the driver's city, and so the code prefix, from it (the nationwide
+ * region KAZ outside every city zone). Best effort: no position (denied,
+ * unavailable, app hidden) leaves the choice to the server's default city.
+ */
+async function profileLocation(): Promise<{ lat: number; lon: number } | undefined> {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return undefined
+  try {
+    const loc = await getLocation({ timeoutMs: PROFILE_LOCATION_TIMEOUT_MS, maxAgeMs: 300_000 })
+    return { lat: roundCoord(loc.lat), lon: roundCoord(loc.lon) }
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * The ticked consent box survives closing the Mini App until submission. The
@@ -70,7 +92,17 @@ export const useRegistrationStore = defineStore('registration', () => {
   const registration = shallowRef<DriverRegistration | null>(null)
   const loading = ref(false)
   const loadError = shallowRef<unknown>(null)
-  const form = reactive<RegistrationForm>({ first_name: '', last_name: '', make: '', model: '', color: '', plate: '' })
+  const form = reactive<RegistrationForm>({
+    first_name: '',
+    last_name: '',
+    vehicle_class: '',
+    seats: null,
+    cargo_volume_l: '',
+    make: '',
+    model: '',
+    color: '',
+    plate: '',
+  })
   const saving = ref(false)
   const saveError = shallowRef<unknown>(null)
   const consentGiven = ref(readConsent())
@@ -131,15 +163,26 @@ export const useRegistrationStore = defineStore('registration', () => {
     // An unfinished plate is not sent (the API rejects invalid plates); the
     // vehicle step blocks "Next" until it is valid.
     if (body.vehicle.plate && !isValidPlate(body.vehicle.plate)) body.vehicle.plate = r.vehicle.plate
+    // Seats outside the class range are not sent either (the class step keeps
+    // them in range; the API would answer 422).
+    const seats = body.vehicle.seats
+    if (seats !== undefined && body.vehicle.vehicle_class && (seats < 1 || seats > seatsMaxFor(classes(), body.vehicle.vehicle_class))) delete body.vehicle.seats
+    if (body.vehicle.cargo_volume_l !== undefined && body.vehicle.cargo_volume_l > MAX_CARGO_VOLUME_L) delete body.vehicle.cargo_volume_l
     return body
   }
 
-  async function doSave(force: boolean): Promise<void> {
+  async function doSave(force: boolean, create: boolean): Promise<void> {
+    if (!registration.value || !payload()) return
+    // Nothing typed: no request (and no profile is created just by opening the form).
+    if (!force && !dirty) return
+    const creating = registration.value.id === null
+    // Only an explicit step action creates the profile, with the device position;
+    // background saves (typing, app hidden) wait for it.
+    if (creating && !create) return
+    const location = creating ? await profileLocation() : undefined
     const r = registration.value
     const body = payload()
     if (!r || !body) return
-    // Nothing typed: no request (and no profile is created just by opening the form).
-    if (!force && !dirty) return
     if (!force && r.id !== null && sameUpdate(body, buildUpdate(r, formFromRegistration(r)))) {
       dirty = false
       return
@@ -147,7 +190,7 @@ export const useRegistrationStore = defineStore('registration', () => {
     saving.value = true
     const sentRevision = revision
     try {
-      const saved = await api.saveRegistration(body)
+      const saved = await api.saveRegistration(r.id === null && location ? { ...body, location } : body)
       // Typing that happened while the request was in flight stays dirty (and on screen).
       if (revision === sentRevision) dirty = false
       adopt(saved, false)
@@ -160,12 +203,28 @@ export const useRegistrationStore = defineStore('registration', () => {
     }
   }
 
-  /** Saves pending text changes now (step change, app hidden, before upload/submit). */
-  function save(force = false): Promise<void> {
+  /**
+   * Saves pending text changes now (step change, app hidden, before
+   * upload/submit). `create` marks an explicit step action ("Next", first
+   * upload, submit): only such a save creates the profile, sending the device
+   * position with it; before that, background saves send nothing.
+   */
+  function save(force = false, create = force): Promise<void> {
     clearTimeout(autosaveTimer)
-    const run = saveChain.then(() => doSave(force))
+    const run = saveChain.then(() => doSave(force, create))
     saveChain = run.catch(() => undefined)
     return run
+  }
+
+  function classes(): readonly VehicleClassOption[] {
+    return useSessionStore().extras.vehicleClasses
+  }
+
+  /** Chooses a vehicle class: seats and cargo take its defaults (saved like typed text). */
+  function chooseClass(c: VehicleClassOption): void {
+    if (!editable.value.has('vehicle_class') || form.vehicle_class === c.code) return
+    applyClass(form, c)
+    touch()
   }
 
   /** Marks the form edited and schedules a background save. */
@@ -307,7 +366,7 @@ export const useRegistrationStore = defineStore('registration', () => {
   async function submit(): Promise<{ ok: true; registration: DriverRegistration } | { ok: false; problem: SubmitProblem }> {
     submitting.value = true
     try {
-      await save()
+      await save(false, true)
       const r = await api.submitRegistration(PD_CONSENT_VERSION)
       dirty = false
       adopt(r, true)
@@ -343,6 +402,7 @@ export const useRegistrationStore = defineStore('registration', () => {
     refresh,
     save,
     touch,
+    chooseClass,
     prefillNames,
     upload,
     removeExtraPhoto,
@@ -382,9 +442,7 @@ export function submitProblem(err: unknown, r: DriverRegistration | null): Submi
   return { steps: stepsForFields(fields), fields, error: err }
 }
 
-const FIELDS = new Set<string>([
-  'avatar', 'first_name', 'last_name', 'phone', 'id_front', 'id_back', 'vehicle_make_model', 'vehicle_color', 'vehicle_plate', 'vehicle_photos',
-])
+const FIELDS = new Set<string>(REGISTRATION_FIELDS)
 
 function isField(f: string): f is RegistrationField {
   return FIELDS.has(f)
@@ -403,6 +461,10 @@ export function fieldFromRequestKey(key: string): RegistrationField | null {
       return 'vehicle_color'
     case 'vehicle.plate':
       return 'vehicle_plate'
+    case 'vehicle.vehicle_class':
+    case 'vehicle.seats':
+    case 'vehicle.cargo_volume_l':
+      return 'vehicle_class'
     default:
       return isField(key) ? key : null
   }

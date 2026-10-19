@@ -332,9 +332,11 @@ func TestPreviewAuthAndCategory(t *testing.T) {
 	if code, fields, _ := errInfo(out); status != 422 || code != "validation_failed" || fields["category"] != "not_allowed" {
 		t.Fatalf("no parcel tariff: %d %v", status, out)
 	}
-	// A point far from Embi still resolves to the nearest active city (Aktobe region trip).
+	// A pickup outside every city zone is priced by the nationwide region,
+	// never by the nearest city (Aktobe → Embi trip).
 	status, out = env.do(http.MethodPost, "/api/v1/routes/preview", passenger, previewBody("taxi", stopJSON(aktobe, "Ақтөбе"), stopJSON(embi, "Ембі")))
-	if status != 200 || out["city"].(map[string]any)["code"] != "EMB" || out["distance_m"].(float64) < 150_000 {
+	if status != 200 || out["city"].(map[string]any)["code"] != "KAZ" || out["tariff_region"].(map[string]any)["code"] != "KAZ" ||
+		out["distance_m"].(float64) < 150_000 {
 		t.Fatalf("intercity: %d %v", status, out)
 	}
 }

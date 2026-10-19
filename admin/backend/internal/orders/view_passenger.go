@@ -18,12 +18,14 @@ import (
 // Order is an order as seen by its passenger (openapi Order). It never carries
 // the commission.
 type Order struct {
-	ID               uuid.UUID         `json:"id"`
-	Number           int64             `json:"number"`
-	Status           string            `json:"status"`
-	Category         string            `json:"category"`
-	ServiceType      string            `json:"service_type"`
-	CargoType        string            `json:"cargo_type"`
+	ID          uuid.UUID `json:"id"`
+	Number      int64     `json:"number"`
+	Status      string    `json:"status"`
+	Category    string    `json:"category"`
+	ServiceType string    `json:"service_type"`
+	CargoType   string    `json:"cargo_type"`
+	OrderLoad
+	OrderPlace
 	CargoDescription *string           `json:"cargo_description"`
 	RecipientPhone   *string           `json:"recipient_phone"`
 	Comment          *string           `json:"comment"`
@@ -43,19 +45,25 @@ type Order struct {
 	Rating           *OrderRating      `json:"rating"`
 	Dispute          *OrderDisputeInfo `json:"dispute"`
 	CancelReason     *string           `json:"cancel_reason"`
+	CancelReasonCode *string           `json:"cancel_reason_code"`
 	CancelledBy      *string           `json:"cancelled_by"`
-	CanCancel        bool              `json:"can_cancel"`
-	CanRate          bool              `json:"can_rate"`
-	CanDispute       bool              `json:"can_dispute"`
-	Version          int               `json:"version"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
-	SearchExpiresAt  *time.Time        `json:"search_expires_at"`
-	AcceptedAt       *time.Time        `json:"accepted_at"`
-	ArrivedAt        *time.Time        `json:"arrived_at"`
-	StartedAt        *time.Time        `json:"started_at"`
-	CompletedAt      *time.Time        `json:"completed_at"`
-	CancelledAt      *time.Time        `json:"cancelled_at"`
+	// DriverETAS is the driver's estimated time to the pickup in seconds,
+	// computed from the driver's latest location while the order is accepted
+	// (§22.6); DriverETAAt is when it was computed.
+	DriverETAS      *int       `json:"driver_eta_s"`
+	DriverETAAt     *time.Time `json:"driver_eta_at"`
+	CanCancel       bool       `json:"can_cancel"`
+	CanRate         bool       `json:"can_rate"`
+	CanDispute      bool       `json:"can_dispute"`
+	Version         int        `json:"version"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	SearchExpiresAt *time.Time `json:"search_expires_at"`
+	AcceptedAt      *time.Time `json:"accepted_at"`
+	ArrivedAt       *time.Time `json:"arrived_at"`
+	StartedAt       *time.Time `json:"started_at"`
+	CompletedAt     *time.Time `json:"completed_at"`
+	CancelledAt     *time.Time `json:"cancelled_at"`
 }
 
 // OrderDriver is the assigned driver as shown to the passenger (openapi
@@ -132,11 +140,11 @@ func passengerOrder(ctx context.Context, q db.Querier, id, passengerID uuid.UUID
 	}
 	o := Order{
 		ID: r.ID, Number: r.Number, Status: r.Status, Category: r.Category, ServiceType: r.ServiceType,
-		CargoType: r.CargoType, CargoDescription: r.CargoDescription, RecipientPhone: r.RecipientPhone,
-		Comment: r.Comment, Fare: r.Fare, Currency: r.Currency, PaymentMethod: r.PaymentMethod,
+		CargoType: r.CargoType, OrderLoad: r.Load, OrderPlace: r.Place, CargoDescription: r.CargoDescription,
+		RecipientPhone: r.RecipientPhone, Comment: r.Comment, Fare: r.Fare, Currency: r.Currency, PaymentMethod: r.PaymentMethod,
 		DistanceM: r.DistanceM, DurationS: r.DurationS, StopCount: r.StopCount, City: r.City,
 		Stops: d.Stops, Route: d.Route, Vehicle: r.Vehicle, Events: publicEvents(d.Events), Rating: d.Rating,
-		CancelReason: r.CancelReason, CancelledBy: r.CancelledBy,
+		CancelReason: r.CancelReason, CancelReasonCode: r.CancelReasonCode, CancelledBy: r.CancelledBy,
 		CanCancel:  canPassengerCancel(r.Status),
 		CanRate:    r.Status == lifecycle.StatusCompleted && d.Rating == nil && r.DriverID != nil,
 		CanDispute: canPassengerDispute(r, latest, time.Now()),
@@ -146,6 +154,9 @@ func passengerOrder(ctx context.Context, q db.Querier, id, passengerID uuid.UUID
 	}
 	if latest != nil {
 		o.Dispute = latest.info()
+	}
+	if r.Status == lifecycle.StatusAccepted || r.Status == lifecycle.StatusDriverArriving {
+		o.DriverETAS, o.DriverETAAt = r.DriverETAS, r.DriverETAAt
 	}
 	if dr := r.Driver; dr != nil {
 		od := &OrderDriver{ID: dr.ID, Code: dr.Code, FirstName: dr.FirstName, LastName: initial(dr.LastName),
@@ -170,11 +181,13 @@ func passengerOrder(ctx context.Context, q db.Querier, id, passengerID uuid.UUID
 
 // OrderSummary is a passenger list row (openapi OrderSummary).
 type OrderSummary struct {
-	ID              uuid.UUID     `json:"id"`
-	Number          int64         `json:"number"`
-	Status          string        `json:"status"`
-	Category        string        `json:"category"`
-	ServiceType     string        `json:"service_type"`
+	ID          uuid.UUID `json:"id"`
+	Number      int64     `json:"number"`
+	Status      string    `json:"status"`
+	Category    string    `json:"category"`
+	ServiceType string    `json:"service_type"`
+	OrderLoad
+	OrderPlace
 	Fare            int64         `json:"fare"`
 	Currency        string        `json:"currency"`
 	PaymentMethod   string        `json:"payment_method"`
@@ -212,11 +225,11 @@ func listPassengerOrders(ctx context.Context, q db.Querier, passengerID uuid.UUI
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.status, o.category, o.service_type, o.fare, o.currency, o.payment_method,
 		       o.stop_count, o.distance_m, d.first_name, r.rating, o.driver_id IS NOT NULL,
-		       o.created_at, o.completed_at, o.cancelled_at, `+endpointColumns+`
+		       o.created_at, o.completed_at, o.cancelled_at, `+endpointColumns+`, `+loadColumns+`, `+placeColumns+`
 		FROM orders o
 		LEFT JOIN driver_profiles d ON d.id = o.driver_id
 		LEFT JOIN order_ratings r ON r.order_id = o.id
-		`+endpointJoins+`
+		`+endpointJoins+loadJoin+placeJoin+`
 		WHERE o.passenger_id = $1 AND o.status = ANY($2)
 		  AND ($3::timestamptz IS NULL OR (o.created_at, o.id) < ($3::timestamptz, $4::uuid))
 		ORDER BY o.created_at DESC, o.id DESC
@@ -230,7 +243,9 @@ func listPassengerOrders(ctx context.Context, q db.Querier, passengerID uuid.UUI
 		var hasDriver bool
 		dest := []any{&s.ID, &s.Number, &s.Status, &s.Category, &s.ServiceType, &s.Fare, &s.Currency, &s.PaymentMethod,
 			&s.StopCount, &s.DistanceM, &s.DriverFirstName, &rating, &hasDriver, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt}
-		if err := row.Scan(append(dest, endpointDest(&s.Pickup, &s.Destination)...)...); err != nil {
+		dest = append(dest, endpointDest(&s.Pickup, &s.Destination)...)
+		dest = append(dest, loadDest(&s.OrderLoad)...)
+		if err := row.Scan(append(dest, placeDest(&s.OrderPlace)...)...); err != nil {
 			return s, err
 		}
 		utc(&s.CreatedAt, s.CompletedAt, s.CancelledAt)

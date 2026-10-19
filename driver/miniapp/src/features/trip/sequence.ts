@@ -14,7 +14,7 @@ export type TripAction =
   | { kind: 'complete_stop'; stopId: string; seq: number; letter: string }
   | { kind: 'complete' }
 
-export type TripState = Pick<DriverOrderDetail, 'status' | 'stops' | 'can_arrive' | 'can_start' | 'can_complete' | 'can_cancel'>
+export type TripState = Pick<DriverOrderDetail, 'status' | 'stops' | 'can_arrive' | 'can_start' | 'can_complete'>
 
 export function stopLetter(seq: number): string {
   return STOP_LETTERS[seq] ?? String(seq + 1)
@@ -45,11 +45,6 @@ export function primaryAction(o: TripState): TripAction | null {
     default:
       return null
   }
-}
-
-/** Cancelling is only possible before the trip starts. */
-export function canDriverCancel(o: TripState): boolean {
-  return o.can_cancel && (o.status === 'accepted' || o.status === 'driver_arriving')
 }
 
 /** Stops still to drive to: the pickup before the start, then every uncompleted later stop. */

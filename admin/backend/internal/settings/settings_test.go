@@ -290,3 +290,45 @@ func TestPayeeAndAutoConfirmDefaults(t *testing.T) {
 		t.Fatal("kill switch ignored")
 	}
 }
+
+func TestCommissionPolicyAndWelcomeBonus(t *testing.T) {
+	pool := testutil.NewDB(t)
+	ctx := context.Background()
+	if p := Commission(ctx, pool); p != (CommissionPolicy{Mode: CommissionFixed, FixedAmount: 50}) {
+		t.Fatalf("seeded commission = %+v", p)
+	}
+	if b := WelcomeBonus(ctx, pool); b != 500 {
+		t.Fatalf("seeded welcome bonus = %d", b)
+	}
+	if err := Set(ctx, pool, "commission.mode", CommissionPercent, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Set(ctx, pool, "commission.fixed_amount", int64(70), uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Set(ctx, pool, "driver.welcome_bonus", int64(0), uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+	if p := Commission(ctx, pool); p != (CommissionPolicy{Mode: CommissionPercent, FixedAmount: 70}) {
+		t.Fatalf("commission = %+v", p)
+	}
+	if b := WelcomeBonus(ctx, pool); b != 0 {
+		t.Fatalf("welcome bonus = %d", b)
+	}
+	d, _ := Lookup("commission.mode")
+	if _, reason := d.Normalize([]byte(`"weekly"`)); reason != ReasonInvalid {
+		t.Fatalf("unknown mode reason = %q", reason)
+	}
+	if v, reason := d.Normalize([]byte(`" Percent "`)); reason != "" || string(v) != `"percent"` {
+		t.Fatalf("mode normalised to %s (%s)", v, reason)
+	}
+	// The built-in defaults match the seed of migration 00008.
+	for _, k := range []string{"commission.mode", "commission.fixed_amount", "driver.welcome_bonus"} {
+		if err := Reset(ctx, pool, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if Commission(ctx, pool) != (CommissionPolicy{Mode: CommissionFixed, FixedAmount: 50}) || WelcomeBonus(ctx, pool) != 500 {
+		t.Fatal("defaults differ from the seed")
+	}
+}

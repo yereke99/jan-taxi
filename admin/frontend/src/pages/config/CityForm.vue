@@ -2,16 +2,18 @@
   Create or edit a city: names, code, map centre (click the map), zoom, time
   zone and search timeout. A city only sets tariffs, the search timeout, the
   driver code prefix and grouping; dispatch is by radius around pickup A and
-  is configured in the settings (dispatch.*).
+  is configured in the settings (dispatch.*). The nationwide default region
+  (KAZ) is edited here too but always stays active.
 -->
 <script setup lang="ts">
 import { Marker, type Map as MapLibreMap } from 'maplibre-gl'
 import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { LatLon } from '../../api/common'
+import { isDefaultRegion, type LatLon } from '../../api/common'
 import { CITY_TIMEZONES, citiesApi, type City, type CityInput } from '../../api/config'
 import { AppButton, FormField, SelectInput, TextInput, ToggleSwitch, toast } from '../../components'
 import { useErrors } from '../../composables/useErrors'
+import { isApiError } from '../../services/api'
 import { parseDecimal, parseInteger } from '../../forms/numbers'
 import { DEFAULT_MAP_CENTER, inKazakhstanBBox } from '../../maps/constants'
 import MapView from '../../maps/MapView.vue'
@@ -52,6 +54,8 @@ function fromCity(c: City | null): Form {
 }
 
 const form = reactive<Form>(fromCity(props.city))
+/** The nationwide default region cannot be switched off. */
+const isDefault = computed(() => isDefaultRegion(props.city))
 const fieldErrors = ref<Record<string, string>>({})
 const saving = ref(false)
 const map = shallowRef<MapLibreMap | null>(null)
@@ -123,7 +127,7 @@ async function save(): Promise<void> {
     center: c,
     default_zoom: zoom,
     timezone: form.timezone,
-    is_active: form.active,
+    is_active: isDefault.value ? true : form.active,
     search_timeout_s: timeout,
   }
   saving.value = true
@@ -132,6 +136,8 @@ async function save(): Promise<void> {
     toast.success(t('config.city_saved'))
     emit('saved', saved)
   } catch (err) {
+    // The default region stays on whatever was sent.
+    if (isApiError(err) && (err.code === 'default_region_locked' || err.details.reason === 'default_region_locked')) form.active = true
     fieldErrors.value = errors.fields(err)
     if (Object.keys(fieldErrors.value).length === 0) errors.report(err)
   } finally {
@@ -180,7 +186,8 @@ onBeforeUnmount(() => pin?.remove())
         {{ t('config.dispatch_global_note') }}
         <RouterLink :to="{ name: 'settings' }">{{ t('config.dispatch_global_link') }}</RouterLink>
       </p>
-      <ToggleSwitch v-model="form.active" :label="t('config.city_active')" />
+      <ToggleSwitch v-model="form.active" :label="isDefault ? t('config.default_region_active') : t('config.city_active')" :disabled="isDefault" />
+      <p v-if="isDefault" class="jt-muted city-form__hint">{{ t('config.default_region_locked_hint') }}</p>
       <div class="jt-row">
         <AppButton type="submit" variant="primary" :loading="saving">{{ city ? t('common.save') : t('config.create_city') }}</AppButton>
       </div>
@@ -211,6 +218,11 @@ onBeforeUnmount(() => pin?.remove())
   border-radius: var(--jt-radius-inner);
   background: var(--jt-color-fill-secondary);
   color: var(--jt-color-label-secondary);
+  font: var(--jt-font-small);
+}
+
+.city-form__hint {
+  margin-top: calc(-1 * var(--jt-space-2));
   font: var(--jt-font-small);
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/phone"
+	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
 
 // Limits of operator-entered text.
@@ -27,6 +28,9 @@ const (
 )
 
 var driverCodeRe = regexp.MustCompile(`^[A-Z]{3}[0-9]{3,}$`)
+
+// likeEscaper escapes LIKE wildcards (the default escape character is \).
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 func queryTime(r *http.Request, name string) (*time.Time, error) {
 	v := strings.TrimSpace(r.URL.Query().Get(name))
@@ -72,12 +76,14 @@ func parseAdminFilter(r *http.Request) (adminFilter, error) {
 }
 
 // applySearch interprets q as an order number, an order id, a phone number
-// (passenger, recipient or driver) or a driver code; whatever parses is matched.
+// (passenger, recipient or driver), a driver code or part of the pickup
+// locality (case-insensitive); whatever parses is matched.
 func (f *adminFilter) applySearch(q string) {
 	if q == "" {
 		return
 	}
 	f.HasQuery = true
+	f.Locality = "%" + likeEscaper.Replace(q) + "%"
 	plain := strings.TrimPrefix(q, "#")
 	if n, err := strconv.ParseInt(plain, 10, 64); err == nil && n > 0 {
 		f.Number = &n
@@ -181,14 +187,22 @@ type adminReasonRequest struct {
 	Reason *string `json:"reason"`
 }
 
+type adminCancelRequest struct {
+	Reason *string `json:"reason"`
+	// RefundCommission returns the commission the assigned driver paid
+	// (§22.2: never automatic).
+	RefundCommission *bool `json:"refund_commission"`
+}
+
 // adminCancelOrder handles POST /admin/orders/{id}/cancel: any active status,
-// including in_progress.
+// including in_progress. The driver's commission is refunded only with
+// refund_commission=true.
 func (s *Service) adminCancelOrder(w http.ResponseWriter, r *http.Request) error {
 	id, err := httpx.UUIDParam(r, "id")
 	if err != nil {
 		return err
 	}
-	var req adminReasonRequest
+	var req adminCancelRequest
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		return err
 	}
@@ -197,6 +211,7 @@ func (s *Service) adminCancelOrder(w http.ResponseWriter, r *http.Request) error
 	if len(fields) > 0 {
 		return httpx.Validation(fields)
 	}
+	refund := req.RefundCommission != nil && *req.RefundCommission
 	return s.adminOrderAction(w, r, id, func(ctx context.Context, tx pgx.Tx, admin auth.AdminPrincipal) ([]string, error) {
 		res, err := lifecycle.Cancel(ctx, tx, lifecycle.CancelInput{Change: lifecycle.Change{
 			OrderID: id, Actor: lifecycle.Admin(admin.AdminID), Reason: &reason, From: lifecycle.ActiveStatuses,
@@ -204,11 +219,22 @@ func (s *Service) adminCancelOrder(w http.ResponseWriter, r *http.Request) error
 		if err != nil {
 			return nil, err
 		}
+		var refunded int64
+		if refund && res.Before.DriverID != nil {
+			if refunded, err = wallets.RefundCommission(ctx, tx, id, *res.Before.DriverID, admin.AdminID); err != nil {
+				return nil, lifecycle.DBError(err)
+			}
+			if refunded > 0 {
+				if err := lifecycle.PublishWallet(ctx, tx, *res.Before.DriverID, id, wallets.EntryCommissionRefund); err != nil {
+					return nil, err
+				}
+			}
+		}
 		if err := notifyPassengerCancelled(ctx, tx, res.After, &reason); err != nil {
 			return nil, err
 		}
 		if res.After.DriverID != nil {
-			if err := notifyDriverCancelled(ctx, tx, res.After, *res.After.DriverID, &reason); err != nil {
+			if err := notifyDriverCancelled(ctx, tx, res.After, *res.After.DriverID, &reason, refunded); err != nil {
 				return nil, err
 			}
 		}
@@ -216,13 +242,16 @@ func (s *Service) adminCancelOrder(w http.ResponseWriter, r *http.Request) error
 			Action: "order.cancel", EntityType: "order", EntityID: id.String(),
 			Before: map[string]any{"status": res.Before.Status, "driver_id": res.Before.DriverID},
 			After: map[string]any{"status": res.After.Status, "reason": reason,
-				"released_commission": res.Released},
+				"released_commission": res.Released, "refund_commission": refund, "refunded_commission": refunded},
 		})
 	})
 }
 
 type assignRequest struct {
 	DriverID *string `json:"driver_id"`
+	// RefundCommission returns the commission the previous driver paid when
+	// the order is re-assigned.
+	RefundCommission *bool `json:"refund_commission"`
 }
 
 // adminAssignOrder handles POST /admin/orders/{id}/assign.
@@ -242,8 +271,9 @@ func (s *Service) adminAssignOrder(w http.ResponseWriter, r *http.Request) error
 	if err != nil {
 		return httpx.Validation(map[string]string{"driver_id": "invalid"})
 	}
-	return s.adminOrderAction(w, r, id, func(ctx context.Context, tx pgx.Tx, admin auth.AdminPrincipal) ([]string, error) {
-		res, err := dispatch.Assign(ctx, tx, id, driverID, admin.AdminID)
+	err = s.adminOrderAction(w, r, id, func(ctx context.Context, tx pgx.Tx, admin auth.AdminPrincipal) ([]string, error) {
+		res, err := dispatch.Assign(ctx, tx, id, driverID, admin.AdminID, dispatch.AssignOptions{
+			RefundPrevious: req.RefundCommission != nil && *req.RefundCommission})
 		if err != nil {
 			return nil, err
 		}
@@ -263,9 +293,14 @@ func (s *Service) adminAssignOrder(w http.ResponseWriter, r *http.Request) error
 			Before: map[string]any{"status": res.Before.Status, "driver_id": res.Before.DriverID},
 			After: map[string]any{"status": res.After.Status, "driver_id": res.After.DriverID,
 				"driver_offline": res.DriverOffline, "location_warning": res.LocationWarning,
-				"distance_to_pickup_m": res.DistanceToPickupM, "released_commission": res.Released},
+				"distance_to_pickup_m": res.DistanceToPickupM, "released_commission": res.Released,
+				"refunded_commission": res.Refunded, "charged_commission": res.Charged},
 		})
 	})
+	if err == nil {
+		s.eta.Go(id) // the passenger's arrival estimate, after the commit (§22.6)
+	}
+	return err
 }
 
 // adminOpenDispute handles POST /admin/orders/{id}/dispute.

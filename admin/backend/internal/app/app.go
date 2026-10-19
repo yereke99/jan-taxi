@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/payments"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
@@ -36,6 +37,8 @@ type App struct {
 	MW   Middlewares   // set by wireIdentity
 
 	Payments *payments.Service // set by wireFinance
+	// ETA refines drivers' arrival estimates (§22.6); set by wireRouting.
+	ETA *dispatch.ArrivalETA
 
 	// Mounted under /api/v1. Passenger, Driver and AnyApp carry the app-token
 	// middleware (Driver also loads the driver profile).

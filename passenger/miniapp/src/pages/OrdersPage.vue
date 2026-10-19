@@ -89,14 +89,14 @@ onBeforeUnmount(() => {
       <section v-if="orders.active.length > 0" class="orders-group">
         <h2 class="orders-group__header">{{ t('orders.active') }}</h2>
         <div class="orders-group__body">
-          <OrderSummaryRow v-for="o in orders.active" :key="o.id" :order="o" :locale="session.language" @open="open" />
+          <OrderSummaryRow v-for="o in orders.active" :key="o.id" :order="o" :locale="session.language" :pickup-subtitle="orders.pickupSubtitle(o.id)" @open="open" />
         </div>
       </section>
 
       <section v-if="orders.history.length > 0 || orders.historyError" class="orders-group">
         <h2 class="orders-group__header">{{ t('orders.history') }}</h2>
         <div v-if="orders.history.length > 0" class="orders-group__body">
-          <OrderSummaryRow v-for="o in orders.history" :key="o.id" :order="o" :locale="session.language" @open="open" />
+          <OrderSummaryRow v-for="o in orders.history" :key="o.id" :order="o" :locale="session.language" :pickup-subtitle="orders.pickupSubtitle(o.id)" @open="open" />
         </div>
         <div v-if="orders.historyError" class="orders-error" role="alert">
           <p>{{ errorText(orders.historyError) }}</p>

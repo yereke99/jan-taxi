@@ -14,6 +14,7 @@ const (
 	FieldPhone            = "phone"
 	FieldIDFront          = "id_front"
 	FieldIDBack           = "id_back"
+	FieldVehicleClass     = "vehicle_class" // class, seats and cargo volume (ARCHITECTURE §21)
 	FieldVehicleMakeModel = "vehicle_make_model"
 	FieldVehicleColor     = "vehicle_color"
 	FieldVehiclePlate     = "vehicle_plate"
@@ -23,7 +24,7 @@ const (
 // RegistrationFields lists the fields in the order of the registration form.
 var RegistrationFields = []string{
 	FieldAvatar, FieldFirstName, FieldLastName, FieldPhone, FieldIDFront, FieldIDBack,
-	FieldVehicleMakeModel, FieldVehicleColor, FieldVehiclePlate, FieldVehiclePhotos,
+	FieldVehicleClass, FieldVehicleMakeModel, FieldVehicleColor, FieldVehiclePlate, FieldVehiclePhotos,
 }
 
 // ValidRegistrationField reports whether f is a registration field.
@@ -87,6 +88,7 @@ var fieldLabels = map[string][3]string{
 	FieldPhone:            {"Телефон нөмірі", "Номер телефона", "Phone number"},
 	FieldIDFront:          {"Жеке куәліктің алдыңғы беті", "Удостоверение личности, лицевая сторона", "ID card, front"},
 	FieldIDBack:           {"Жеке куәліктің артқы беті", "Удостоверение личности, оборотная сторона", "ID card, back"},
+	FieldVehicleClass:     {"Көлік түрі, орын саны және жүк сыйымдылығы", "Тип кузова, число мест и объём багажа", "Vehicle type, seats and cargo space"},
 	FieldVehicleMakeModel: {"Көліктің маркасы мен моделі", "Марка и модель автомобиля", "Car make and model"},
 	FieldVehicleColor:     {"Көліктің түсі", "Цвет автомобиля", "Car colour"},
 	FieldVehiclePlate:     {"Мемлекеттік нөмір", "Госномер", "Licence plate"},

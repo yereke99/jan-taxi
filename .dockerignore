@@ -38,6 +38,6 @@ bin
 docs
 README.md
 compose.yaml
-compose.override*.yaml
+compose.*.yaml
 Makefile
 Dockerfile.*

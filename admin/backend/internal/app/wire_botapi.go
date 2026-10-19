@@ -24,6 +24,7 @@ func (a *App) wireBotAPI() error {
 		DriverBotUsername:    a.Cfg.DriverBotUsername,
 		DefaultLanguage:      a.Cfg.DefaultLanguage,
 		MaxReceiptBytes:      a.Cfg.MaxUploadBytes,
+		ArrivalETA:           a.ETA,
 	})
 	if err != nil {
 		return err

@@ -2,9 +2,19 @@
 // picker and the confirmation sheet, so moving between them (and "back to
 // route") never loses anything.
 //
-// * Every change of the category or the stops re-quotes the route after a
-//   400 ms pause (POST /routes/preview); older requests are aborted and an
-//   outdated answer can never replace a newer one (domain/latest).
+// * Every change of the category, the stops or the load (passenger count for
+//   taxi, cargo size for deliveries, §21) re-quotes the route after a 400 ms
+//   pause (POST /routes/preview); older requests are aborted and an outdated
+//   answer can never replace a newer one (domain/latest).
+// * A quote lists one option per vehicle class. Every booking starts with the
+//   default option (the cheapest class able to carry the load). A class the
+//   passenger taps belongs to the route it was tapped for: a new route (or a
+//   new booking from the home screen) starts with the default again, and an
+//   earlier pick never comes back; only "order again" repeats a past order's
+//   class. Within the route the pick is kept as a preference: when a re-quote
+//   for another load no longer offers it, the default is used until it is
+//   offered again. The fare belongs to the chosen class and restarts at that
+//   class's recommendation when it changes.
 // * POST /orders carries an idempotency key that stays the same while the
 //   payload is the same, so a retry after a lost response replays the
 //   original order instead of creating a second one.
@@ -16,9 +26,9 @@ import { computed, ref, shallowRef, watch } from 'vue'
 import { reverseGeocode } from '../api/geo'
 import { createOrder } from '../api/orders'
 import { previewRoute } from '../api/routes'
-import type { Order, RouteQuote, StopInput } from '../api/types'
-import { detailsPayload, validateDetails, type DetailsField, type DetailsInput } from '../domain/details'
-import { fareAfterRequote, isAllowedFare } from '../domain/fare'
+import type { Order, RoutePreviewRequest, RouteQuote, RouteQuoteOption, StopInput } from '../api/types'
+import { detailsPayload, isDelivery, validateDetails, type DetailsField, type DetailsInput } from '../domain/details'
+import { clampFare, fareAfterRequote, isAllowedFare } from '../domain/fare'
 import { createLatest } from '../domain/latest'
 import {
   addStop as addStopTo,
@@ -37,7 +47,9 @@ import {
   type PlaceValue,
   type RouteStop,
 } from '../domain/route'
+import { clampPassengers, DEFAULT_CARGO_SIZE, loadProblem, maxPassengers, MIN_PASSENGERS, pickOption } from '../domain/vehicleClass'
 import { i18n } from '../i18n'
+import type { CargoSize } from '../services/config'
 import { isApiError, newIdempotencyKey } from '../services/http'
 import type { DeviceLocation } from '../telegram'
 import type { Category, PaymentMethod } from '../utils/status'
@@ -65,11 +77,22 @@ export type FormField = DetailsField | 'fare' | 'payment_method'
 
 interface PreviewInput {
   key: string
+  /** routeKey when the input was taken. */
+  route: string
   category: Category
   stops: StopInput[]
+  passengerCount?: number
+  cargoSize?: CargoSize
 }
 
-function quoteExpiring(q: RouteQuote, now = Date.now()): boolean {
+/** Load fields fixed by a booking started from an earlier order ("order again"). */
+export interface LoadPrefill {
+  vehicleClass?: string | null
+  passengerCount?: number | null
+  cargoSize?: CargoSize | null
+}
+
+function quoteExpiring(q: Pick<RouteQuote, 'expires_at'>, now = Date.now()): boolean {
   const t = Date.parse(q.expires_at)
   return Number.isFinite(t) && t - now < QUOTE_REFRESH_MARGIN_MS
 }
@@ -106,9 +129,23 @@ export const useBookingStore = defineStore('booking', () => {
   const canAdd = computed(() => canAddStop(stops.value, maxPoints.value))
   const routeKey = computed(() => `${category.value}|${routeFingerprint(stops.value)}`)
 
+  // --- Load and vehicle class (§21) ------------------------------------------
+  const passengerCount = ref(MIN_PASSENGERS)
+  const cargoSize = ref<CargoSize>(DEFAULT_CARGO_SIZE)
+  /** The class the passenger tapped and the route it was tapped for. */
+  const classChoice = shallowRef<{ code: string; route: string } | null>(null)
+  /** The class the passenger picked for this route; null = the default option. */
+  const vehicleClass = computed(() => (classChoice.value && classChoice.value.route === routeKey.value ? classChoice.value.code : null))
+  const passengerLimit = computed(() => maxPassengers(session.config))
+  const loadKey = computed(() => (isDelivery(category.value) ? `cargo:${cargoSize.value}` : `passengers:${passengerCount.value}`))
+  /** Everything a quote depends on: route, category and load. */
+  const quoteInputKey = computed(() => `${routeKey.value}|${loadKey.value}`)
+
   // --- Quote ---------------------------------------------------------------
   const quote = shallowRef<RouteQuote | null>(null)
   const quoteKey = ref('')
+  /** routeKey of the quote shown (the load may have changed since). */
+  const quoteRouteKey = ref('')
   const previewStatus = ref<PreviewStatus>('idle')
   const previewError = shallowRef<unknown>(null)
   /** API problems per stop index ('outside_service_area', 'duplicate', …). */
@@ -120,9 +157,23 @@ export const useBookingStore = defineStore('booking', () => {
     for (const k of Object.keys(stopErrors.value)) set.add(Number(k))
     return [...set].sort((a, b) => a - b)
   })
-  /** The quote matches the current stops and category. */
-  const quoteCurrent = computed(() => quote.value !== null && quoteKey.value === routeKey.value)
-  const canContinue = computed(() => quoteCurrent.value && previewStatus.value === 'ready' && blockedStops.value.length === 0)
+  /** The quote matches the current stops, category and load. */
+  const quoteCurrent = computed(() => quote.value !== null && quoteKey.value === quoteInputKey.value)
+  /** The quote is for the current stops and category; only the load may differ (re-quote pending). */
+  const routeCurrent = computed(() => quote.value !== null && quoteRouteKey.value === routeKey.value)
+  /** The class option the order will be placed with. */
+  const selectedOption = computed<RouteQuoteOption | null>(() => pickOption(quote.value, vehicleClass.value))
+  /**
+   * The preview failed only because no class carries the load (too many
+   * passengers, cargo too large); the confirmation screen is where the load
+   * is changed, so the passenger may go on to it.
+   */
+  const loadBlocked = computed(
+    () => previewStatus.value === 'error' && blockedStops.value.length === 0 && loadProblem(previewError.value) !== null,
+  )
+  const canContinue = computed(
+    () => (quoteCurrent.value && previewStatus.value === 'ready' && blockedStops.value.length === 0) || loadBlocked.value,
+  )
 
   // --- Details -------------------------------------------------------------
   const comment = ref('')
@@ -136,6 +187,8 @@ export const useBookingStore = defineStore('booking', () => {
   /** Set after a silent re-quote: the passenger must review and confirm again. */
   const reconfirm = ref(false)
   let attempt: { signature: string; key: string } | null = null
+  /** The class the current fare was chosen for. */
+  let fareClass: string | null = null
 
   const detailsInput = computed<DetailsInput>(() => ({
     category: category.value,
@@ -146,13 +199,21 @@ export const useBookingStore = defineStore('booking', () => {
   }))
 
   // --- Preview -------------------------------------------------------------
-  function applyQuote(q: RouteQuote, key: string): void {
+  /** Keeps the fare when the class stays the same and the new range allows it. */
+  function syncFare(opt: RouteQuoteOption | null): void {
+    if (!opt) return
+    fare.value = fareClass === opt.vehicle_class ? fareAfterRequote(fare.value, opt.fare) : clampFare(opt.fare, null)
+    fareClass = opt.vehicle_class
+  }
+
+  function applyQuote(q: RouteQuote, input: PreviewInput): void {
     quote.value = q
-    quoteKey.value = key
+    quoteKey.value = input.key
+    quoteRouteKey.value = input.route
     previewStatus.value = 'ready'
     previewError.value = null
     stopErrors.value = {}
-    fare.value = fareAfterRequote(fare.value, q.fare)
+    syncFare(selectedOption.value)
     const methods = q.payment_methods
     if (methods.length > 0 && !methods.includes(paymentMethod.value)) paymentMethod.value = methods[0]!
   }
@@ -165,22 +226,32 @@ export const useBookingStore = defineStore('booking', () => {
 
   const runner = createLatest<PreviewInput, RouteQuote>({
     delayMs: PREVIEW_DEBOUNCE_MS,
-    run: (input, signal) => previewRoute({ category: input.category, stops: input.stops }, signal),
+    run: (input, signal) => previewRoute(previewRequest(input), signal),
     onStart: () => {
       previewStatus.value = 'loading'
     },
     onResult: (q, input) => {
-      if (input.key === routeKey.value) applyQuote(q, input.key)
+      if (input.key === quoteInputKey.value) applyQuote(q, input)
     },
     onError: (err, input) => {
-      if (input.key === routeKey.value) applyPreviewError(err)
+      if (input.key === quoteInputKey.value) applyPreviewError(err)
     },
   })
+
+  function previewRequest(input: PreviewInput): RoutePreviewRequest {
+    return {
+      category: input.category,
+      stops: input.stops,
+      ...(input.passengerCount !== undefined ? { passenger_count: input.passengerCount } : {}),
+      ...(input.cargoSize !== undefined ? { cargo_size: input.cargoSize } : {}),
+    }
+  }
 
   function previewInput(): PreviewInput | null {
     const inputs = toStopInputs(stops.value, i18n.global.t('common.point_on_map'))
     if (!inputs || outsideIndices(stops.value).length > 0) return null
-    return { key: routeKey.value, category: category.value, stops: inputs }
+    const load = isDelivery(category.value) ? { cargoSize: cargoSize.value } : { passengerCount: passengerCount.value }
+    return { key: quoteInputKey.value, route: routeKey.value, category: category.value, stops: inputs, ...load }
   }
 
   /** Quotes the current route after the debounce (or now); clears it while incomplete. */
@@ -190,11 +261,12 @@ export const useBookingStore = defineStore('booking', () => {
       runner.cancel()
       quote.value = null
       quoteKey.value = ''
+      quoteRouteKey.value = ''
       previewStatus.value = 'idle'
       previewError.value = null
       return
     }
-    if (quote.value && quoteKey.value === input.key && !quoteExpiring(quote.value)) {
+    if (quote.value && quoteKey.value === input.key && !quoteExpiring(selectedOption.value ?? quote.value)) {
       runner.cancel()
       previewStatus.value = 'ready'
       return
@@ -210,25 +282,58 @@ export const useBookingStore = defineStore('booking', () => {
     if (!input) return false
     previewStatus.value = 'loading'
     try {
-      const q = await previewRoute({ category: input.category, stops: input.stops })
-      if (input.key !== routeKey.value) return false
-      applyQuote(q, input.key)
+      const q = await previewRoute(previewRequest(input))
+      if (input.key !== quoteInputKey.value) return false
+      applyQuote(q, input)
       return true
     } catch (err) {
-      if (input.key === routeKey.value) applyPreviewError(err)
+      if (input.key === quoteInputKey.value) applyPreviewError(err)
       return false
     }
   }
 
   /** Renews a quote that is about to expire (confirmation screen). */
   function ensureFreshQuote(): void {
-    if (quote.value && quoteCurrent.value && quoteExpiring(quote.value)) {
+    if (quote.value && quoteCurrent.value && quoteExpiring(selectedOption.value ?? quote.value)) {
       quoteKey.value = ''
       schedulePreview(true)
     }
   }
 
-  watch(routeKey, () => schedulePreview())
+  watch(quoteInputKey, () => schedulePreview())
+  // A new route is a new booking: an earlier pick never comes back, even if
+  // the passenger returns to the same addresses later.
+  watch(routeKey, (key) => {
+    if (classChoice.value && classChoice.value.route !== key) classChoice.value = null
+  })
+
+  // --- Load and class editing ------------------------------------------------
+  function setPassengerCount(n: number): void {
+    passengerCount.value = clampPassengers(n, passengerLimit.value)
+  }
+
+  function setCargoSize(size: CargoSize): void {
+    cargoSize.value = size
+  }
+
+  /** Picks one of the quote's class options; the fare restarts at its recommendation. */
+  function setVehicleClass(code: string): void {
+    if (!quote.value?.options.some((o) => o.vehicle_class === code)) return
+    classChoice.value = { code, route: routeKey.value }
+    syncFare(selectedOption.value)
+  }
+
+  /**
+   * A new booking starts (home screen): the class and the fare go back to the
+   * default option; the stops stay so the passenger can reuse them.
+   */
+  function startNewBooking(): void {
+    classChoice.value = null
+    fareClass = null
+    fare.value = null
+    syncFare(selectedOption.value)
+    reconfirm.value = false
+  }
 
   // --- Route editing -------------------------------------------------------
   function setCategory(next: Category): void {
@@ -287,10 +392,14 @@ export const useBookingStore = defineStore('booking', () => {
   }
 
   /** Starts a new booking with the given category and places ("order again", recent place). */
-  function prefill(next: Category, places: readonly PlaceValue[]): void {
+  function prefill(next: Category, places: readonly PlaceValue[], load: LoadPrefill = {}): void {
     resetDraft()
     category.value = next
     stops.value = stopsFromPlaces(places, maxPoints.value)
+    if (load.passengerCount) setPassengerCount(load.passengerCount)
+    if (load.cargoSize) cargoSize.value = load.cargoSize
+    // "Order again" is the one case where an earlier class is repeated.
+    if (load.vehicleClass) classChoice.value = { code: load.vehicleClass, route: routeKey.value }
   }
 
   // --- Details editing -----------------------------------------------------
@@ -313,7 +422,8 @@ export const useBookingStore = defineStore('booking', () => {
   /** Validates the details locally; true when the form can be submitted. */
   function validate(): boolean {
     const errors: Partial<Record<FormField, string>> = validateDetails(detailsInput.value)
-    if (quote.value && !isAllowedFare(quote.value.fare, fare.value)) errors.fare = 'invalid'
+    const opt = selectedOption.value
+    if (opt && !isAllowedFare(opt.fare, fare.value)) errors.fare = 'invalid'
     fieldErrors.value = errors
     return Object.keys(errors).length === 0
   }
@@ -377,7 +487,7 @@ export const useBookingStore = defineStore('booking', () => {
   async function submit(): Promise<SubmitResult> {
     if (submitting.value) return { kind: 'busy' }
     if (!validate()) return { kind: 'invalid' }
-    const q = quote.value
+    const q = selectedOption.value
     if (!q || !quoteCurrent.value || blockedStops.value.length > 0) return { kind: 'route_invalid' }
     submitting.value = true
     try {
@@ -406,13 +516,14 @@ export const useBookingStore = defineStore('booking', () => {
     }
   }
 
-  /** Clears the route and details (after an order was created). Category and payment stay. */
+  /** Clears the route, load and details (after an order was created). Category and payment stay. */
   function resetDraft(): void {
     runner.cancel()
     stops.value = createStops()
     pickupAccuracy.value = null
     quote.value = null
     quoteKey.value = ''
+    quoteRouteKey.value = ''
     previewStatus.value = 'idle'
     previewError.value = null
     stopErrors.value = {}
@@ -421,6 +532,10 @@ export const useBookingStore = defineStore('booking', () => {
     recipientPhone.value = ''
     prohibitedItemsAck.value = false
     fare.value = null
+    fareClass = null
+    passengerCount.value = MIN_PASSENGERS
+    cargoSize.value = DEFAULT_CARGO_SIZE
+    classChoice.value = null
     fieldErrors.value = {}
     reconfirm.value = false
     attempt = null
@@ -435,6 +550,12 @@ export const useBookingStore = defineStore('booking', () => {
     complete,
     canAdd,
     routeKey,
+    // load and class
+    passengerCount,
+    cargoSize,
+    vehicleClass,
+    passengerLimit,
+    selectedOption,
     // quote
     quote,
     previewStatus,
@@ -442,6 +563,8 @@ export const useBookingStore = defineStore('booking', () => {
     stopErrors,
     blockedStops,
     quoteCurrent,
+    routeCurrent,
+    loadBlocked,
     canContinue,
     // details
     comment,
@@ -455,6 +578,10 @@ export const useBookingStore = defineStore('booking', () => {
     reconfirm,
     // actions
     setCategory,
+    setPassengerCount,
+    setCargoSize,
+    setVehicleClass,
+    startNewBooking,
     setStopPlace,
     addStop,
     removeStop,

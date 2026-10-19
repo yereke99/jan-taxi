@@ -70,7 +70,7 @@ func TestRegistrationRules(t *testing.T) {
 	if empty.Status() != StatusDraft || !empty.Editable() {
 		t.Fatal("registration without a profile is an editable draft")
 	}
-	if got := empty.MissingFields(false); fmt.Sprint(got) != "[avatar first_name last_name id_front id_back vehicle_make_model vehicle_color vehicle_plate vehicle_photos]" {
+	if got := empty.MissingFields(false); fmt.Sprint(got) != "[avatar first_name last_name id_front id_back vehicle_class vehicle_make_model vehicle_color vehicle_plate vehicle_photos]" {
 		t.Fatalf("missing without phone requirement = %v", got)
 	}
 	for _, s := range []string{StatusPending, StatusApproved, StatusRejected, StatusSuspended} {
