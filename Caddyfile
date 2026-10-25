@@ -1,8 +1,8 @@
 # Jan Taxi edge: TLS, security headers, static single-page apps and the API proxy.
 #
 # Environment (substituted when Caddy loads this file):
-#   APP_DOMAIN            Mini Apps host, e.g. app.jantaxi.example
-#   ADMIN_DOMAIN          admin panel host, e.g. admin.jantaxi.example
+#   APP_DOMAIN            Mini Apps host, production: jan-taxi.kz
+#   ADMIN_DOMAIN          admin panel host, production: admin.jan-taxi.kz
 #   ACME_EMAIL            contact address for Let's Encrypt / ZeroSSL
 #   MAP_CONNECT_SRC       extra connect-src origins for map tiles, glyphs and sprites
 #                         (default https://tiles.openfreemap.org)

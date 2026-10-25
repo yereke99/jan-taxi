@@ -51,10 +51,18 @@ archives.
 
 ## 3. DNS, TLS and firewall
 
-1. Choose two host names, for example `app.<your-domain>` (Mini Apps and API)
-   and `admin.<your-domain>` (admin panel).
-2. Create A (and AAAA, if the server has IPv6) records for both names pointing at
-   the server. Wait until they resolve before the first start.
+1. The production template uses `jan-taxi.kz` (Mini Apps and API) and
+   `admin.jan-taxi.kz` (admin panel).
+2. In Hoster.kz DNS management, create these records for server `45.129.197.71`:
+
+   | Type | Name | Value |
+   |---|---|---|
+   | A | `@` | `45.129.197.71` |
+   | A | `admin` | `45.129.197.71` |
+
+   Add AAAA only if the server also has working public IPv6. Wait until both
+   names resolve before the first start. A `SERVFAIL` or `REFUSED` DNS response
+   means the DNS zone/delegation needs fixing with the provider first.
 3. Optionally add a CAA record allowing `letsencrypt.org` and `sectigo.com`
    (ZeroSSL), the certificate authorities Caddy uses.
 4. Certificates are issued and renewed automatically by Caddy and stored in the
@@ -78,6 +86,24 @@ Only the `web` service publishes ports. PostgreSQL, the API's internal listener
 reachable from outside. Note that Docker manages its own iptables rules for
 published ports; do not publish additional ports in `compose.yaml` or an
 override file on a production server.
+
+| Service | Port / protocol | Published on the server |
+|---|---|---|
+| Caddy HTTP / certificate validation | `80/tcp` | Yes |
+| Caddy HTTPS | `443/tcp` | Yes |
+| Caddy HTTP/3 | `443/udp` | Yes |
+| API / WebSocket | `8080/tcp` | No, Caddy proxies `/api/*` |
+| Internal bot API | `8081/tcp` | No |
+| PostgreSQL | `5432/tcp` | No |
+| OSRM | `5000/tcp` | No |
+| Photon | `2322/tcp` | No |
+| Bot health (each bot container) | `8090/tcp` | No |
+| Caddy administration | `2019/tcp` | No, container loopback only |
+
+Caddy runs inside the `web` container; it serves the built frontends and
+proxies the API directly. Ports 80/443 must be available for this container.
+The development ports 5173/5174/5175 and local edge ports 8088/8089 are not
+used by the production stack.
 
 ## 4. Preparing the server
 
@@ -103,12 +129,20 @@ cp .env.example .env
 chmod 600 .env
 ```
 
+Use a fresh copy of this template on the server. The laptop's existing `.env`
+is a development configuration with a temporary tunnel and is not suitable
+for production. Do not upload `compose.override.yaml` or use
+`compose.local.yaml` for this deployment.
+
 Edit `.env`:
 
 - `APP_DOMAIN`, `ADMIN_DOMAIN`, `ACME_EMAIL` and the four URLs
   (`PASSENGER_MINIAPP_URL=https://APP_DOMAIN/passenger/`,
   `DRIVER_MINIAPP_URL=https://APP_DOMAIN/driver/`,
   `ADMIN_FRONTEND_URL=https://ADMIN_DOMAIN/`, `API_PUBLIC_URL=https://APP_DOMAIN`).
+  The template already sets the domains and URLs for `jan-taxi.kz`; fill in a
+  real `ACME_EMAIL` and keep `CADDY_GLOBAL_OPTIONS` / `CADDY_SERVER_OPTIONS` empty,
+  `APP_ENV=production` and `ADMIN_COOKIE_SECURE=true`.
 - `POSTGRES_PASSWORD=$(openssl rand -hex 24)`.
 - `SESSION_SECRET=$(openssl rand -hex 32)` and
   `INTERNAL_BOT_SERVICE_SECRET=$(openssl rand -hex 32)` (two different values).
