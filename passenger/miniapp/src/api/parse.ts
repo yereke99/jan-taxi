@@ -158,7 +158,7 @@ function parseCity(v: unknown): CityRef | null {
 
 function parseLeg(v: unknown): RouteLeg {
   const r = rec(v)
-  return { distance_m: num(r.distance_m), duration_s: num(r.duration_s) }
+  return { distance_m: numOrNull(r.distance_m), duration_s: num(r.duration_s) }
 }
 
 export function parseGeoPlace(v: unknown): GeoPlace | null {
@@ -209,8 +209,9 @@ function parseQuoteStop(v: unknown, i: number, count: number): QuoteStop {
   return {
     seq,
     kind: stopKind(r.kind, seq, count),
-    lat: num(r.lat),
-    lon: num(r.lon),
+    mode: r.mode === 'manual' ? 'manual' : 'geocoded',
+    lat: numOrNull(r.lat),
+    lon: numOrNull(r.lon),
     address: str(r.address),
     address_details: strOrNull(r.address_details),
   }
@@ -283,8 +284,8 @@ export function parseQuote(v: unknown): RouteQuote {
     cargo_size: cargoSize(r.cargo_size),
     city: parseCity(r.city),
     stops: stops.map((s, i) => parseQuoteStop(s, i, stops.length)),
-    distance_m: num(r.distance_m),
-    duration_s: num(r.duration_s),
+    distance_m: numOrNull(r.distance_m),
+    duration_s: numOrNull(r.duration_s),
     legs: arr(r.legs).map(parseLeg),
     geometry: parseGeometry(r.geometry),
     bbox: parseBBox(r.bbox),
@@ -304,8 +305,9 @@ function parseStop(v: unknown, i: number, count: number): OrderStop {
     id: str(r.id, `stop-${i}`),
     seq,
     kind: stopKind(r.kind, seq, count),
-    lat: num(r.lat),
-    lon: num(r.lon),
+    mode: r.mode === 'manual' ? 'manual' : 'geocoded',
+    lat: numOrNull(r.lat),
+    lon: numOrNull(r.lon),
     address: str(r.address),
     address_details: strOrNull(r.address_details),
     completed_at: strOrNull(r.completed_at),
@@ -318,8 +320,8 @@ function parseRoute(v: unknown): RouteSnapshot {
     geometry: parseGeometry(r.geometry),
     legs: arr(r.legs).map(parseLeg),
     bbox: parseBBox(r.bbox),
-    distance_m: num(r.distance_m),
-    duration_s: num(r.duration_s),
+    distance_m: numOrNull(r.distance_m),
+    duration_s: numOrNull(r.duration_s),
   }
 }
 
@@ -422,8 +424,8 @@ export function parseOrder(v: unknown): Order {
     comment: strOrNull(r.comment),
     fare: num(r.fare),
     payment_method: paymentMethod(r.payment_method),
-    distance_m: num(r.distance_m),
-    duration_s: num(r.duration_s),
+    distance_m: numOrNull(r.distance_m),
+    duration_s: numOrNull(r.duration_s),
     city: parseCity(r.city),
     stops: stops.map((s, i) => parseStop(s, i, stops.length)).sort((a, b) => a.seq - b.seq),
     route: parseRoute(r.route),
@@ -460,8 +462,9 @@ function parseStopSummary(v: unknown, kind: StopKind): StopSummary {
   return {
     seq: num(r.seq),
     kind: oneOf(STOP_KINDS, r.kind) ?? kind,
-    lat: num(r.lat),
-    lon: num(r.lon),
+    mode: r.mode === 'manual' ? 'manual' : 'geocoded',
+    lat: numOrNull(r.lat),
+    lon: numOrNull(r.lon),
     address: str(r.address),
   }
 }
@@ -483,7 +486,7 @@ export function parseOrderSummary(v: unknown): OrderSummary | null {
     pickup: parseStopSummary(r.pickup, 'pickup'),
     destination: parseStopSummary(r.destination, 'destination'),
     stop_count: num(r.stop_count, 2),
-    distance_m: num(r.distance_m),
+    distance_m: numOrNull(r.distance_m),
     driver_first_name: strOrNull(r.driver_first_name),
     rating: numOrNull(r.rating),
     can_rate: bool(r.can_rate),

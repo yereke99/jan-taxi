@@ -165,7 +165,7 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 		locality                  *string
 	)
 	err := tx.QueryRow(ctx, `
-		SELECT o.category, o.payment_method, o.distance_m, o.duration_s, o.passenger_count, o.cargo_size,
+		SELECT o.category, o.payment_method, COALESCE(o.distance_m,0), COALESCE(o.duration_s,0), o.passenger_count, o.cargo_size,
 		       o.cargo_description, o.comment, vc.name_kk, vc.name_ru, vc.name_en, o.locality
 		FROM orders o JOIN vehicle_classes vc ON vc.code = o.vehicle_class
 		WHERE o.id = $1`, o.ID).Scan(&category, &payment, &distanceM, &durationS, &passengers, &cargoSize,
@@ -188,6 +188,10 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 		"route_duration": durationS,
 		"fare":           o.Fare,
 		"payment_method": payment,
+	}
+	if route.DestinationManual {
+		delete(params, "route_distance")
+		delete(params, "route_duration")
 	}
 	if via := route.ViaText("…"); via != "" {
 		params["via"] = via

@@ -21,7 +21,10 @@ export interface GeoReverse extends GeoPlace {
   in_service_area: boolean
 }
 
-export interface StopInput extends LatLon {
+export interface StopInput {
+  mode?: 'geocoded' | 'manual'
+  lat: number | null
+  lon: number | null
   address: string
   address_details?: string
 }
@@ -41,7 +44,10 @@ export interface CityRef {
   name: LocalizedText
 }
 
-export interface QuoteStop extends LatLon {
+export interface QuoteStop {
+  mode?: 'geocoded' | 'manual'
+  lat: number | null
+  lon: number | null
   seq: number
   kind: StopKind
   address: string
@@ -49,8 +55,8 @@ export interface QuoteStop extends LatLon {
 }
 
 export interface RouteLeg {
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
 }
 
 export interface FareOptions {
@@ -94,8 +100,8 @@ export interface RouteQuote {
   cargo_size: CargoSize | null
   city: CityRef | null
   stops: QuoteStop[]
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
   legs: RouteLeg[]
   geometry: LineStringGeometry | null
   bbox: BBox | null
@@ -117,7 +123,10 @@ export interface OrderCreateRequest {
   idempotency_key: string
 }
 
-export interface OrderStop extends LatLon {
+export interface OrderStop {
+  mode?: 'geocoded' | 'manual'
+  lat: number | null
+  lon: number | null
   id: string
   seq: number
   kind: StopKind
@@ -130,8 +139,8 @@ export interface RouteSnapshot {
   geometry: LineStringGeometry | null
   legs: RouteLeg[]
   bbox: BBox | null
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
 }
 
 export interface OrderDriver {
@@ -242,8 +251,8 @@ export interface Order extends OrderLoad, OrderPlace {
   comment: string | null
   fare: number
   payment_method: PaymentMethod
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
   city: CityRef | null
   stops: OrderStop[]
   route: RouteSnapshot
@@ -274,7 +283,10 @@ export interface Order extends OrderLoad, OrderPlace {
   cancelled_at: string | null
 }
 
-export interface StopSummary extends LatLon {
+export interface StopSummary {
+  mode?: 'geocoded' | 'manual'
+  lat: number | null
+  lon: number | null
   seq: number
   kind: StopKind
   address: string
@@ -290,7 +302,7 @@ export interface OrderSummary extends OrderLoad, OrderPlace {
   pickup: StopSummary
   destination: StopSummary
   stop_count: number
-  distance_m: number
+  distance_m: number | null
   driver_first_name: string | null
   rating: number | null
   can_rate: boolean

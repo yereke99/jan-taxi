@@ -47,6 +47,7 @@ type previewRequest struct {
 }
 
 type stopInput struct {
+	Mode           string   `json:"mode"`
 	Lat            *float64 `json:"lat"`
 	Lon            *float64 `json:"lon"`
 	Address        *string  `json:"address"`
@@ -55,6 +56,7 @@ type stopInput struct {
 
 // quoteStop is the OpenAPI QuoteStop.
 type quoteStop struct {
+	Mode           string  `json:"mode"`
 	Seq            int     `json:"seq"`
 	Kind           string  `json:"kind"`
 	Lat            float64 `json:"lat"`
@@ -162,9 +164,15 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	stops := in.Stops
-	pts := make([]geo.Point, len(stops))
-	for i, s := range stops {
-		pts[i] = geo.Point{Lat: s.Lat, Lon: s.Lon}
+	manual := pricing.Manual(stops)
+	if manual && !settings.ManualDestinations(ctx, h.pool).Allowed() {
+		return httpx.Validation(map[string]string{"stops": "manual_destination_disabled"})
+	}
+	pts := make([]geo.Point, 0, len(stops))
+	for _, s := range stops {
+		if s.Mode != "manual" {
+			pts = append(pts, geo.Point{Lat: s.Lat, Lon: s.Lon})
+		}
 	}
 	if err := geo.RequireInServiceArea(ctx, h.pool, "stops", pts...); err != nil {
 		return err
@@ -180,7 +188,11 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) error {
 	// The locality of the pickup is looked up once, while the route is built.
 	localityCh := make(chan *string, 1)
 	go func() { localityCh <- h.places.Locality(ctx, pts[0]) }()
-	route, err := h.router.Route(ctx, pts)
+	var route Route
+	route.Geometry = json.RawMessage(`null`)
+	if len(pts) > 1 {
+		route, err = h.router.Route(ctx, pts)
+	}
 	if err != nil {
 		if IsRoutingUnavailable(err) {
 			w.Header().Set("Retry-After", retryAfterSeconds)
@@ -203,6 +215,11 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) error {
 	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
 		for i, c := range classes {
 			fares[i] = pricing.Compute(c.Tariff, route.DistanceM, route.DurationS, len(stops))
+			if manual {
+				// This is the administrator's explicit fare range, not a route estimate.
+				t := c.Tariff
+				fares[i] = pricing.Fare{Recommended: t.MinFare, Min: t.MinFare, Max: t.MaxFare, Step: t.FareStep, Options: pricing.Options(t.MinFare, t.MaxFare, t.FareStep)}
+			}
 			q, err := pricing.CreateQuote(ctx, tx, pricing.NewQuote{
 				UserID: principal.UserID, CityID: c.Region.ID, Tariff: c.Tariff, Load: in.Load, Stops: stops,
 				DistanceM: route.DistanceM, DurationS: route.DurationS, Legs: route.Legs,
@@ -315,7 +332,7 @@ func buildQuote(q pricing.StoredQuote, city cities.City, fare pricing.Fare) rout
 		Options: []classOption{},
 	}
 	for i, s := range q.Stops {
-		qs := quoteStop{Seq: i, Kind: StopKind(i, len(q.Stops)), Lat: s.Lat, Lon: s.Lon, Address: s.Address}
+		qs := quoteStop{Mode: s.Mode, Seq: i, Kind: StopKind(i, len(q.Stops)), Lat: s.Lat, Lon: s.Lon, Address: s.Address}
 		if s.AddressDetails != "" {
 			d := s.AddressDetails
 			qs.AddressDetails = &d
@@ -400,8 +417,24 @@ func (req previewRequest) validateRoute(maxPoints int) (previewInput, error) {
 	for i, in := range req.Stops {
 		p := "stops." + strconv.Itoa(i) + "."
 		s := &stops[i]
-		s.Lat = coordinate(fields, p+"lat", in.Lat, 90)
-		s.Lon = coordinate(fields, p+"lon", in.Lon, 180)
+		s.Mode = in.Mode
+		if s.Mode == "" {
+			s.Mode = "geocoded"
+		}
+		if s.Mode == "manual" {
+			if i != len(req.Stops)-1 {
+				fields[p+"mode"] = "manual_destination_only"
+			}
+			if in.Lat != nil || in.Lon != nil {
+				fields[p+"lat"] = "not_allowed"
+			}
+		} else {
+			if s.Mode != "geocoded" {
+				fields[p+"mode"] = "invalid"
+			}
+			s.Lat = coordinate(fields, p+"lat", in.Lat, 90)
+			s.Lon = coordinate(fields, p+"lon", in.Lon, 180)
+		}
 		if in.Address == nil {
 			fields[p+"address"] = "required"
 		} else if a, err := textutil.CleanRequired(*in.Address, maxAddressLen); err != nil {
@@ -421,7 +454,7 @@ func (req previewRequest) validateRoute(maxPoints int) (previewInput, error) {
 		return previewInput{}, httpx.Validation(fields)
 	}
 	for i := 1; i < len(stops); i++ {
-		if stops[i].Lat == stops[i-1].Lat && stops[i].Lon == stops[i-1].Lon {
+		if stops[i].Mode != "manual" && stops[i].Lat == stops[i-1].Lat && stops[i].Lon == stops[i-1].Lon {
 			fields["stops."+strconv.Itoa(i)] = "duplicate"
 		}
 	}
@@ -443,4 +476,57 @@ func coordinate(fields map[string]string, key string, v *float64, limit float64)
 		return math.Round(*v*1e6) / 1e6
 	}
 	return 0
+}
+
+func (q routeQuote) MarshalJSON() ([]byte, error) {
+	type plain routeQuote
+	if len(q.Stops) == 0 || q.Stops[len(q.Stops)-1].Mode != "manual" {
+		return json.Marshal(plain(q))
+	}
+	b, err := json.Marshal(plain(q))
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err = json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	if len(q.Stops) > 0 && q.Stops[len(q.Stops)-1].Mode == "manual" {
+		m["distance_m"], m["duration_s"] = nil, nil
+		m["pricing_mode"] = "passenger_tariff_bounds"
+		if len(q.Legs) == 0 {
+			m["bbox"] = nil
+		}
+		if fare, ok := m["fare"].(map[string]any); ok {
+			fare["recommended"] = nil
+		}
+		if opts, ok := m["options"].([]any); ok {
+			for _, o := range opts {
+				if opt, ok := o.(map[string]any); ok {
+					if f, ok := opt["fare"].(map[string]any); ok {
+						f["recommended"] = nil
+					}
+				}
+			}
+		}
+	}
+	return json.Marshal(m)
+}
+func (s quoteStop) MarshalJSON() ([]byte, error) {
+	type plain quoteStop
+	if s.Mode != "manual" {
+		return json.Marshal(plain(s))
+	}
+	b, err := json.Marshal(plain(s))
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err = json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	if s.Mode == "manual" {
+		m["lat"], m["lon"] = nil, nil
+	}
+	return json.Marshal(m)
 }

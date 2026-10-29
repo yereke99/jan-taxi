@@ -2,19 +2,19 @@
 // history (newest first). Nothing is stored on the device.
 
 import type { OrderStop, OrderSummary, StopSummary } from '../api/types'
-import { haversineMeters } from '../utils/geo'
+import { hasCoordinates, haversineMeters } from '../utils/geo'
 import type { PlaceValue } from './route'
 
 /** Two history points closer than this are the same place. */
 const SAME_PLACE_M = 60
 
 function toPlace(s: StopSummary | OrderStop, source: string): PlaceValue {
-  return { lat: s.lat, lon: s.lon, address: s.address, subtitle: null, source, inServiceArea: true }
+  return { lat: s.lat, lon: s.lon, address: s.address, subtitle: null, source: s.mode === 'manual' ? 'manual' : source, inServiceArea: s.mode === 'manual' ? null : true }
 }
 
 function pushUnique(out: PlaceValue[], p: PlaceValue): void {
   if (!p.address) return
-  const dup = out.some((q) => q.address === p.address || haversineMeters(q, p) < SAME_PLACE_M)
+  const dup = out.some((q) => q.address === p.address || (hasCoordinates(q) && hasCoordinates(p) && haversineMeters(q, p) < SAME_PLACE_M))
   if (!dup) out.push(p)
 }
 

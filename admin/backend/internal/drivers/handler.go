@@ -9,6 +9,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // Options configure the driver endpoints.
@@ -31,6 +32,7 @@ type Handler struct {
 	pool            *pgxpool.Pool
 	store           *storage.Store
 	opt             Options
+	verification    *verification.Service
 	locationLimiter *httpx.RateLimiter
 }
 
@@ -41,6 +43,8 @@ func NewHandler(pool *pgxpool.Pool, store *storage.Store, opt Options) *Handler 
 	}
 	return &Handler{pool: pool, store: store, opt: opt, locationLimiter: httpx.NewRateLimiter(locationPerMinute, locationBurst)}
 }
+
+func (h *Handler) WithVerification(s *verification.Service) *Handler { h.verification = s; return h }
 
 // MountDriver mounts the driver Mini App routes (router with the driver app
 // token and the optional driver profile already loaded).

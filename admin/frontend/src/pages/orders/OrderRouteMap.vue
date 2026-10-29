@@ -8,6 +8,7 @@ import { LngLatBounds, Marker, type GeoJSONSource, type Map as MapLibreMap } fro
 import { onBeforeUnmount, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DriverLocation, RouteSnapshot, Stop } from '../../api/orders'
+import { hasStopCoordinates } from '../../api/orders'
 import { STOP_LETTERS } from '../../maps/constants'
 import { featureCollection, type FeatureCollection } from '../../maps/geojson'
 import MapView from '../../maps/MapView.vue'
@@ -27,8 +28,9 @@ function routeData(): FeatureCollection {
       { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: g.coordinates.map((c): [number, number] => [c[0], c[1]]) } },
     ])
   }
-  // Without a stored geometry, connect the stops so the order is still readable.
-  const coords = [...props.stops].sort((a, b) => a.seq - b.seq).map((s): [number, number] => [s.lon, s.lat])
+  // A manual endpoint has no route; do not fabricate a final segment.
+  if (props.stops.some((s) => !hasStopCoordinates(s))) return featureCollection()
+  const coords = [...props.stops].filter(hasStopCoordinates).sort((a, b) => a.seq - b.seq).map((s): [number, number] => [s.lon, s.lat])
   return coords.length > 1
     ? featureCollection([{ type: 'Feature', properties: { fallback: true }, geometry: { type: 'LineString', coordinates: coords } }])
     : featureCollection()
@@ -53,6 +55,7 @@ function draw(): void {
   markers = []
   const bounds = new LngLatBounds()
   for (const s of [...props.stops].sort((a, b) => a.seq - b.seq)) {
+    if (!hasStopCoordinates(s)) continue
     const letter = STOP_LETTERS[s.seq] ?? String(s.seq + 1)
     markers.push(new Marker({ element: stopMarkerElement(letter, `${letter}: ${s.address}`) }).setLngLat([s.lon, s.lat]).addTo(m))
     bounds.extend([s.lon, s.lat])

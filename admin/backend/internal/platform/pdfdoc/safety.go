@@ -56,6 +56,49 @@ func (d *Doc) ActiveContent() []string {
 	return out
 }
 
+// InspectionComplete reports whether every dictionary can be inspected within
+// the safety traversal budget. Identity uploads fail closed on overly nested
+// input instead of treating an incomplete inspection as evidence of safety.
+// Existing receipt handling retains its separate compatibility policy.
+func (d *Doc) InspectionComplete() bool {
+	nodes := 0
+	var walk func(Object, int) bool
+	walk = func(o Object, depth int) bool {
+		nodes++
+		if depth > 32 || nodes > 2_000_000 {
+			return false
+		}
+		switch v := o.(type) {
+		case Dict:
+			for _, val := range v {
+				if !walk(val, depth+1) {
+					return false
+				}
+			}
+		case Array:
+			for _, val := range v {
+				if !walk(val, depth+1) {
+					return false
+				}
+			}
+		case *Stream:
+			return walk(v.Dict, depth+1)
+		}
+		return true
+	}
+	for _, e := range d.objects {
+		if !walk(e.obj, 0) {
+			return false
+		}
+	}
+	for _, t := range d.trls {
+		if !walk(t.dict, 0) {
+			return false
+		}
+	}
+	return true
+}
+
 // HasForm reports an interactive form (AcroForm) in the catalog.
 func (d *Doc) HasForm() bool {
 	root := d.Root()

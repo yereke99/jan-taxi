@@ -12,6 +12,7 @@ import (
 
 // Input is one point of a new order, in route order.
 type Input struct {
+	Mode           string
 	Lat, Lon       float64
 	Address        string
 	AddressDetails *string
@@ -26,6 +27,20 @@ func Insert(ctx context.Context, q db.Querier, orderID uuid.UUID, in []Input) ([
 	}
 	out := make([]Stop, 0, len(in))
 	for i, p := range in {
+		if p.Mode == "" {
+			p.Mode = "geocoded"
+		}
+		if p.Mode != "geocoded" && p.Mode != "manual" {
+			return nil, fmt.Errorf("stops: invalid mode")
+		}
+		if p.Mode == "manual" && i != len(in)-1 {
+			return nil, fmt.Errorf("stops: manual point must be final")
+		}
+		if p.Mode == "manual" {
+			if _, err := CleanAddress(p.Address); err != nil {
+				return nil, err
+			}
+		}
 		// Points come from a server-side quote that was validated when it was
 		// created, so over-long text is cut rather than rejected here.
 		address := truncate(textutil.Clean(p.Address), MaxAddressLen)
@@ -38,12 +53,12 @@ func Insert(ctx context.Context, q db.Querier, orderID uuid.UUID, in []Input) ([
 				details = &d
 			}
 		}
-		s := Stop{ID: uuid.New(), Seq: i, Kind: KindFor(i, len(in)), Lat: p.Lat, Lon: p.Lon,
+		s := Stop{Mode: p.Mode, ID: uuid.New(), Seq: i, Kind: KindFor(i, len(in)), Lat: p.Lat, Lon: p.Lon,
 			Address: address, AddressDetails: details}
 		if _, err := q.Exec(ctx, `
-			INSERT INTO order_stops (id, order_id, seq, kind, lat, lon, address, address_details)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			s.ID, orderID, s.Seq, s.Kind, s.Lat, s.Lon, s.Address, s.AddressDetails); err != nil {
+			INSERT INTO order_stops (id, order_id, seq, kind, lat, lon, address, address_details, mode)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			s.ID, orderID, s.Seq, s.Kind, coordinate(s.Lat, s.Mode), coordinate(s.Lon, s.Mode), s.Address, s.AddressDetails, s.Mode); err != nil {
 			return nil, fmt.Errorf("stops: insert: %w", err)
 		}
 		out = append(out, s)
@@ -67,7 +82,7 @@ func ForOrders(ctx context.Context, q db.Querier, orderIDs []uuid.UUID) (map[uui
 		return out, nil
 	}
 	rows, err := q.Query(ctx, `
-		SELECT order_id, id, seq, kind, lat, lon, address, address_details, completed_at
+		SELECT order_id, id, seq, kind, COALESCE(lat, 0), COALESCE(lon, 0), address, address_details, completed_at, mode
 		FROM order_stops WHERE order_id = ANY($1) ORDER BY order_id, seq`, orderIDs)
 	if err != nil {
 		return nil, fmt.Errorf("stops: load: %w", err)
@@ -76,7 +91,7 @@ func ForOrders(ctx context.Context, q db.Querier, orderIDs []uuid.UUID) (map[uui
 	for rows.Next() {
 		var orderID uuid.UUID
 		var s Stop
-		if err := rows.Scan(&orderID, &s.ID, &s.Seq, &s.Kind, &s.Lat, &s.Lon, &s.Address, &s.AddressDetails, &s.CompletedAt); err != nil {
+		if err := rows.Scan(&orderID, &s.ID, &s.Seq, &s.Kind, &s.Lat, &s.Lon, &s.Address, &s.AddressDetails, &s.CompletedAt, &s.Mode); err != nil {
 			return nil, fmt.Errorf("stops: scan: %w", err)
 		}
 		if s.CompletedAt != nil {
@@ -117,4 +132,11 @@ func truncate(s string, max int) string {
 		c = c[:max]
 	}
 	return string(c)
+}
+
+func coordinate(v float64, mode string) any {
+	if mode == "manual" {
+		return nil
+	}
+	return v
 }

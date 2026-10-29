@@ -13,7 +13,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { driversApi, type AdminDriverListItem, type DriverLastLocation } from '../../api/drivers'
-import { ordersApi, type AdminOrder } from '../../api/orders'
+import { hasStopCoordinates, ordersApi, type AdminOrder } from '../../api/orders'
 import { AppButton, AppSpinner, Modal, TextInput, ToggleSwitch } from '../../components'
 import { useErrors } from '../../composables/useErrors'
 import { useFormat } from '../../composables/useFormat'
@@ -99,7 +99,7 @@ async function search(): Promise<void> {
 function distanceTo(d: AdminDriverListItem): number | null {
   const loc = locations.value.get(d.id)
   const p = pickup.value
-  return loc && p ? distanceMeters(loc, p) : null
+  return loc && p && hasStopCoordinates(p) ? distanceMeters(loc, p) : null
 }
 
 /** Nearest to the pickup first; drivers without a known location last. */

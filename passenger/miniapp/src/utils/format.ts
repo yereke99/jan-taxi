@@ -41,8 +41,8 @@ const DISTANCE_UNITS: Record<Locale, { m: string; km: string }> = {
  * Formats a distance in metres: "850 м", "2,4 км", "120 км" (kk/ru) and
  * "850 m", "2.4 km" (en). Under 1 km rounds to 10 m; from 100 km whole km.
  */
-export function formatDistance(meters: number, locale: Locale): string {
-  if (!Number.isFinite(meters) || meters < 0) return '—'
+export function formatDistance(meters: number | null, locale: Locale): string {
+  if (meters === null || !Number.isFinite(meters) || meters < 0) return '—'
   const u = DISTANCE_UNITS[locale]
   if (meters < 1000) {
     const rounded = Math.max(10, Math.round(meters / 10) * 10)
@@ -60,8 +60,8 @@ const DURATION_UNITS: Record<Locale, { min: string; h: string }> = {
 }
 
 /** Formats a duration in seconds: "12 мин", "1 сағ 5 мин" / "1 ч 5 мин" / "1 h 5 min". */
-export function formatDuration(seconds: number, locale: Locale): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '—'
+export function formatDuration(seconds: number | null, locale: Locale): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return '—'
   const u = DURATION_UNITS[locale]
   const totalMin = Math.max(1, Math.round(seconds / 60))
   if (totalMin < 60) return `${totalMin}${NBSP}${u.min}`

@@ -72,6 +72,7 @@ export interface OrderRef {
 }
 
 export interface FileRef {
+ mime?: string
   id: string
   kind: string
   url: string

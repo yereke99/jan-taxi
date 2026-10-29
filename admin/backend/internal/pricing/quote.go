@@ -30,6 +30,7 @@ var ErrQuoteNotFound = httpx.NewError(http.StatusNotFound, "not_found", "quote n
 
 // QuoteStop is one stop as stored in a quote, in route order (pickup first).
 type QuoteStop struct {
+	Mode           string  `json:"mode,omitempty"`
 	Lat            float64 `json:"lat"`
 	Lon            float64 `json:"lon"`
 	Address        string  `json:"address"`
@@ -120,7 +121,7 @@ func (q StoredQuote) Commission(fare int) int { return Commission(fare, q.Commis
 func StopsHash(stops []QuoteStop) string {
 	h := sha256.New()
 	for i, s := range stops {
-		fmt.Fprintf(h, "%d|%s|%s|%s|%s\n", i,
+		fmt.Fprintf(h, "%d|%s|%s|%s|%s|%s\n", i, s.Mode,
 			strconv.FormatFloat(round6(s.Lat), 'f', 6, 64), strconv.FormatFloat(round6(s.Lon), 'f', 6, 64),
 			strconv.Quote(s.Address), strconv.Quote(s.AddressDetails))
 	}
@@ -146,16 +147,17 @@ type NewQuote struct {
 
 // storedStop is the JSON shape of fare_quotes.stops.
 type storedStop struct {
-	Lat            float64 `json:"lat"`
-	Lon            float64 `json:"lon"`
-	Address        string  `json:"address"`
-	AddressDetails *string `json:"address_details"`
+	Lat            *float64 `json:"lat"`
+	Lon            *float64 `json:"lon"`
+	Mode           string   `json:"mode"`
+	Address        string   `json:"address"`
+	AddressDetails *string  `json:"address_details"`
 }
 
 // CreateQuote stores a quote priced with in.Tariff. Coordinates are rounded to
 // 6 decimals; expires_at is computed by the database clock.
 func CreateQuote(ctx context.Context, q db.Querier, in NewQuote) (StoredQuote, error) {
-	if len(in.Stops) < 2 || len(in.Legs) != len(in.Stops)-1 {
+	if len(in.Stops) < 2 || (!Manual(in.Stops) && len(in.Legs) != len(in.Stops)-1) {
 		return StoredQuote{}, fmt.Errorf("create quote: %d stops and %d legs", len(in.Stops), len(in.Legs))
 	}
 	ttl := in.TTL
@@ -167,7 +169,11 @@ func CreateQuote(ctx context.Context, q db.Querier, in NewQuote) (StoredQuote, e
 	for i, s := range in.Stops {
 		s.Lat, s.Lon = round6(s.Lat), round6(s.Lon)
 		stops[i] = s
-		raw[i] = storedStop{Lat: s.Lat, Lon: s.Lon, Address: s.Address}
+		raw[i] = storedStop{Mode: s.Mode, Address: s.Address}
+		if s.Mode != "manual" {
+			lat, lon := s.Lat, s.Lon
+			raw[i].Lat, raw[i].Lon = &lat, &lon
+		}
 		if s.AddressDetails != "" {
 			d := s.AddressDetails
 			raw[i].AddressDetails = &d
@@ -181,7 +187,11 @@ func CreateQuote(ctx context.Context, q db.Querier, in NewQuote) (StoredQuote, e
 	if err != nil {
 		return StoredQuote{}, fmt.Errorf("encode legs: %w", err)
 	}
-	bboxJSON, err := json.Marshal(in.BBox)
+	var bbox any = in.BBox
+	if Manual(in.Stops) && len(in.Legs) == 0 {
+		bbox = nil
+	}
+	bboxJSON, err := json.Marshal(bbox)
 	if err != nil {
 		return StoredQuote{}, fmt.Errorf("encode bbox: %w", err)
 	}
@@ -201,7 +211,7 @@ func CreateQuote(ctx context.Context, q db.Querier, in NewQuote) (StoredQuote, e
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
 		        now() + make_interval(secs => $17), $18, $19, $20, $21, $22)
 		RETURNING id, expires_at`,
-		sq.UserID, sq.CityID, sq.TariffID, sq.Category, stopsJSON, sq.StopsHash, sq.DistanceM, sq.DurationS,
+		sq.UserID, sq.CityID, sq.TariffID, sq.Category, stopsJSON, sq.StopsHash, Metric(sq.DistanceM, Manual(sq.Stops)), Metric(sq.DurationS, Manual(sq.Stops)),
 		legsJSON, []byte(sq.Geometry), bboxJSON, sq.RecommendedFare, sq.MinFare, sq.MaxFare, sq.FareStep,
 		sq.CommissionBps, ttl.Seconds(), sq.VehicleClass, sq.PassengerCount, sq.CargoSize, sq.CargoVolumeL, sq.Locality,
 	).Scan(&sq.ID, &sq.ExpiresAt)
@@ -224,7 +234,7 @@ func LoadQuoteForUpdate(ctx context.Context, tx pgx.Tx, quoteID, userID uuid.UUI
 		passengers                *int16
 	)
 	err := tx.QueryRow(ctx, `
-		SELECT id, user_id, city_id, tariff_id, category, stops, stops_hash, distance_m, duration_s, legs, geometry,
+		SELECT id, user_id, city_id, tariff_id, category, stops, stops_hash, COALESCE(distance_m,0), COALESCE(duration_s,0), legs, geometry,
 		       bbox, recommended_fare, min_fare, max_fare, fare_step, commission_bps, expires_at, used_at,
 		       expires_at <= now(), vehicle_class, passenger_count, cargo_size, cargo_volume_l, locality
 		FROM fare_quotes
@@ -255,7 +265,17 @@ func LoadQuoteForUpdate(ctx context.Context, tx pgx.Tx, quoteID, userID uuid.UUI
 	}
 	sq.Stops = make([]QuoteStop, len(raw))
 	for i, s := range raw {
-		sq.Stops[i] = QuoteStop{Lat: s.Lat, Lon: s.Lon, Address: s.Address}
+		sq.Stops[i] = QuoteStop{Mode: s.Mode, Address: s.Address}
+		if s.Mode == "manual" {
+			if i != len(raw)-1 || s.Lat != nil || s.Lon != nil {
+				return StoredQuote{}, fmt.Errorf("invalid stored manual stop")
+			}
+		} else {
+			if s.Lat == nil || s.Lon == nil {
+				return StoredQuote{}, fmt.Errorf("stored geocoded stop lacks coordinates")
+			}
+			sq.Stops[i].Lat, sq.Stops[i].Lon = *s.Lat, *s.Lon
+		}
 		if s.AddressDetails != nil {
 			sq.Stops[i].AddressDetails = *s.AddressDetails
 		}
@@ -313,3 +333,13 @@ func CleanupQuotes(ctx context.Context, q db.Querier, olderThan time.Duration) (
 }
 
 func round6(v float64) float64 { return math.Round(v*1e6) / 1e6 }
+
+func Manual(list []QuoteStop) bool { return len(list) > 0 && list[len(list)-1].Mode == "manual" }
+
+// Metric preserves unknown full-route values as SQL NULL rather than zero.
+func Metric(v int, unknown bool) any {
+	if unknown {
+		return nil
+	}
+	return v
+}

@@ -18,8 +18,8 @@ export interface Formatters {
   money: (amount: number) => string
   /** Signed amount for ledger rows: "+2 000 ₸" / "−200 ₸". */
   signedMoney: (amount: number) => string
-  distance: (meters: number) => string
-  duration: (seconds: number) => string
+  distance: (meters: number | null) => string
+  duration: (seconds: number | null) => string
   relative: (date: string | number | Date) => string
   date: (date: string | number | Date) => string
   dateTime: (date: string | number | Date) => string

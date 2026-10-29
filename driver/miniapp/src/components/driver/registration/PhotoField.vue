@@ -45,6 +45,7 @@ const task = useUploadTask<FileRef>(
     haptics.notification('success')
     emit('uploaded', file)
   },
+  props.kind === 'id_front' || props.kind === 'id_back',
 )
 
 const busy = computed(() => task.state.value === 'preparing' || task.state.value === 'uploading')
@@ -79,7 +80,7 @@ function onFile(e: Event): void {
     </div>
 
     <div class="photo__frame">
-      <PrivateImage :url="file?.url ?? null" :preview-url="task.previewUrl.value" :alt="label" :round="round">
+      <PrivateImage :url="file?.url ?? null" :preview-url="task.previewUrl.value" :pdf="file?.mime === 'application/pdf'" :alt="label" :round="round">
         <template #empty>
           <button type="button" class="photo__empty" :disabled="locked" @click="pick(cameraInput)">
             <Camera :size="round ? 28 : 32" :stroke-width="1.6" aria-hidden="true" />
@@ -95,6 +96,7 @@ function onFile(e: Event): void {
       </div>
     </div>
 
+    <p v-if="(kind === 'id_front' || kind === 'id_back') && !locked" class="photo__hint">{{ t('registration.identity.pdf_hint') }}</p>
     <p v-if="hint && !locked" class="photo__hint">{{ hint }}</p>
     <p v-if="locked" class="photo__hint">{{ t('registration.locked') }}</p>
 
@@ -118,7 +120,7 @@ function onFile(e: Event): void {
     </div>
 
     <input ref="cameraInput" class="jt-visually-hidden" type="file" accept="image/*" :capture="facing" tabindex="-1" @change="onFile" />
-    <input ref="galleryInput" class="jt-visually-hidden" type="file" accept="image/*" tabindex="-1" @change="onFile" />
+    <input ref="galleryInput" class="jt-visually-hidden" type="file"  :accept="kind === 'id_front' || kind === 'id_back' ? 'image/*,application/pdf' : 'image/*'" tabindex="-1" @change="onFile" />
   </div>
 </template>
 

@@ -123,13 +123,14 @@ func (h *Handler) exportOrders(w http.ResponseWriter, r *http.Request) error {
 	return h.export(w, r, "orders.csv", p, filters, header, query, []any{p.From, p.To, cityID, status},
 		func(rows pgx.Rows) ([]Cell, error) {
 			var (
-				number, fare, commission, distance, duration, stops int64
-				id                                                  uuid.UUID
-				created                                             time.Time
-				city, category, st, currency, payment               string
-				pickup, destination, driver, cancelledBy, reason    *string
-				locality                                            *string
-				accepted, started, completed, cancelled             *time.Time
+				number, fare, commission, stops                  int64
+				distance, duration                               *int64
+				id                                               uuid.UUID
+				created                                          time.Time
+				city, category, st, currency, payment            string
+				pickup, destination, driver, cancelledBy, reason *string
+				locality                                         *string
+				accepted, started, completed, cancelled          *time.Time
 			)
 			if err := rows.Scan(&number, &id, &created, &city, &locality, &category, &st, &fare, &commission, &currency, &payment,
 				&distance, &duration, &stops, &pickup, &destination, &driver, &accepted, &started, &completed,
@@ -137,7 +138,7 @@ func (h *Handler) exportOrders(w http.ResponseWriter, r *http.Request) error {
 				return nil, err
 			}
 			return []Cell{Int(number), Text(id.String()), Time(&created, loc), Text(city), TextPtr(locality), Text(category), Text(st),
-				Int(fare), Int(commission), Text(currency), Text(payment), Int(distance), Int(duration), Int(stops),
+				Int(fare), Int(commission), Text(currency), Text(payment), nullableInt(distance), nullableInt(duration), Int(stops),
 				TextPtr(pickup), TextPtr(destination), TextPtr(driver), Time(accepted, loc), Time(started, loc),
 				Time(completed, loc), Time(cancelled, loc), TextPtr(cancelledBy), TextPtr(reason)}, nil
 		})
@@ -236,4 +237,11 @@ func (h *Handler) exportTopUps(w http.ResponseWriter, r *http.Request) error {
 				Time(reported, loc), Time(confirmed, loc), TextPtr(confirmedBy), Time(rejected, loc),
 				TextPtr(rejectReason), Time(refunded, loc), TextPtr(refundReason), Time(&expires, loc)}, nil
 		})
+}
+
+func nullableInt(v *int64) Cell {
+	if v == nil {
+		return Text("")
+	}
+	return Int(*v)
 }

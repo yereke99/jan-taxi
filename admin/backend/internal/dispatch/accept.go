@@ -276,6 +276,9 @@ func lowBalanceKey(driverID uuid.UUID) string {
 // returns the commission charged.
 func assigned(ctx context.Context, tx pgx.Tx, before, after lifecycle.Core, actor lifecycle.Actor, prev *uuid.UUID, opts AcceptOptions) (int64, error) {
 	driverID := *after.DriverID
+	if err := notifications.CancelOrderContacts(ctx, tx, after.ID); err != nil {
+		return 0, err
+	}
 	charged, err := wallets.ChargeOnAccept(ctx, tx, driverID, after.ID, after.CommissionAmount, after.Version)
 	if err != nil {
 		if errors.Is(err, wallets.ErrInsufficientBalance) {

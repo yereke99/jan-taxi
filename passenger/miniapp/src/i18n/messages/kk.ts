@@ -2,6 +2,17 @@
 // i18n/core; ru.ts and en.ts must provide exactly the same keys.
 
 export const kk = {
+  manual: {
+    action: "Мекенжай табылмады ма? Қолмен енгізіңіз",
+    helper: "Баратын жердің атауын немесе жергілікті тұрғындарға белгілі орынды жазыңыз.",
+    use_search: "Мекенжайды іздеу",
+    save: "Сақтау",
+    label: "Жолаушы көрсеткен орын",
+    route_unknown: "Маршрут есептелмеген",
+    fare_hint: "Бағаны әкімші белгілеген тариф шегінде көрсетіңіз.",
+    fare_required: "Жол ақысын таңдаңыз.",
+    copy_destination: "Баратын жерді көшіру",
+  },
   home: {
     greeting: 'Сәлеметсіз бе, {name}!',
     greeting_anonymous: 'Сәлеметсіз бе!',

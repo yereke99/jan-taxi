@@ -61,7 +61,7 @@ export function uploadRegistrationFile(
 ): Promise<FileRef> {
   const form = new FormData()
   form.append('kind', kind)
-  form.append('file', file, `${kind}.jpg`)
+  form.append('file', file, `${kind}.${file.type === 'application/pdf' ? 'pdf' : 'jpg'}`)
   return uploadWithProgress<FileRef>('/driver/registration/files', form, opts)
 }
 

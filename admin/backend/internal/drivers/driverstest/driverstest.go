@@ -32,6 +32,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // AdminHeader carries "<admin id>:<role>" for the injected admin principal.
@@ -39,15 +40,16 @@ const AdminHeader = "X-Test-Admin"
 
 // Env is a test environment.
 type Env struct {
-	T     testing.TB
-	Pool  *pgxpool.Pool
-	Auth  *auth.Service
-	Store *storage.Store
-	H     http.Handler
+	T            testing.TB
+	Pool         *pgxpool.Pool
+	Auth         *auth.Service
+	Store        *storage.Store
+	H            http.Handler
+	Verification *verification.Service
 }
 
 // New builds an environment on a fresh database.
-func New(t testing.TB) *Env {
+func New(t testing.TB, options ...verification.Options) *Env {
 	t.Helper()
 	pool := testutil.NewDB(t)
 	svc, err := auth.NewService(pool, auth.Config{
@@ -75,14 +77,21 @@ func New(t testing.TB) *Env {
 	root := chi.NewRouter()
 	root.Mount("/api/v1", api)
 
-	dh := drivers.NewHandler(pool, store, drivers.Options{DefaultCity: "EMB", MaxUploadBytes: 10 << 20})
+	var identity *verification.Service
+	if len(options) > 0 {
+		identity, err = verification.NewService(pool, options[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	dh := drivers.NewHandler(pool, store, drivers.Options{DefaultCity: "EMB", MaxUploadBytes: 10 << 20}).WithVerification(identity)
 	dh.MountDriver(driverR)
 	dh.MountPassenger(passengerR)
 	dh.MountAdmin(adminR)
-	mh := moderation.NewHandler(pool)
+	mh := moderation.NewHandler(pool).WithVerification(identity)
 	mh.MountDriver(driverR)
 	mh.MountAdmin(adminR)
-	return &Env{T: t, Pool: pool, Auth: svc, Store: store, H: root}
+	return &Env{T: t, Pool: pool, Auth: svc, Store: store, H: root, Verification: identity}
 }
 
 func injectAdmin(next http.Handler) http.Handler {

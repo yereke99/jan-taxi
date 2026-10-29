@@ -1,6 +1,18 @@
 // Drivers, driver detail, moderation queue and wallet adjustments.
 
 const kk = {
+  verification: "Құжаттарды тексеру",
+  entered_identity: "Жүргізуші көрсеткен деректер",
+  extracted_identity: "Құжаттан оқылған деректер",
+  verification_confidence: "Оқу сенімділігі",
+  verification_reasons: "Тексеру себептері",
+  verification_history: "Тексеру тарихы",
+  verification_queue: "Тексеру кезегі",
+  iin: "ЖСН",
+  document_number: "Құжат нөмірі",
+  patronymic: "Әкесінің аты (бар болса)",
+  document_type: "Құжат түрі",
+
   code: 'Код',
   full_name: 'Аты-жөні',
   online: 'Желіде',
@@ -144,6 +156,18 @@ const kk = {
 export type DriversMessages = typeof kk
 
 const ru: DriversMessages = {
+  verification: "Проверка документов",
+  entered_identity: "Данные водителя",
+  extracted_identity: "Данные из документа",
+  verification_confidence: "Уверенность распознавания",
+  verification_reasons: "Причины проверки",
+  verification_history: "История проверки",
+  verification_queue: "Очередь проверки",
+  iin: "ИИН",
+  document_number: "Номер документа",
+  patronymic: "Отчество (при наличии)",
+  document_type: "Тип документа",
+
   code: 'Код',
   full_name: 'Имя и фамилия',
   online: 'На линии',
@@ -285,6 +309,18 @@ const ru: DriversMessages = {
 }
 
 const en: DriversMessages = {
+  verification: "Document verification",
+  entered_identity: "Driver-entered details",
+  extracted_identity: "Extracted document details",
+  verification_confidence: "Recognition confidence",
+  verification_reasons: "Review reasons",
+  verification_history: "Verification history",
+  verification_queue: "Verification queue",
+  iin: "IIN",
+  document_number: "Document number",
+  patronymic: "Patronymic (if present)",
+  document_type: "Document type",
+
   code: 'Code',
   full_name: 'Name',
   online: 'Online',

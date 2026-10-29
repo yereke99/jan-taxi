@@ -81,3 +81,8 @@ export function bearingDegrees(a: LatLon, b: LatLon): number {
     Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lon - a.lon))
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360
 }
+
+/** Only real coordinate pairs are eligible for markers, distance and navigation. */
+export function hasCoordinates<T extends { lat: number | null; lon: number | null }>(p: T): p is T & LatLon {
+ return typeof p.lat === 'number' && Number.isFinite(p.lat) && typeof p.lon === 'number' && Number.isFinite(p.lon)
+}

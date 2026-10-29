@@ -118,7 +118,7 @@ type Vehicle struct {
 const recordColumns = `
 	o.id, o.number, o.passenger_id, o.city_id, o.category, o.service_type, o.cargo_type, o.cargo_description,
 	o.recipient_phone, o.prohibited_items_ack, o.comment, o.status, o.driver_id, o.vehicle_id, o.fare, o.currency,
-	o.commission_bps, o.commission_amount, o.payment_method, o.tariff_id, o.quote_id, o.distance_m, o.duration_s,
+	o.commission_bps, o.commission_amount, o.payment_method, o.tariff_id, o.quote_id, COALESCE(o.distance_m,0), COALESCE(o.duration_s,0),
 	o.stop_count, o.cancel_reason, o.cancelled_by, o.search_expires_at, o.accepted_at, o.arrived_at, o.started_at,
 	o.completed_at, o.cancelled_at, o.version, o.created_at, o.updated_at,
 	o.cancel_reason_code, o.commission_mode, o.driver_eta_s, o.driver_eta_at,
@@ -201,6 +201,7 @@ func loadRecord(ctx context.Context, q db.Querier, id uuid.UUID) (record, error)
 
 // RouteSnapshot is the immutable route stored with the order (openapi RouteSnapshot).
 type RouteSnapshot struct {
+	Unknown   bool            `json:"-"`
 	Geometry  json.RawMessage `json:"geometry"`
 	Legs      json.RawMessage `json:"legs"`
 	BBox      json.RawMessage `json:"bbox"`
@@ -218,8 +219,8 @@ func loadRoute(ctx context.Context, q db.Querier, orderID uuid.UUID) (RouteSnaps
 	var s RouteSnapshot
 	var geometry, legs, bbox []byte
 	err := q.QueryRow(ctx, `
-		SELECT geometry, legs, bbox, distance_m, duration_s FROM order_route_snapshots WHERE order_id = $1`, orderID).
-		Scan(&geometry, &legs, &bbox, &s.DistanceM, &s.DurationS)
+		SELECT geometry, legs, bbox, COALESCE(distance_m,0), COALESCE(duration_s,0), distance_m IS NULL FROM order_route_snapshots WHERE order_id = $1`, orderID).
+		Scan(&geometry, &legs, &bbox, &s.DistanceM, &s.DurationS, &s.Unknown)
 	if err != nil && !db.IsNoRows(err) {
 		return RouteSnapshot{}, fmt.Errorf("orders: load route: %w", err)
 	}

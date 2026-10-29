@@ -45,10 +45,14 @@ func grantWelcomeBonus(ctx context.Context, tx pgx.Tx, r *http.Request, admin au
 	if phone == nil || *phone == "" {
 		return 0, nil
 	}
+	var actor any
+	if admin.AdminID != uuid.Nil {
+		actor = admin.AdminID
+	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO welcome_bonus_grants (driver_id, phone_e164, plate_normalized, amount, admin_id)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT DO NOTHING`, p.ID, *phone, plate, amount, admin.AdminID)
+		ON CONFLICT DO NOTHING`, p.ID, *phone, plate, amount, actor)
 	if err != nil {
 		return 0, fmt.Errorf("moderation: record welcome bonus: %w", err)
 	}

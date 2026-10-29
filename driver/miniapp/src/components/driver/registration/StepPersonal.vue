@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { isFormFieldLocked, LIMITS, validatePersonal } from '../../../features/registration/form'
 import { useRegistrationStore } from '../../../stores/registration'
-import { JListGroup, JTextField } from '../../ui'
+import { JListGroup, JTextField, JSegmented } from '../../ui'
 import CorrectionNotes from './CorrectionNotes.vue'
 import PhotoField from './PhotoField.vue'
 
@@ -26,8 +26,9 @@ function err(key: 'first_name' | 'last_name'): string {
 
 <template>
   <div class="step">
-    <p class="step__text">{{ t('registration.personal.text') }}</p>
-    <CorrectionNotes :items="r.corrections" :fields="['avatar', 'first_name', 'last_name']" />
+    <p class="step__text">{{ t('registration.identity.hint') }}</p>
+    <p class="step__note">{{ t('registration.identity.match_hint') }}</p>
+    <CorrectionNotes :items="r.corrections" :fields="['avatar', 'first_name', 'last_name','identity']" />
 
     <div class="step__block">
       <PhotoField
@@ -66,6 +67,12 @@ function err(key: 'first_name' | 'last_name'): string {
           :error="err('last_name')"
           @update:model-value="reg.touch()"
         />
+        <template v-if="r.identity_enabled && reg.form.identity">
+          <JSegmented v-model="reg.form.identity.document_type" :aria-label="t('registration.identity.document_type')" :options="[{value:'id_card',label:t('registration.identity.id_card')},{value:'driving_licence',label:t('registration.identity.driving_licence')}]" :disabled="!reg.editable.has('identity')" @change="reg.touch()" />
+          <JTextField v-model="reg.form.identity.iin" :label="t('registration.identity.iin')" inputmode="numeric" :max="12" :readonly="!reg.editable.has('identity')" autocomplete="off" @update:model-value="reg.touch()" />
+          <JTextField v-model="reg.form.identity.document_number" :label="t('registration.identity.document_number')" :max="20" :readonly="!reg.editable.has('identity')" autocomplete="off" @update:model-value="reg.touch()" />
+          <JTextField v-model="reg.form.identity.patronymic" :label="t('registration.identity.patronymic')" :max="60" :readonly="!reg.editable.has('identity')" autocomplete="additional-name" @update:model-value="reg.touch()" />
+        </template>
       </div>
     </JListGroup>
   </div>

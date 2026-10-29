@@ -22,7 +22,7 @@ import { useBookingStore } from '../../stores/booking'
 import { POOR_ACCURACY_M, useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
 import { haptics } from '../../telegram'
-import { roundCoord, type LatLon } from '../../utils/geo'
+import { hasCoordinates, roundCoord, type LatLon } from '../../utils/geo'
 import { CATEGORIES, type Category } from '../../utils/status'
 
 const { t } = useI18n()
@@ -74,9 +74,9 @@ const generalError = computed(() => {
 // --- Map ---------------------------------------------------------------------
 
 function syncMarkers(): void {
-  const pts = booking.stops.flatMap((s, i) => (s.place ? [{ lat: s.place.lat, lon: s.place.lon, letter: STOP_LETTERS[i] }] : []))
+  const pts = booking.stops.flatMap((s, i) => (s.place && hasCoordinates(s.place) ? [{ lat: s.place.lat, lon: s.place.lon, letter: STOP_LETTERS[i] }] : []))
   stage.stops.setStops(pts)
-  markerIndex = booking.stops.flatMap((s, i) => (s.place ? [i] : []))
+  markerIndex = booking.stops.flatMap((s, i) => (s.place && hasCoordinates(s.place) ? [i] : []))
 }
 
 let markerIndex: number[] = []
@@ -112,7 +112,7 @@ async function onMarkerDrag(markerPos: number, point: LatLon): Promise<void> {
 stage.setStopDrag((pos, point) => void onMarkerDrag(pos, point))
 
 function framePoints(): LatLon[] {
-  const pts: LatLon[] = booking.stops.flatMap((s) => (s.place ? [s.place] : []))
+  const pts: LatLon[] = booking.stops.flatMap((s) => (s.place && hasCoordinates(s.place) ? [s.place] : []))
   const q = booking.quoteCurrent ? booking.quote : null
   if (q?.bbox) pts.push({ lon: q.bbox[0], lat: q.bbox[1] }, { lon: q.bbox[2], lat: q.bbox[3] })
   return pts

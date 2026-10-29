@@ -8,6 +8,7 @@ import (
 // Registration fields addressed by moderator corrections and missing_fields
 // (OpenAPI RegistrationField).
 const (
+	FieldIdentity         = "identity"
 	FieldAvatar           = "avatar"
 	FieldFirstName        = "first_name"
 	FieldLastName         = "last_name"
@@ -23,7 +24,7 @@ const (
 
 // RegistrationFields lists the fields in the order of the registration form.
 var RegistrationFields = []string{
-	FieldAvatar, FieldFirstName, FieldLastName, FieldPhone, FieldIDFront, FieldIDBack,
+	FieldIdentity, FieldAvatar, FieldFirstName, FieldLastName, FieldPhone, FieldIDFront, FieldIDBack,
 	FieldVehicleClass, FieldVehicleMakeModel, FieldVehicleColor, FieldVehiclePlate, FieldVehiclePhotos,
 }
 
@@ -82,6 +83,7 @@ func CorrectionFields(items []CorrectionItem) []string {
 
 // fieldLabels name the registration fields for drivers in kk, ru and en.
 var fieldLabels = map[string][3]string{
+	FieldIdentity:         {"Жеке құжат деректері", "Данные документа", "Identity document details"},
 	FieldAvatar:           {"Профиль суреті", "Фото профиля", "Profile photo"},
 	FieldFirstName:        {"Аты", "Имя", "First name"},
 	FieldLastName:         {"Тегі", "Фамилия", "Last name"},

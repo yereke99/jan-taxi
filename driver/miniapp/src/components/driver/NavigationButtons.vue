@@ -13,7 +13,7 @@ import type { Stop } from '../../api/types'
 import type { Fix } from '../../features/location/locationSender'
 import { useSessionStore } from '../../stores/session'
 import { haptics, openExternal, useTelegramFullscreen } from '../../telegram'
-import { normalizeTwoGisBase, planNavigation } from '../../features/navigation/twogis'
+import { navigationPrefix, normalizeTwoGisBase, planNavigation } from '../../features/navigation/twogis'
 import { toast } from '../ui'
 
 const props = defineProps<{ remaining: readonly Stop[]; position: Fix | null }>()
@@ -27,7 +27,7 @@ const plan = computed(() =>
     base: normalizeTwoGisBase(session.config.navigation.twogis_base_url),
     platform: tg.state.platform,
     origin: props.position ? { lat: props.position.lat, lon: props.position.lon } : null,
-    remaining: props.remaining.map((s) => ({ lat: s.lat, lon: s.lon })),
+    remaining: navigationPrefix(props.remaining),
   }),
 )
 
@@ -39,6 +39,7 @@ function open(url: string): void {
 
 <template>
   <section v-if="plan" class="nav">
+    <p v-if="remaining.some(s=>s.mode==='manual')" class="nav__note">{{ t('manual.route_unknown') }}</p>
     <button type="button" class="nav__main" @click="open(plan.primaryUrl)">
       <Navigation :size="20" :stroke-width="2.25" aria-hidden="true" />
       {{ t('trip.open_2gis') }}

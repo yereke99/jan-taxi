@@ -91,6 +91,12 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		NotificationWorkerEnabled: e.boolean("NOTIFICATION_WORKER_ENABLED", true),
 		JobsEnabled:               e.boolean("JOBS_ENABLED", true),
 
+		VerificationEnabled:       e.boolean("VERIFICATION_ENABLED", false),
+		VerificationKey:           e.raw("VERIFICATION_KEY"),
+		VerificationAutoApprove:   e.boolean("VERIFICATION_AUTO_APPROVE", true),
+		VerificationMinConfidence: e.decimal("VERIFICATION_MIN_CONFIDENCE", 98),
+		VerificationQueueLimit:    e.integer("VERIFICATION_QUEUE_LIMIT", 1000),
+
 		LogLevel:  strings.ToLower(e.str("LOG_LEVEL", "info")),
 		LogFormat: strings.ToLower(e.str("LOG_FORMAT", "json")),
 	}

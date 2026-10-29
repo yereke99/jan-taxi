@@ -348,6 +348,7 @@ const kk = {
     bonus_credit: 'Бонус',
   },
   correction_field: {
+    identity: "Жеке басты растайтын деректер",
     avatar: 'Профиль фотосы',
     first_name: 'Аты',
     last_name: 'Тегі',
@@ -774,6 +775,7 @@ const ru: BaseMessages = {
     bonus_credit: 'Бонус',
   },
   correction_field: {
+    identity: "Данные документа",
     avatar: 'Фото профиля',
     first_name: 'Имя',
     last_name: 'Фамилия',
@@ -1198,6 +1200,7 @@ const en: BaseMessages = {
     bonus_credit: 'Bonus',
   },
   correction_field: {
+    identity: "Identity details",
     avatar: 'Profile photo',
     first_name: 'First name',
     last_name: 'Last name',

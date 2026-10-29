@@ -24,15 +24,19 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // Handler serves the submission and admin moderation endpoints.
 type Handler struct {
-	pool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	verification *verification.Service
 }
 
 // NewHandler builds the handler.
 func NewHandler(pool *pgxpool.Pool) *Handler { return &Handler{pool: pool} }
+
+func (h *Handler) WithVerification(s *verification.Service) *Handler { h.verification = s; return h }
 
 // MountDriver mounts POST /driver/register on the driver app router.
 func (h *Handler) MountDriver(r chi.Router) {
@@ -43,6 +47,7 @@ func (h *Handler) MountDriver(r chi.Router) {
 // Routes are registered flat so other packages can add /drivers/{id}/… routes.
 func (h *Handler) MountAdmin(r chi.Router) {
 	view := r.With(auth.Permit(auth.PermDriversView))
+	r.With(auth.Permit(auth.PermDriversModerate)).Get("/verification/queue", httpx.H(h.verificationQueue))
 	view.Get("/drivers", httpx.H(h.list))
 	view.Get("/drivers/{id}", httpx.H(h.detail))
 
@@ -125,4 +130,12 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return httpx.DecodeJSON(w, r, dst)
+}
+
+func (h *Handler) verificationQueue(w http.ResponseWriter, r *http.Request) error {
+	v, err := h.verification.QueueStats(r.Context())
+	if err != nil {
+		return err
+	}
+	return httpx.OK(w, v)
 }

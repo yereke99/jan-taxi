@@ -8,7 +8,7 @@ import { ref, watch } from 'vue'
 import { privateImageUrl } from '../../api/files'
 import { JSkeleton } from '../ui'
 
-const props = withDefaults(defineProps<{ url?: string | null; previewUrl?: string | null; alt?: string; round?: boolean }>(), {
+const props = withDefaults(defineProps<{ url?: string | null; previewUrl?: string | null; alt?: string; round?: boolean; pdf?: boolean }>(), {
   url: null,
   previewUrl: null,
   alt: '',
@@ -45,7 +45,8 @@ watch(
 
 <template>
   <div class="pimg" :class="{ 'is-round': round }">
-    <img v-if="previewUrl || src" :src="previewUrl || src || undefined" :alt="alt" class="pimg__img" draggable="false" />
+    <iframe v-if="pdf && src && !previewUrl" :src="src" :title="alt" class="pimg__img" />
+    <img v-else-if="previewUrl || src" :src="previewUrl || src || undefined" :alt="alt" class="pimg__img" draggable="false" />
     <JSkeleton v-else-if="loading" width="100%" height="100%" :radius="round ? '50%' : '0'" />
     <span v-else-if="failed" class="pimg__fallback" role="img" :aria-label="alt">
       <ImageOff :size="22" :stroke-width="1.75" aria-hidden="true" />

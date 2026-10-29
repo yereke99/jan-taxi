@@ -1,6 +1,17 @@
 import type { DriverMessages } from './kk'
 
 export const en: DriverMessages = {
+  manual: {
+    action: "Cannot find the address? Enter it manually",
+    helper: "Enter the place name or a landmark known to local residents.",
+    use_search: "Search for an address",
+    save: "Save",
+    label: "Passenger-entered landmark",
+    route_unknown: "Route not calculated",
+    fare_hint: "Choose a fare within the administrator tariff limits.",
+    fare_required: "Choose the trip fare.",
+    copy_destination: "Copy destination",
+  },
   nav: {
     home: 'Home',
     orders: 'Orders',
@@ -125,6 +136,10 @@ export const en: DriverMessages = {
     fit_route: 'Show the whole route',
   },
   trip: {
+    whatsapp_passenger: "Message passenger on WhatsApp",
+    copy_passenger_phone: "Copy passenger number",
+    invalid_phone: "Invalid phone number",
+    copy_failed: "Could not copy the number. Select and copy it manually.",
     title: 'Trip',
     status: {
       draft: 'Draft',
@@ -322,6 +337,19 @@ export const en: DriverMessages = {
     },
   },
   registration: {
+    identity: {
+      hint: "Enter your first and last name exactly as shown on your document.",
+      match_hint: "If the details do not match, your application will need additional review.",
+      iin: "IIN",
+      document_number: "Document number",
+      patronymic: "Patronymic (if present)",
+      document_type: "Document type",
+      id_card: "Identity card",
+      driving_licence: "Driving licence",
+      invalid_iin: "Check the IIN",
+      invalid_document_number: "Check the document number",
+      pdf_hint: "Upload a clear document photo or PDF.",
+    },
     title: 'Driver registration',
     corrections_title: 'Corrections',
     step_of: 'Step {current} of {total}',
@@ -333,7 +361,7 @@ export const en: DriverMessages = {
     steps: {
       personal: 'Personal details',
       phone: 'Phone',
-      documents: 'ID card',
+      documents: 'Document',
       vehicle_class: 'Vehicle type',
       vehicle: 'Vehicle',
       photos: 'Vehicle photos',
@@ -368,7 +396,7 @@ export const en: DriverMessages = {
       privacy: 'Operators see your number, and customers see it only during an active order.',
     },
     documents: {
-      text: 'Photograph both sides of your ID card: all text must be readable, with no glare.',
+      text: 'Photograph both sides of your document: all text must be readable, with no glare.',
       front: 'Front side',
       back: 'Back side',
       privacy: 'Only moderators with special access see ID photos, and every view is logged.',
@@ -430,11 +458,11 @@ export const en: DriverMessages = {
       sections: {
         data: {
           title: 'What we collect',
-          text: 'Your first and last name; your Telegram account (ID and username); your phone number confirmed through Telegram; profile photo; both sides of your ID card (which show your IIN and photo); your car’s make, model, colour, licence plate and photos; your location while you are online or on a trip; orders, wallet transactions and payment confirmations.',
+          text: 'Your first and last name; your Telegram account (ID and username); your phone number confirmed through Telegram; profile photo; both sides of your identity card or driving licence (including its number, your IIN and photo); your car’s make, model, colour, licence plate and photos; your location while you are online or on a trip; orders, wallet transactions and payment confirmations.',
         },
         purpose: {
           title: 'Why',
-          text: 'To verify your identity and vehicle; to dispatch orders; to show customers driver and vehicle details (first name, last-name initial, car, plate and, during an order, your phone); trip safety; commission accounting; legal compliance.',
+          text: 'To verify your identity and vehicle; to store your IIN and document number; to automatically compare document and registration details, approve confident matches and refer uncertain applications to an administrator; to dispatch orders; to show customers driver and vehicle details (first name, last-name initial, car, plate and, during an order, your phone); trip safety; commission accounting; legal compliance.',
         },
         storage: {
           title: 'Where it is stored',
@@ -477,12 +505,13 @@ export const en: DriverMessages = {
       comment: "Moderator's comment",
     },
     field: {
+      identity: "Identity details",
       avatar: 'Profile photo',
       first_name: 'First name',
       last_name: 'Last name',
       phone: 'Phone number',
-      id_front: 'ID card, front',
-      id_back: 'ID card, back',
+      id_front: 'Document, front',
+      id_back: 'Document, back',
       vehicle_class: 'Vehicle type, seats and cargo space',
       vehicle_make_model: 'Car make and model',
       vehicle_color: 'Car colour',
@@ -508,6 +537,13 @@ export const en: DriverMessages = {
     },
   },
   status: {
+    verification_pending: "Document queued for review",
+    verification_processing: "Reading your document",
+    verification_matched: "Details matched",
+    verification_admin_review: "Additional review required",
+    verification_approved: "Document details approved",
+    verification_superseded: "A newer application is being reviewed",
+    received_hint: "Your application has been received. We aim to respond in about 5 minutes. A queue or additional review may take longer.",
     title: 'Application status',
     pending_title: 'Application under review',
     pending_text: 'A moderator is checking your details. The driver bot will tell you the result.',

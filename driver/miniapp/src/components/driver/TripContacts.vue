@@ -1,7 +1,7 @@
 <!--
   Contacts on the driver's own active order (§22.4/§22.5): the passenger's
   name, a call button with the phone when they shared it through Telegram,
-  and a button that opens their Telegram chat; for parcels also the
+  and buttons that open WhatsApp or their Telegram chat; for parcels also the
   recipient's phone. The API sends them only while the order is active.
 -->
 <script setup lang="ts">
@@ -10,15 +10,19 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DriverOrderDetail } from '../../api/types'
 import { copyText } from '../../composables/clipboard'
-import { haptics, openTelegram } from '../../telegram'
-import { formatKzPhone, telHref } from '../../utils/phone'
+import { haptics, openExternal, openTelegram } from '../../telegram'
+import { formatKzPhone, normalizeContactPhone, whatsAppHref } from '../../utils/phone'
 import { JListGroup, JListRow, toast } from '../ui'
 
 const props = defineProps<{ order: DriverOrderDetail }>()
 
 const { t } = useI18n()
 
-const passenger = computed(() => props.order.passenger)
+const canContact = computed(() => props.order.is_mine && ['accepted', 'driver_arriving', 'in_progress'].includes(props.order.status))
+const passenger = computed(() => canContact.value ? props.order.passenger : null)
+const passengerPhone = computed(() => passenger.value?.phone_verified && passenger.value.phone ? normalizeContactPhone(passenger.value.phone) : null)
+const recipientPhone = computed(() => canContact.value && props.order.recipient_phone ? normalizeContactPhone(props.order.recipient_phone) : null)
+const whatsapp = computed(() => passengerPhone.value ? whatsAppHref(passengerPhone.value) : null)
 const tgUrl = computed(() => passenger.value?.telegram_url ?? null)
 /** https://t.me links open inside Telegram; tg://user?id= links are followed as plain links. */
 const tgIsWeb = computed(() => Boolean(tgUrl.value?.startsWith('https://')))
@@ -26,7 +30,8 @@ const tgIsWeb = computed(() => Boolean(tgUrl.value?.startsWith('https://')))
 const subtitle = computed(() => {
   const p = passenger.value
   if (!p) return ''
-  if (p.phone) return formatKzPhone(p.phone)
+  if (passengerPhone.value) return formatKzPhone(passengerPhone.value)
+  if (p.phone) return t('trip.invalid_phone')
   return p.telegram_username ? `@${p.telegram_username}` : t('trip.phone_not_shared')
 })
 
@@ -36,7 +41,15 @@ async function copy(phone: string | null | undefined): Promise<void> {
   if (await copyText(phone)) {
     haptics.selection()
     toast.show(t('common.copied'))
-  }
+  } else toast.error(t('trip.copy_failed'))
+}
+
+function openWhatsApp(e: MouseEvent): void {
+  const url = whatsapp.value
+  if (!url) return
+  e.preventDefault()
+  haptics.impact('light')
+  if (!openExternal(url)) toast.error(t('trip.open_failed'))
 }
 
 function openChat(e: MouseEvent): void {
@@ -49,10 +62,16 @@ function openChat(e: MouseEvent): void {
 </script>
 
 <template>
-  <JListGroup v-if="passenger || order.recipient_phone" class="contacts" :header="t('trip.contacts')">
+  <JListGroup v-if="passenger || recipientPhone" class="contacts" :header="t('trip.contacts')">
     <JListRow v-if="passenger" :title="passenger.first_name || t('trip.passenger')" :subtitle="subtitle">
+      <template v-if="passengerPhone" #subtitle>
+        <button type="button" class="contacts__number" data-sheet-no-drag :aria-label="t('trip.copy_passenger_phone')" @click.stop="copy(passengerPhone)">
+          <span>{{ formatKzPhone(passengerPhone) }}</span>
+          <Copy :size="13" :stroke-width="2" aria-hidden="true" />
+        </button>
+      </template>
       <template #accessory>
-        <span class="contacts__actions">
+        <span class="contacts__actions" data-sheet-no-drag>
           <a
             v-if="tgUrl"
             class="contacts__btn"
@@ -60,23 +79,29 @@ function openChat(e: MouseEvent): void {
             target="_blank"
             rel="noopener noreferrer"
             :aria-label="t('trip.write_passenger')"
-            @click="openChat"
+            @click.stop="openChat"
           >
             <MessageCircle :size="20" :stroke-width="2.25" aria-hidden="true" />
           </a>
-          <a v-if="passenger.phone" class="contacts__btn is-primary" :href="telHref(passenger.phone)" :aria-label="t('trip.call_passenger')">
+          <a v-if="whatsapp" class="contacts__btn" :href="whatsapp" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.whatsapp_passenger')" :title="t('trip.whatsapp_passenger')" @click.stop="openWhatsApp">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 11.5a9 9 0 0 1-13.3 7.9L3 21l1.6-4.7A9 9 0 1 1 21 11.5Z" />
+              <path d="m9 7 1.5 3-1 1a10 10 0 0 0 3.5 3.5l1-1L17 15c-1 3-7 0-9-4-1-2-1-3 1-4Z" />
+            </svg>
+          </a>
+          <a v-if="passengerPhone" class="contacts__btn is-primary" :href="`tel:${passengerPhone}`" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.call_passenger')" @click.stop>
             <Phone :size="20" :stroke-width="2.25" aria-hidden="true" />
           </a>
         </span>
       </template>
     </JListRow>
-    <JListRow v-if="order.recipient_phone" :title="t('trip.recipient')" :subtitle="formatKzPhone(order.recipient_phone)">
+    <JListRow v-if="recipientPhone" :title="t('trip.recipient')" :subtitle="formatKzPhone(recipientPhone)">
       <template #accessory>
-        <span class="contacts__actions">
-          <button type="button" class="contacts__btn" :aria-label="t('common.copy')" @click="copy(order.recipient_phone)">
+        <span class="contacts__actions" data-sheet-no-drag>
+          <button type="button" class="contacts__btn" :aria-label="t('common.copy')" @click.stop="copy(recipientPhone)">
             <Copy :size="18" :stroke-width="2.25" aria-hidden="true" />
           </button>
-          <a class="contacts__btn is-primary" :href="telHref(order.recipient_phone)" :aria-label="t('trip.call_recipient')">
+          <a class="contacts__btn is-primary" :href="`tel:${recipientPhone}`" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.call_recipient')" @click.stop>
             <Phone :size="20" :stroke-width="2.25" aria-hidden="true" />
           </a>
         </span>
@@ -89,6 +114,26 @@ function openChat(e: MouseEvent): void {
 .contacts__actions {
   display: flex;
   gap: var(--jt-space-2);
+}
+
+.contacts :deep(.jt-row__trailing) {
+  max-width: none;
+}
+
+.contacts__number {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jt-space-1);
+  min-height: 24px;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.contacts__number svg {
+  flex: none;
 }
 
 .contacts__btn {

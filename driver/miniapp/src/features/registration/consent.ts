@@ -4,7 +4,7 @@
 // (driver_profiles.pd_consent_version). Change the version whenever the text
 // changes in any language.
 
-export const PD_CONSENT_VERSION = 'driver-pd-2026-10-v1'
+export const PD_CONSENT_VERSION = 'driver-pd-2026-10-v2'
 
 /** Sections of the consent text, in display order (i18n keys under registration.consent.sections). */
 export const CONSENT_SECTIONS = ['data', 'purpose', 'storage', 'access', 'retention', 'withdrawal'] as const

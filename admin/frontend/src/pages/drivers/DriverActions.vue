@@ -46,7 +46,7 @@ const available = computed<Record<DriverAction, boolean>>(() => ({
   approve: auth.can('drivers.moderate') && status.value === 'pending',
   corrections: auth.can('drivers.moderate') && status.value === 'pending',
   reject: auth.can('drivers.moderate') && (status.value === 'pending' || status.value === 'changes_requested'),
-  suspend: props.only === 'all' && auth.can('drivers.manage') && status.value === 'approved',
+  suspend: props.only === 'all' && auth.can('drivers.manage') && status.value !== 'suspended',
   restore: props.only === 'all' && auth.can('drivers.manage') && status.value === 'suspended',
   city: props.only === 'all' && auth.can('drivers.manage'),
   bonus: props.only === 'all' && auth.can('finance.manage') && (status.value === 'approved' || status.value === 'suspended'),

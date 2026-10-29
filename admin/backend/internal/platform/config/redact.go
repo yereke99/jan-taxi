@@ -80,6 +80,11 @@ func (c Config) safeAttrs() []slog.Attr {
 		slog.String("telegram_api_base_url", c.TelegramAPIBaseURL),
 		slog.Bool("notification_worker_enabled", c.NotificationWorkerEnabled),
 		slog.Bool("jobs_enabled", c.JobsEnabled),
+		slog.Bool("verification_enabled", c.VerificationEnabled),
+		slog.String("verification_key", presence(c.VerificationKey)),
+		slog.Bool("verification_auto_approve", c.VerificationAutoApprove),
+		slog.Float64("verification_min_confidence", c.VerificationMinConfidence),
+		slog.Int("verification_queue_limit", c.VerificationQueueLimit),
 		slog.String("log_level", c.LogLevel),
 		slog.String("log_format", c.LogFormat),
 	}

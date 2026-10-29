@@ -464,6 +464,22 @@ func (w *Worker) deliver(ctx context.Context, m outboxRow, msg Message, target *
 		return
 	}
 	sctx, cancel := context.WithTimeout(ctx, w.opt.SendTimeout)
+	recipientTx, authErr := w.lockContactOrder(sctx, m)
+	if authErr == nil && recipientTx == nil {
+		recipientTx, authErr = w.lockReviewNotification(sctx, m)
+	}
+	if authErr != nil {
+		cancel()
+		if errors.Is(authErr, errContactAccessRevoked) {
+			w.finish(ctx, m, now, outcome{kind: "fatal", status: StatusCancelled, errText: "order contact access superseded"})
+		} else if errors.Is(authErr, errReviewNoLongerCurrent) {
+			w.finish(ctx, m, now, outcome{kind: "fatal", status: StatusCancelled, errText: "application review notification superseded"})
+		} else {
+			w.log.Warn("notification recipient authorization failed", slog.String("outbox_id", m.id.String()), slog.Any("err", authErr))
+			w.reschedule(ctx, m, w.opt.MinBackoff)
+		}
+		return
+	}
 	var (
 		msgID int64
 		err   error
@@ -484,6 +500,7 @@ func (w *Worker) deliver(ctx context.Context, m outboxRow, msg Message, target *
 		msgID, err = w.sender.Send(sctx, m.bot, m.chatID, msg.Text, msg.Markup)
 	}
 	cancel()
+	releaseContactLock(recipientTx)
 	w.finish(ctx, m, now, w.classify(ctx, m, msgID, err))
 }
 

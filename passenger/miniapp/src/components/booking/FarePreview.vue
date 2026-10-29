@@ -27,7 +27,7 @@ const fromFare = computed(() => (q.value ? Math.min(...q.value.options.map((o) =
     </div>
     <div v-else-if="q" class="quote__row">
       <span class="quote__trip jt-tabular">
-        {{ t('booking.summary', { distance: formatDistance(q.distance_m, session.language), duration: formatDuration(q.duration_s, session.language) }) }}
+        {{ q.distance_m === null ? t('manual.route_unknown') : t('booking.summary', { distance: formatDistance(q.distance_m, session.language), duration: formatDuration(q.duration_s, session.language) }) }}
       </span>
       <span class="quote__fare jt-tabular">{{ t('booking.fare_from', { fare: formatMoney(fromFare, session.language) }) }}</span>
     </div>

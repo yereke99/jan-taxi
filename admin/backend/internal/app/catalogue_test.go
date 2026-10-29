@@ -72,6 +72,7 @@ var endpointCatalogue = []string{
 	"POST /api/v1/driver/wallet/topups/{}/cancel",
 	"POST /api/v1/payments/webhooks/{}",
 	// Admin
+	"GET /api/v1/admin/verification/queue",
 	"POST /api/v1/admin/auth/login",
 	"POST /api/v1/admin/auth/logout",
 	"GET /api/v1/admin/auth/me",

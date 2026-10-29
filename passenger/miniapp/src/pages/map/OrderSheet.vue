@@ -39,6 +39,7 @@ import { useOrdersStore } from '../../stores/orders'
 import { useSessionStore } from '../../stores/session'
 import { callPhone, haptics, openTelegram } from '../../telegram'
 import { VEHICLE_ICONS, type VehicleIcon } from '../../services/config'
+import { hasCoordinates } from '../../utils/geo'
 import { formatDateTime, formatMoney } from '../../utils/format'
 import { formatKzPhone, telHref } from '../../utils/phone'
 
@@ -123,7 +124,7 @@ watch(
     const driver = hasActiveDriver(o) ? o.driver_location : null
     stage.car.set(driver ? { lat: driver.lat, lon: driver.lon, heading: driver.heading } : null)
     const pickup = o.stops[0]
-    const approaching = (o.status === 'accepted' || o.status === 'driver_arriving') && driver && pickup
+    const approaching = (o.status === 'accepted' || o.status === 'driver_arriving') && driver && pickup && hasCoordinates(pickup)
     stage.route.setApproach(approaching ? straightLine(driver, pickup) : null)
     // Re-frame on a new phase (or when the driver first appears), never on
     // every position update: the passenger may be looking around.

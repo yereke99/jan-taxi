@@ -16,14 +16,14 @@ import type { PlaceValue } from '../../domain/route'
 import { useAddressText, useErrorText } from '../../i18n/core'
 import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { formatDistance } from '../../utils/format'
-import { haversineMeters, type LatLon } from '../../utils/geo'
+import { hasCoordinates, haversineMeters, type LatLon } from '../../utils/geo'
 import { useStageScreen } from '../../stage/mapStage'
 import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
 import { useOrdersStore } from '../../stores/orders'
 import { useSessionStore } from '../../stores/session'
 import { navigateBack } from '../../telegram'
-import { codePointLength } from '../../utils/text'
+import { cleanText, codePointLength } from '../../utils/text'
 
 const SEARCH_DEBOUNCE_MS = 300
 
@@ -62,7 +62,8 @@ const tooShort = computed(() => codePointLength(trimmed.value) < GEO_SEARCH_MIN_
  * search is always local (the API orders and filters by distance).
  */
 function searchNear(): LatLon {
-  return location.current ?? booking.stops[0]?.place ?? stage.center() ?? session.config.map.default_center
+  const pickup=booking.stops[0]?.place
+  return location.current ?? (pickup && hasCoordinates(pickup) ? pickup : null) ?? stage.center() ?? session.config.map.default_center
 }
 
 const runner = createLatest<string, GeoPlace[]>({
@@ -102,7 +103,12 @@ watch(trimmed, (q) => {
   runner.schedule(q)
 })
 
-const recent = computed(() => orders.places)
+const recent = computed(() => orders.places.filter(p=>isDestination.value || hasCoordinates(p)))
+const manualMode = ref(false)
+const manualText = ref('')
+const canManual = computed(()=>isDestination.value && session.config.orders?.manual_destination_enabled === true && session.config.orders.manual_destination_pricing === 'passenger_tariff_bounds')
+const manualValid = computed(()=>codePointLength(cleanText(manualText.value))>0 && codePointLength(cleanText(manualText.value))<=200)
+function saveManual(): void { if(!canManual.value || !manualValid.value)return; choose({lat:null,lon:null,address:cleanText(manualText.value),subtitle:null,source:'manual',inServiceArea:null}) }
 
 /** Distance from where the search was made, so far-away matches are obvious. */
 const resultsNear = ref<LatLon | null>(null)
@@ -117,6 +123,7 @@ function done(): void {
 }
 
 function choose(place: PlaceValue): void {
+  if (!isDestination.value && !hasCoordinates(place)) return
   booking.setStopPlace(index.value, place)
   done()
 }
@@ -175,7 +182,13 @@ onBeforeUnmount(() => runner.cancel())
       </div>
     </template>
 
-    <div class="search-actions">
+    <div v-if="manualMode && canManual" class="search-actions">
+      <JTextField v-model="manualText" :label="t('manual.label')" :hint="t('manual.helper')" :max="200" />
+      <button type="button" class="search-row" :disabled="!manualValid" @click="saveManual">{{ t('manual.save') }}</button>
+      <button type="button" class="search-row" @click="manualMode=false">{{ t('manual.use_search') }}</button>
+    </div>
+    <div v-else class="search-actions">
+      <button v-if="canManual" type="button" class="search-row" @click="manualMode=true; manualText=query">{{ t('manual.action') }}</button>
       <button v-if="isPickup" type="button" class="search-row" :disabled="usingLocation" @click="useMyLocation">
         <span class="search-row__icon is-accent">
           <JSpinner v-if="usingLocation" />
@@ -193,7 +206,7 @@ onBeforeUnmount(() => runner.cancel())
       </button>
     </div>
 
-    <template v-if="tooShort">
+    <template v-if="!manualMode && tooShort">
       <p v-if="trimmed.length > 0" class="search-note">{{ t('search.min_chars') }}</p>
       <section v-if="recent.length > 0" class="search-section">
         <h2 class="search-section__title">{{ t('search.recent') }}</h2>
@@ -206,7 +219,7 @@ onBeforeUnmount(() => runner.cancel())
       </section>
     </template>
 
-    <section v-else class="search-section" aria-live="polite">
+    <section v-else-if="!manualMode" class="search-section" aria-live="polite">
       <h2 class="search-section__title">{{ t('search.results') }}</h2>
       <div v-if="searching && results.length === 0" class="search-skeletons">
         <div v-for="n in 4" :key="n" class="search-skeleton"><JSkeleton width="70%" /><JSkeleton width="40%" height="12px" /></div>

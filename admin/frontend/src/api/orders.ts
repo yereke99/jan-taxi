@@ -42,10 +42,20 @@ export interface OrderLoad {
   cargo_volume_l: number
 }
 
-export interface StopSummary extends LatLon {
+export interface StopSummary {
   seq: number
   kind: StopKind
   address: string
+  mode?: 'geocoded' | 'manual'
+  lat: number | null
+  lon: number | null
+}
+
+/** Manual destinations never become synthetic (0, 0) map points. */
+export function hasStopCoordinates<T extends StopSummary>(stop: T): stop is T & LatLon {
+  return stop.mode !== 'manual' && typeof stop.lat === 'number' && typeof stop.lon === 'number'
+    && Number.isFinite(stop.lat) && Number.isFinite(stop.lon)
+    && Math.abs(stop.lat) <= 90 && Math.abs(stop.lon) <= 180
 }
 
 export interface Stop extends StopSummary {
@@ -79,7 +89,7 @@ export interface AdminOrderListItem extends OrderLoad, OrderPlace {
   pickup: StopSummary
   destination: StopSummary
   stop_count: number
-  distance_m: number
+  distance_m: number | null
   has_open_dispute: boolean
   created_at: string
   accepted_at: string | null
@@ -98,8 +108,8 @@ export interface RouteSnapshot {
   geometry: LineString | null
   legs: Array<{ distance_m: number; duration_s: number }> | null
   bbox: [number, number, number, number] | null
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
 }
 
 export interface DriverLocation extends LatLon {
@@ -197,8 +207,8 @@ export interface AdminOrder extends OrderLoad, OrderPlace {
   payment_method: PaymentMethod
   tariff_id: string
   quote_id: string | null
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
   stop_count: number
   stops: Stop[]
   route: RouteSnapshot

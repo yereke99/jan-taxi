@@ -44,6 +44,7 @@ export interface CursorList<T> {
 export type UploadKind = 'avatar' | 'id_front' | 'id_back' | 'vehicle_main' | 'vehicle_back' | 'vehicle_side' | 'vehicle_plate' | 'vehicle_extra'
 
 export interface FileRef {
+ mime?: string
   id: string
   kind: string
   /** /api/v1/driver/files/{id}; fetch with the Authorization header. */
@@ -62,6 +63,7 @@ export interface VehiclePhoto extends FileRef {
 // --- Registration ---------------------------------------------------------
 
 export const REGISTRATION_FIELDS = [
+ 'identity',
   'avatar',
   'first_name',
   'last_name',
@@ -123,7 +125,18 @@ export interface RegistrationHistoryItem {
   created_at: string
 }
 
+export interface DriverIdentity {
+ document_type: 'id_card' | 'driving_licence'
+ iin: string
+ document_number: string
+ patronymic: string
+}
+export interface VerificationSummary {id:string;status:string;confidence:number|null;reasons:string[];attempts:number;created_at:string;finished_at:string|null}
+
 export interface DriverRegistration {
+ identity_enabled?: boolean
+ identity?: DriverIdentity
+ verification?: VerificationSummary
   id: string | null
   status: ModerationStatus
   code: string | null
@@ -161,6 +174,7 @@ export interface VehicleInput {
 }
 
 export interface DriverRegistrationUpdate {
+ identity?: DriverIdentity
   first_name: string
   last_name: string
   vehicle: VehicleInput
@@ -255,10 +269,11 @@ export interface OrderLoad {
 export type StopKind = 'pickup' | 'intermediate' | 'destination'
 
 export interface StopSummary {
+  mode?: 'geocoded' | 'manual'
   seq: number
   kind: StopKind
-  lat: number
-  lon: number
+  lat: number | null
+  lon: number | null
   address: string
 }
 
@@ -295,8 +310,8 @@ export interface DriverOrderCard extends OrderLoad, OrderPlace {
   currency: 'KZT'
   commission_amount: number
   payment_method: PaymentMethod
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
   distance_to_pickup_m: number | null
   created_at: string
   search_expires_at: string | null
@@ -316,8 +331,8 @@ export interface RouteSnapshot {
   geometry: LineString
   legs: Array<{ distance_m: number; duration_s: number }>
   bbox: [number, number, number, number]
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
 }
 
 /**
@@ -363,8 +378,8 @@ export interface DriverOrderDetail extends OrderLoad, OrderPlace {
   /** What the wallet paid for this order (charges minus refunds); kept when the passenger cancels (§22.2). */
   commission_charged: number
   payment_method: PaymentMethod
-  distance_m: number
-  duration_s: number
+  distance_m: number | null
+  duration_s: number | null
   distance_to_pickup_m: number | null
   stop_count: number
   stops: Stop[]
@@ -405,7 +420,7 @@ export interface DriverOrderSummary extends OrderLoad, OrderPlace {
   pickup: StopSummary
   destination: StopSummary
   stop_count: number
-  distance_m: number
+  distance_m: number | null
   created_at: string
   completed_at: string | null
   cancelled_at: string | null

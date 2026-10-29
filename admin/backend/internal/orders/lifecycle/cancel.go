@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
@@ -46,6 +47,9 @@ func Cancel(ctx context.Context, tx pgx.Tx, in CancelInput) (CancelResult, error
 		return CancelResult{}, err
 	}
 	res := CancelResult{Before: before, After: after}
+	if err := notifications.CancelOrderContacts(ctx, tx, after.ID); err != nil {
+		return CancelResult{}, err
+	}
 	note := "order cancelled by " + in.Actor.Type
 	if res.Released, err = wallets.ReleaseForOrder(ctx, tx, in.OrderID, note); err != nil {
 		return CancelResult{}, DBError(err)

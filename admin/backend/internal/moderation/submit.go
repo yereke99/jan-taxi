@@ -17,6 +17,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // submitRequest carries the personal-data consent given on the review step.
@@ -126,12 +127,12 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	requirePhone := settings.RequirePhoneVerification(ctx, h.pool)
 	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		return Submit(ctx, tx, d.ID, p.UserID, req.PDConsent, req.PDConsentVersion, requirePhone)
+		return Submit(ctx, tx, d.ID, p.UserID, req.PDConsent, req.PDConsentVersion, requirePhone, h.verification)
 	})
 	if err != nil {
 		return err
 	}
-	v, err := drivers.RegistrationResponse(ctx, h.pool, p.UserID)
+	v, err := drivers.RegistrationResponse(ctx, h.pool, p.UserID, h.verification)
 	if err != nil {
 		return err
 	}
@@ -143,7 +144,7 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) error {
 // indexes make two simultaneous claims of one plate or phone end with exactly
 // one winner), a new application round with a snapshot, the moderation event,
 // the realtime hint for moderators and the driver's notification.
-func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent *bool, consentVersion *string, requirePhone bool) error {
+func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent *bool, consentVersion *string, requirePhone bool, services ...*verification.Service) error {
 	prof, err := drivers.LockProfile(ctx, tx, driverID)
 	if err != nil {
 		return err
@@ -205,6 +206,22 @@ func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent 
 		return fmt.Errorf("moderation: create application: %w", err)
 	}
 
+	if len(services) > 0 && services[0].Enabled() {
+		docs := []verification.Document{}
+		for _, f := range []*drivers.FileMeta{reg.IDFront, reg.IDBack} {
+			if f != nil {
+				var hash, kind string
+				if err := tx.QueryRow(ctx, `SELECT sha256,purpose FROM files WHERE id=$1`, f.ID).Scan(&hash, &kind); err != nil {
+					return err
+				}
+				docs = append(docs, verification.Document{ID: f.ID, SHA256: hash, Kind: kind})
+			}
+		}
+		if err := services[0].Enqueue(ctx, tx, driverID, appID, prof.FirstName, prof.LastName, docs); err != nil {
+			return err
+		}
+	}
+
 	action := drivers.ActionSubmitted
 	if from == drivers.StatusChangesRequested {
 		action = drivers.ActionResubmitted
@@ -221,10 +238,16 @@ func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent 
 	}); err != nil {
 		return err
 	}
-	return notifications.Enqueue(ctx, tx, notifications.Notification{
+	if err := notifications.Enqueue(ctx, tx, notifications.Notification{
 		Bot: notifications.DriverBot, UserID: userID, Template: notifications.TplModerationSubmitted,
 		DedupeKey: "moderation_submitted:" + appID.String(),
-	})
+	}); err != nil {
+		return err
+	}
+	if len(services) > 0 {
+		return services[0].NotifyReviewIfNeeded(ctx, tx, driverID, appID)
+	}
+	return nil
 }
 
 // checkConsent validates the personal-data consent. It returns whether a new

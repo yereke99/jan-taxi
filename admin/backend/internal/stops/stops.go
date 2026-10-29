@@ -5,6 +5,7 @@
 package stops
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -83,6 +84,7 @@ func FieldName(field string, index int, attr string) string {
 
 // Stop is a stored order stop.
 type Stop struct {
+	Mode           string     `json:"mode"`
 	ID             uuid.UUID  `json:"id"`
 	Seq            int        `json:"seq"`
 	Kind           string     `json:"kind"`
@@ -95,6 +97,7 @@ type Stop struct {
 
 // Summary is the compact stop shape used in lists and cards (StopSummary).
 type Summary struct {
+	Mode    string  `json:"mode"`
 	Seq     int     `json:"seq"`
 	Kind    string  `json:"kind"`
 	Lat     float64 `json:"lat"`
@@ -104,7 +107,7 @@ type Summary struct {
 
 // Summary returns the compact form of s.
 func (s Stop) Summary() Summary {
-	return Summary{Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address}
+	return Summary{Mode: s.Mode, Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address}
 }
 
 // DisplayAddress returns the address shown in notifications; a stop without a
@@ -190,4 +193,47 @@ func Destination(list []Stop) *Stop {
 		return nil
 	}
 	return &list[len(list)-1]
+}
+
+// Manual coordinates never enter the wire contract as numeric placeholders.
+func (s Stop) MarshalJSON() ([]byte, error) {
+	type plain Stop
+	if s.Mode == "" {
+		s.Mode = "geocoded"
+	}
+	if s.Mode != "manual" {
+		return json.Marshal(plain(s))
+	}
+	return marshalPoint(plain(s), s.Mode)
+}
+func (s Summary) MarshalJSON() ([]byte, error) {
+	type plain Summary
+	if s.Mode == "" {
+		s.Mode = "geocoded"
+	}
+	if s.Mode != "manual" {
+		return json.Marshal(plain(s))
+	}
+	return marshalPoint(plain(s), s.Mode)
+}
+func marshalPoint(v any, mode string) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err = json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	if mode == "" {
+		mode = "geocoded"
+	}
+	m["mode"] = mode
+	if mode == "manual" {
+		m["lat"], m["lon"] = nil, nil
+	}
+	return json.Marshal(m)
+}
+func HasManual(list []Stop) bool {
+	return len(list) > 0 && list[len(list)-1].Mode == "manual"
 }

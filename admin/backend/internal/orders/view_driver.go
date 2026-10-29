@@ -237,7 +237,7 @@ func listDriverHistory(ctx context.Context, q db.Querier, driverID uuid.UUID, li
 	beforeAt, beforeID := cursorArgs(c)
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.status, o.category, o.fare, o.currency, o.commission_amount, `+commissionChargedColumn+`,
-		       o.payment_method, o.stop_count, o.distance_m, o.created_at, o.completed_at, o.cancelled_at, o.cancelled_by,
+		       o.payment_method, o.stop_count, COALESCE(o.distance_m,0), o.created_at, o.completed_at, o.cancelled_at, o.cancelled_by,
 		       `+endpointColumns+`,
 		       `+loadColumns+`, `+placeColumns+`
 		FROM orders o `+endpointJoins+loadJoin+placeJoin+`

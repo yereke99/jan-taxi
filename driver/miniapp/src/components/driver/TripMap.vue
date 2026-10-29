@@ -15,7 +15,7 @@ import { currentTarget, sortedStops } from '../../features/trip/sequence'
 import { fitToPoints, MapView, straightLine, useCarMarker, useRouteLayer, useStopMarkers, type LineStringGeometry } from '../../maps'
 import { useSessionStore } from '../../stores/session'
 import { effectiveSafeInsets, useTelegramFullscreen } from '../../telegram'
-import type { LatLon } from '../../utils/geo'
+import { hasCoordinates, type LatLon } from '../../utils/geo'
 import { motionMs } from '../../utils/motion'
 import { JEmptyState, JMapButton } from '../ui'
 
@@ -43,15 +43,17 @@ const markers = useStopMarkers(map, {
 const car = useCarMarker(map, t('order.your_location'))
 
 const safe = computed(() => effectiveSafeInsets(tg.state))
-const stops = computed(() => sortedStops(props.order.stops))
-const target = computed(() => (props.live ? currentTarget(props.order) : (stops.value[0] ?? null)))
+const stops = computed(() => sortedStops(props.order.stops).filter(hasCoordinates))
+const target = computed(() => {const s=props.live?currentTarget(props.order):stops.value[0];return s&&hasCoordinates(s)?s:null})
 const padding = computed(() => ({ top: safe.value.top, right: 0, bottom: props.sheetHeight, left: 0 }))
 const pageStyle = computed(() => ({ '--jt-map-attribution-offset': `${props.sheetHeight}px` }))
 
 function geometry(): LineStringGeometry | null {
   const g = props.order.route?.geometry
   if (g && g.type === 'LineString' && Array.isArray(g.coordinates) && g.coordinates.length >= 2) return g as LineStringGeometry
-  // Without a stored route, connect the stops in order (still never invented points).
+  // Never fabricate a route or final leg for a text-only destination.
+  if(props.order.stops.some(s=>s.mode==='manual')) return null
+  // Without a stored route, connect the known stops in order.
   const pts = stops.value
   return pts.length >= 2 ? { type: 'LineString', coordinates: pts.map((s) => [s.lon, s.lat] as [number, number]) } : null
 }

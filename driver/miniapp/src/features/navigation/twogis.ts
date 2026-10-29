@@ -111,3 +111,21 @@ export function planNavigation(input: {
   if (stops.length - 1 > MAX_VIA_POINTS) return result('too_many_points')
   return { primaryUrl: fullRouteUrl(input.base, input.origin, stops), primaryMode: 'full', nextUrl, note: null }
 }
+
+/** A manual final landmark has no navigation coordinates. Preserve the known
+ * prefix (especially pickup A), but never skip a malformed real waypoint. */
+export function navigationPrefix(stops: readonly { mode?: string; lat: number | null; lon: number | null }[]): NavPoint[] {
+  const points: NavPoint[] = []
+  for (let i = 0; i < stops.length; i++) {
+    const stop = stops[i]!
+    if (stop.mode === 'manual') {
+      if (i !== stops.length - 1 || stop.lat !== null || stop.lon !== null) return []
+      break
+    }
+    if (typeof stop.lat !== 'number' || typeof stop.lon !== 'number') return []
+    const point = { lat: stop.lat, lon: stop.lon }
+    if (!validPoint(point)) return []
+    points.push(point)
+  }
+  return points
+}

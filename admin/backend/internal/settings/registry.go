@@ -89,6 +89,25 @@ var (
 
 var registry = []Def{
 	{
+		Key: "orders.manual_destination_enabled", Kind: KindBool, Default: false,
+		Description: Localized{
+			KK: "Координатсыз соңғы мекенжайды қолмен енгізуге рұқсат беру",
+			RU: "Разрешить ручной ввод конечного адреса без координат",
+			EN: "Allow a manually entered final destination without coordinates",
+		},
+	},
+	{
+		Key: "orders.manual_destination_pricing", Kind: KindString, Default: "passenger_tariff_bounds",
+		Description: Localized{
+			KK: "Қолмен енгізілген мекенжайдың бағасы: disabled немесе passenger_tariff_bounds",
+			RU: "Цена ручного адреса: disabled или passenger_tariff_bounds (пределы тарифа администратора)",
+			EN: "Manual destination pricing: disabled or passenger_tariff_bounds (administrator tariff limits)",
+		},
+		check: func(s string) (string, bool) {
+			return s, s == "disabled" || s == "passenger_tariff_bounds"
+		},
+	},
+	{
 		Key: "support.telegram_username", Kind: KindString, Default: "",
 		Description: Localized{
 			KK: "Қолдау қызметінің Telegram пайдаланушы аты (@ белгісінсіз)",

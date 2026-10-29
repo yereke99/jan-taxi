@@ -21,7 +21,7 @@ import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
 import { haptics, navigateBack } from '../../telegram'
-import { haversineMeters, isInKazakhstanBBox, roundCoord, type LatLon } from '../../utils/geo'
+import { hasCoordinates, haversineMeters, isInKazakhstanBBox, roundCoord, type LatLon } from '../../utils/geo'
 
 /** Centre shifts below this (padding changes, rounding) keep the current address. */
 const SAME_POINT_M = 2
@@ -112,7 +112,7 @@ let firstTimer: ReturnType<typeof setTimeout> | undefined
 function init(): boolean {
   if (!stage.map.value) return false
   const existing = booking.stops[index.value]?.place
-  const start = existing ?? (index.value === 0 ? location.current : null)
+  const start = existing && hasCoordinates(existing) ? existing : (index.value === 0 ? location.current : null)
   if (start) stage.centerOn(start, 17)
   // When the camera does not move (already there), resolve the centre directly.
   firstTimer = setTimeout(() => {

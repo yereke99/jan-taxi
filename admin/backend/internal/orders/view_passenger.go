@@ -205,17 +205,17 @@ type OrderSummary struct {
 
 // endpointColumns select the pickup (p) and destination (x) stops of order o.
 const endpointColumns = `
-	p.seq, p.kind, p.lat, p.lon, p.address,
-	x.seq, x.kind, x.lat, x.lon, x.address`
+	p.seq, p.kind, COALESCE(p.lat,0), COALESCE(p.lon,0), p.address, p.mode,
+	x.seq, x.kind, COALESCE(x.lat,0), COALESCE(x.lon,0), x.address, x.mode`
 
 const endpointJoins = `
-	JOIN LATERAL (SELECT seq, kind, lat, lon, address FROM order_stops
+	JOIN LATERAL (SELECT seq, kind, lat, lon, address, mode FROM order_stops
 	              WHERE order_id = o.id ORDER BY seq ASC LIMIT 1) p ON true
-	JOIN LATERAL (SELECT seq, kind, lat, lon, address FROM order_stops
+	JOIN LATERAL (SELECT seq, kind, lat, lon, address, mode FROM order_stops
 	              WHERE order_id = o.id ORDER BY seq DESC LIMIT 1) x ON true`
 
 func endpointDest(p, x *stops.Summary) []any {
-	return []any{&p.Seq, &p.Kind, &p.Lat, &p.Lon, &p.Address, &x.Seq, &x.Kind, &x.Lat, &x.Lon, &x.Address}
+	return []any{&p.Seq, &p.Kind, &p.Lat, &p.Lon, &p.Address, &p.Mode, &x.Seq, &x.Kind, &x.Lat, &x.Lon, &x.Address, &x.Mode}
 }
 
 // listPassengerOrders returns one page of the passenger's orders with the
@@ -224,7 +224,7 @@ func listPassengerOrders(ctx context.Context, q db.Querier, passengerID uuid.UUI
 	beforeAt, beforeID := cursorArgs(c)
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.status, o.category, o.service_type, o.fare, o.currency, o.payment_method,
-		       o.stop_count, o.distance_m, d.first_name, r.rating, o.driver_id IS NOT NULL,
+		       o.stop_count, COALESCE(o.distance_m,0), d.first_name, r.rating, o.driver_id IS NOT NULL,
 		       o.created_at, o.completed_at, o.cancelled_at, `+endpointColumns+`, `+loadColumns+`, `+placeColumns+`
 		FROM orders o
 		LEFT JOIN driver_profiles d ON d.id = o.driver_id

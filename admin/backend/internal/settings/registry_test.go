@@ -14,6 +14,10 @@ func TestNormalize(t *testing.T) {
 		reason string
 	}{
 		{"routing.max_points", `4`, `4`, ""},
+		{"orders.manual_destination_enabled", `true`, `true`, ""},
+		{"orders.manual_destination_pricing", `"passenger_tariff_bounds"`, `"passenger_tariff_bounds"`, ""},
+		{"orders.manual_destination_pricing", `"disabled"`, `"disabled"`, ""},
+		{"orders.manual_destination_pricing", `"guess_distance"`, ``, ReasonInvalid},
 		{"routing.max_points", `6`, ``, ReasonOutOfRange},
 		{"routing.max_points", `1`, ``, ReasonOutOfRange},
 		{"routing.max_points", `4.5`, ``, ReasonInvalidType},
@@ -127,6 +131,7 @@ func TestDefaultsAreValid(t *testing.T) {
 func TestRegistryCoversSeedAndExtraKeys(t *testing.T) {
 	want := []string{
 		"support.telegram_username", "support.phone", "support.hours", "routing.max_points",
+		"orders.manual_destination_enabled", "orders.manual_destination_pricing",
 		"commission.default_bps", "driver.min_online_balance", "driver.require_phone_verification",
 		"topup.min_amount", "topup.max_amount", "topup.expiry_hours", "topup.presets",
 		"delivery.prohibited_items", "delivery.blocked_keywords",

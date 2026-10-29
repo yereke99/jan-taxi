@@ -340,7 +340,7 @@ func listAdminOrders(ctx context.Context, q db.Querier, f adminFilter, limit, of
 		       o.fare, o.currency, o.commission_amount, o.payment_method,
 		       o.passenger_id, pu.telegram_user_id, pu.first_name, pu.last_name, pu.username, pu.phone_e164, pu.is_blocked,
 		       d.id, d.code, d.first_name, d.last_name, COALESCE(d.phone_e164, du.phone_e164),
-		       o.stop_count, o.distance_m,
+		       o.stop_count, COALESCE(o.distance_m,0),
 		       EXISTS (SELECT 1 FROM disputes ds WHERE ds.order_id = o.id AND ds.status = 'open'),
 		       o.created_at, o.accepted_at, o.completed_at, o.cancelled_at, o.cancelled_by, o.cancel_reason_code,
 		       `+endpointColumns+`,

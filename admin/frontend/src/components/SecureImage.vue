@@ -11,7 +11,7 @@ import { useSecureImage } from '../composables/useSecureImage'
 import { isApiError } from '../services/api'
 import AppSpinner from './AppSpinner.vue'
 
-const props = withDefaults(defineProps<{ url: string | null | undefined; label: string; height?: string; fit?: 'cover' | 'contain' }>(), {
+const props = withDefaults(defineProps<{ url: string | null | undefined; label: string; height?: string; fit?: 'cover' | 'contain'; pdf?: boolean }>(), {
   height: '160px',
   fit: 'cover',
 })
@@ -24,8 +24,9 @@ const forbidden = computed(() => isApiError(img.error.value) && img.error.value.
 
 <template>
   <figure class="thumb" :style="{ height }">
+    <iframe v-if="pdf && img.src.value" :src="img.src.value" :title="label" class="thumb__img" />
     <button
-      v-if="img.src.value"
+      v-else-if="img.src.value"
       type="button"
       class="thumb__button"
       :aria-label="`${label} — ${t('viewer.open_viewer')}`"

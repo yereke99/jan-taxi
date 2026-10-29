@@ -1,6 +1,17 @@
 import type { PassengerMessages } from './kk'
 
 export const ru: PassengerMessages = {
+  manual: {
+    action: "Не нашли адрес? Укажите место вручную",
+    helper: "Укажите название места или ориентир, известный местным жителям.",
+    use_search: "Поиск адреса",
+    save: "Сохранить",
+    label: "Место указано пассажиром",
+    route_unknown: "Маршрут не рассчитан",
+    fare_hint: "Укажите цену в пределах тарифа, заданного администратором.",
+    fare_required: "Выберите стоимость поездки.",
+    copy_destination: "Скопировать место назначения",
+  },
   home: {
     greeting: 'Здравствуйте, {name}!',
     greeting_anonymous: 'Здравствуйте!',

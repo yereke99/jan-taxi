@@ -24,6 +24,7 @@ export interface UploadTask<T> {
 export function useUploadTask<T>(
   upload: (blob: Blob, onProgress: (p: UploadProgress) => void, signal: AbortSignal) => Promise<T>,
   onDone?: (result: T) => void,
+  allowPDF = false,
 ): UploadTask<T> {
   const state = ref<UploadState>('idle')
   const progress = ref(0)
@@ -63,14 +64,15 @@ export function useUploadTask<T>(
     state.value = 'preparing'
     error.value = null
     try {
-      prepared = await prepareImage(file)
+      if (allowPDF && file.type === 'application/pdf') {if (file.size > 5 * 1024 * 1024) throw new Error('PDF too large');prepared=file}
+      else prepared = await prepareImage(file)
     } catch (err) {
       prepared = null
       error.value = err
       state.value = 'error'
       return null
     }
-    setPreview(prepared)
+    setPreview(prepared.type === 'application/pdf' ? null : prepared)
     return send()
   }
 

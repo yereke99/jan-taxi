@@ -35,7 +35,7 @@ import { useOrdersStore } from '../stores/orders'
 import { useSessionStore } from '../stores/session'
 import { useTripStore } from '../stores/trip'
 import { useWalletStore } from '../stores/wallet'
-import { normalizeTwoGisBase, planNavigation } from '../features/navigation/twogis'
+import { navigationPrefix, normalizeTwoGisBase, planNavigation } from '../features/navigation/twogis'
 import { useEnsureLocation } from '../features/location/useEnsureLocation'
 import { effectiveSafeInsets, haptics, navigateBack, openExternal, useTelegramFullscreen } from '../telegram'
 import { orderStatusTone } from '../utils/status'
@@ -80,7 +80,7 @@ const twoGisUrl = computed(() => {
     base: normalizeTwoGisBase(session.config.navigation.twogis_base_url),
     platform: tg.state.platform,
     origin: location.current ? { lat: location.current.lat, lon: location.current.lon } : null,
-    remaining: [...o.stops].sort((a, b) => a.seq - b.seq).map((st) => ({ lat: st.lat, lon: st.lon })),
+    remaining: navigationPrefix([...o.stops].sort((a, b) => a.seq - b.seq)),
   })
   return plan?.primaryUrl ?? null
 })

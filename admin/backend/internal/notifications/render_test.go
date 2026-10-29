@@ -13,7 +13,7 @@ var architectureKeys = []string{
 	"order_created_passenger", "order_available_driver", "order_accepted_passenger",
 	"order_accepted_driver", "order_driver_arriving", "order_started", "order_stop_completed",
 	"order_completed_passenger", "order_completed_driver", "order_cancelled_passenger",
-	"order_cancelled_driver", "order_no_driver", "moderation_submitted",
+	"order_cancelled_driver", "order_no_driver", "moderation_submitted", "moderation_review_required",
 	"moderation_approved", "moderation_changes_requested", "moderation_rejected",
 	"driver_suspended", "driver_restored", "topup_created", "topup_confirmed", "topup_rejected",
 	"wallet_low_balance", "dispute_opened", "dispute_resolved", "phone_verified",
@@ -309,7 +309,7 @@ func TestRenderUnsupportedLanguageFallsBackToKazakh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(msg.Text, "<b>Аккаунтыңыз") || msg.Markup.InlineKeyboard[0][0].Text != "Қосымшаны ашу" {
+	if !strings.HasPrefix(msg.Text, "<b>Аккаунт шектеуі") || msg.Markup.InlineKeyboard[0][0].Text != "Қосымшаны ашу" {
 		t.Fatalf("fallback render = %q", msg.Text)
 	}
 }
@@ -411,7 +411,7 @@ func TestValidateParams(t *testing.T) {
 		mutate func(map[string]any)
 	}{
 		{"unknown param", func(m map[string]any) { m["extra"] = 1 }},
-		{"missing required", func(m map[string]any) { delete(m, "route_distance") }},
+		{"missing required", func(m map[string]any) { delete(m, "fare") }},
 		{"empty required", func(m map[string]any) { m["payment_method"] = "  " }},
 		{"bad payment", func(m map[string]any) { m["payment_method"] = "card" }},
 		{"bad cargo size", func(m map[string]any) { m["cargo_size"] = "xxl" }},

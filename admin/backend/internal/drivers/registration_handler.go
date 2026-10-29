@@ -21,16 +21,32 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
 
 // RegistrationResponse loads and renders the user's registration.
-func RegistrationResponse(ctx context.Context, q db.Querier, userID uuid.UUID) (RegistrationView, error) {
+func RegistrationResponse(ctx context.Context, q db.Querier, userID uuid.UUID, services ...*verification.Service) (RegistrationView, error) {
 	reg, err := LoadRegistrationByUser(ctx, q, userID)
 	if err != nil {
 		return RegistrationView{}, err
 	}
-	return NewRegistrationView(reg, settings.RequirePhoneVerification(ctx, q)), nil
+	v := NewRegistrationView(reg, settings.RequirePhoneVerification(ctx, q))
+	if len(services) > 0 && services[0].Enabled() {
+		v.IdentityEnabled = true
+		if v.ID != nil {
+			var err error
+			v.Identity, _, err = services[0].LoadInput(ctx, q, *v.ID)
+			if err != nil {
+				return v, err
+			}
+			v.Verification, err = services[0].Summary(ctx, q, *v.ID, false)
+			if err != nil {
+				return v, err
+			}
+		}
+	}
+	return v, nil
 }
 
 func (h *Handler) getRegistration(w http.ResponseWriter, r *http.Request) error {
@@ -38,7 +54,7 @@ func (h *Handler) getRegistration(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return err
 	}
-	v, err := RegistrationResponse(r.Context(), h.pool, p.UserID)
+	v, err := RegistrationResponse(r.Context(), h.pool, p.UserID, h.verification)
 	if err != nil {
 		return err
 	}
@@ -46,9 +62,10 @@ func (h *Handler) getRegistration(w http.ResponseWriter, r *http.Request) error 
 }
 
 type registrationRequest struct {
-	FirstName *string         `json:"first_name"`
-	LastName  *string         `json:"last_name"`
-	Vehicle   *vehicleRequest `json:"vehicle"`
+	Identity  *verification.Input `json:"identity"`
+	FirstName *string             `json:"first_name"`
+	LastName  *string             `json:"last_name"`
+	Vehicle   *vehicleRequest     `json:"vehicle"`
 	// Location is the device's latest position (optional). On the first
 	// save it decides the driver's city and so the code prefix.
 	Location *registrationPoint `json:"location"`
@@ -76,6 +93,7 @@ type vehicleRequest struct {
 // fields are resolved against the stored vehicle inside the transaction.
 type registrationInput struct {
 	FirstName, LastName string
+	Identity            *verification.Input
 	Vehicle             vehicles.Details
 	Class               classInput
 	Location            *geo.Point // nil when not sent
@@ -91,6 +109,13 @@ type classInput struct {
 
 func (req registrationRequest) validate() (registrationInput, error) {
 	var in registrationInput
+	if req.Identity != nil {
+		v, err := req.Identity.Normalize()
+		if err != nil {
+			return in, err
+		}
+		in.Identity = &v
+	}
 	fields := map[string]string{}
 	in.FirstName = cleanName(req.FirstName, "first_name", fields)
 	in.LastName = cleanName(req.LastName, "last_name", fields)
@@ -264,12 +289,35 @@ func (h *Handler) putRegistration(w http.ResponseWriter, r *http.Request) error 
 	}
 	ctx := r.Context()
 	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		return saveRegistration(ctx, tx, p.UserID, h.opt.DefaultCity, in)
+		if err := saveRegistration(ctx, tx, p.UserID, h.opt.DefaultCity, in); err != nil {
+			return err
+		}
+		if in.Identity != nil {
+			prof, err := ProfileByUser(ctx, tx, p.UserID)
+			if err != nil {
+				return err
+			}
+			if prof.Status == StatusChangesRequested {
+				flagged, err := FlaggedFields(ctx, tx, prof.ID)
+				if err != nil {
+					return err
+				}
+				cur, _, err := h.verification.LoadInput(ctx, tx, prof.ID)
+				if err != nil {
+					return err
+				}
+				if !flagged[FieldIdentity] && (cur == nil || *cur != *in.Identity) {
+					return ErrFieldLocked(map[string]string{"identity": "not_editable"}, flagged)
+				}
+			}
+			return h.verification.SaveInput(ctx, tx, prof.ID, *in.Identity)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	v, err := RegistrationResponse(ctx, h.pool, p.UserID)
+	v, err := RegistrationResponse(ctx, h.pool, p.UserID, h.verification)
 	if err != nil {
 		return err
 	}

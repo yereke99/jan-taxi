@@ -8,6 +8,7 @@ import type { AdminLedgerEntry } from './finance'
 import type { AdminOrderListItem } from './orders'
 
 export const REGISTRATION_FIELDS = [
+ 'identity',
   'avatar',
   'first_name',
   'last_name',
@@ -161,6 +162,10 @@ export interface AdminDriverListItem {
 }
 
 export interface AdminDriverDetail {
+ identity_conflicts?: Array<{kind:string;driver_id:string;driver_code:string;status:string}>
+ identity?: {iin:string;document_type:string;document_number:string;patronymic:string}
+ verification?: {id:string;status:string;confidence:number|null;reasons:string[];created_at:string;finished_at:string|null;result?:{extracted:{iin:string;document_type:string;document_number:string;patronymic:string};first_name:string;last_name:string;comparisons:Record<string,string>;field_confidence:Record<string,number>}}
+ verification_history?: Array<{id:string;status:string;confidence:number|null;reasons:string[];created_at:string;finished_at:string|null}>
   id: string
   code: string
   status: ModerationStatus

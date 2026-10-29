@@ -94,7 +94,12 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	f, err := h.store.SaveImage(ctx, h.pool, p.UserID, spec.purpose, bytes.NewReader(data))
+	var f storage.File
+	if (spec.purpose == storage.PurposeIDFront || spec.purpose == storage.PurposeIDBack) && bytes.HasPrefix(data, []byte("%PDF-")) {
+		f, err = h.store.SavePDF(ctx, h.pool, p.UserID, spec.purpose, data)
+	} else {
+		f, err = h.store.SaveImage(ctx, h.pool, p.UserID, spec.purpose, bytes.NewReader(data))
+	}
 	if err != nil {
 		return err
 	}
@@ -116,7 +121,7 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return httpx.Created(w, FileRef{
-		ID: f.ID, Kind: kind, URL: DriverFileURL + f.ID.String(), Width: f.Width, Height: f.Height, CreatedAt: f.CreatedAt.UTC(),
+		ID: f.ID, Kind: kind, URL: DriverFileURL + f.ID.String(), Mime: f.Mime, Width: f.Width, Height: f.Height, CreatedAt: f.CreatedAt.UTC(),
 	})
 }
 
@@ -388,7 +393,7 @@ func (h *Handler) getAdminFile(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
-	storage.ServeImage(w, r, f, rc)
+	storage.ServeFile(w, r, f, rc)
 	return nil
 }
 
@@ -426,6 +431,6 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, id uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	storage.ServeImage(w, r, f, rc)
+	storage.ServeFile(w, r, f, rc)
 	return nil
 }

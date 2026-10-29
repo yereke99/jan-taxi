@@ -11,6 +11,7 @@ export const STEP_IDS = ['personal', 'phone', 'documents', 'vehicle_class', 'veh
 export type StepId = (typeof STEP_IDS)[number]
 
 export const FIELD_STEP: Record<RegistrationField, StepId> = {
+  identity: 'personal',
   avatar: 'personal',
   first_name: 'personal',
   last_name: 'personal',
@@ -30,6 +31,7 @@ export const LIMITS = { name: 60, make: 40, model: 40, color: 30, plate: 20 } as
 export const MAX_EXTRA_PHOTOS = 4
 
 export interface RegistrationForm {
+ identity?: import('../../api/types').DriverIdentity
   first_name: string
   last_name: string
   /** Vehicle class code; '' until chosen. */
@@ -49,6 +51,7 @@ export type FormErrors = Partial<Record<keyof RegistrationForm, FieldError>>
 
 export function formFromRegistration(r: DriverRegistration): RegistrationForm {
   return {
+    ...(r.identity_enabled ? {identity: r.identity ? {...r.identity} : {document_type:'id_card' as const,iin:'',document_number:'',patronymic:''}} : {}),
     first_name: r.first_name,
     last_name: r.last_name,
     vehicle_class: r.vehicle.vehicle_class ?? '',
@@ -193,6 +196,7 @@ export function isCorrectionMode(r: Pick<DriverRegistration, 'status'>): boolean
 
 /** Form fields belonging to each registration field (for locking text inputs). */
 const FORM_FIELD_OWNER: Record<keyof RegistrationForm, RegistrationField> = {
+  identity: 'identity',
   first_name: 'first_name',
   last_name: 'last_name',
   vehicle_class: 'vehicle_class',
@@ -233,11 +237,12 @@ export function buildUpdate(r: DriverRegistration, f: RegistrationForm): DriverR
     const litres = parseLitres(f.cargo_volume_l)
     if (litres !== null) vehicle.cargo_volume_l = litres
   }
-  return { first_name: pick('first_name', r.first_name), last_name: pick('last_name', r.last_name), vehicle }
+  return { first_name: pick('first_name', r.first_name), last_name: pick('last_name', r.last_name), vehicle, ...(r.identity_enabled && f.identity ? {identity:isFormFieldLocked(editable,'identity') ? r.identity : {...f.identity}} : {}) }
 }
 
 export function sameUpdate(a: DriverRegistrationUpdate, b: DriverRegistrationUpdate): boolean {
   return (
+    JSON.stringify(a.identity) === JSON.stringify(b.identity) &&
     a.first_name === b.first_name &&
     a.last_name === b.last_name &&
     a.vehicle.make === b.vehicle.make &&

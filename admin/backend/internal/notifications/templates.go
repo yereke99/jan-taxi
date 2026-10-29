@@ -227,6 +227,7 @@ const (
 	TplOrderCancelledDriver       = "order_cancelled_driver"
 	TplOrderNoDriver              = "order_no_driver"
 	TplModerationSubmitted        = "moderation_submitted"
+	TplModerationReviewRequired   = "moderation_review_required"
 	TplModerationApproved         = "moderation_approved"
 	TplModerationChangesRequested = "moderation_changes_requested"
 	TplModerationRejected         = "moderation_rejected"
@@ -297,8 +298,8 @@ var registry = buildRegistry([]*Template{
 			{Name: "via", Kind: KindText, Optional: true, Description: "intermediate stop addresses joined with \" → \""},
 			pDestination,
 			{Name: "pickup_distance", Kind: KindDistance, Optional: true, Description: "driver's distance to the pickup, metres"},
-			{Name: "route_distance", Kind: KindDistance, Description: "route length, metres"},
-			{Name: "route_duration", Kind: KindDuration, Description: "route duration, seconds"},
+			{Name: "route_distance", Kind: KindDistance, Optional: true, Description: "route length, metres"},
+			{Name: "route_duration", Kind: KindDuration, Optional: true, Description: "route duration, seconds"},
 			pFare, pPayment,
 			{Name: "passengers", Kind: KindNumber, Optional: true, Description: "taxi passenger count"},
 			{Name: "cargo_size", Kind: KindCargoSize, Optional: true, Description: "delivery cargo size: s | m | l | xl"},
@@ -432,9 +433,17 @@ var registry = buildRegistry([]*Template{
 	{
 		Key: TplModerationSubmitted, Bots: driverOnly,
 		Bodies: labels(
-			"<b>Өтінім жіберілді</b>\nДеректеріңізді тексеріп жатырмыз. Нәтижесін осы чатқа жібереміз.",
-			"<b>Заявка отправлена</b>\nМы проверяем ваши данные. Результат пришлём в этот чат.",
-			"<b>Application submitted</b>\nWe're reviewing your details and will send the result to this chat."),
+			"<b>Өтініміңіз қабылданды!</b>\nҚұжаттарыңыз тексеріліп жатыр. Мақсатымыз — шамамен 5 минут ішінде жауап беру. Кезек немесе қосымша тексеру болса, ұзағырақ уақыт қажет болуы мүмкін. Нәтижесін осы чатқа жібереміз.",
+			"<b>Ваша заявка принята!</b>\nДокументы проверяются. Цель — ответить примерно за 5 минут. Очередь или дополнительная проверка могут занять больше времени. Результат пришлём в этот чат.",
+			"<b>Your application has been received!</b>\nWe aim to review your documents in about 5 minutes. A queue or additional review may take longer. We will send the result to this chat."),
+		Button: btnRegister,
+	},
+	{
+		Key: TplModerationReviewRequired, Bots: driverOnly,
+		Bodies: labels(
+			"<b>Қосымша тексеру қажет</b>\nӨтініміңіз әкімшіге жіберілді. Нәтижесін осы чатқа хабарлаймыз.",
+			"<b>Нужна дополнительная проверка</b>\nВаша заявка передана администратору. Результат сообщим в этом чате.",
+			"<b>Additional review required</b>\nYour application has been sent to an administrator. We will notify you here."),
 		Button: btnRegister,
 	},
 	{
@@ -476,9 +485,9 @@ var registry = buildRegistry([]*Template{
 	{
 		Key: TplDriverRestored, Bots: driverOnly,
 		Bodies: labels(
-			"<b>Аккаунтыңыз қайта іске қосылды</b>\nЕнді желіге шығып, тапсырыс ала аласыз.",
-			"<b>Ваш аккаунт восстановлен</b>\nМожно снова выходить на линию и принимать заказы.",
-			"<b>Your account is active again</b>\nYou can go online and take orders."),
+			"<b>Аккаунт шектеуі алынды</b>\nӨтініміңіздің қазіргі күйін қосымшадан тексеріңіз.",
+			"<b>Ограничение аккаунта снято</b>\nПроверьте текущий статус заявки в приложении.",
+			"<b>Your account restriction was removed</b>\nCheck the current application status in the app."),
 		Button: &Button{Label: labels("Қосымшаны ашу", "Открыть приложение", "Open app"), StartParam: "home"},
 	},
 	{

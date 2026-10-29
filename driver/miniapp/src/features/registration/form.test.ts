@@ -187,8 +187,19 @@ describe('correction locking', () => {
     registration({ status: 'changes_requested', corrections: fields.map((field) => ({ field, reason: 'other', comment: null })) })
 
   it('everything is editable in draft (and before the profile exists)', () => {
-    expect(editableFields(registration()).size).toBe(11)
-    expect(editableFields(registration({ id: null, status: 'draft' })).size).toBe(11)
+    expect(editableFields(registration()).size).toBe(12)
+    expect(editableFields(registration({ id: null, status: 'draft' })).size).toBe(12)
+  })
+
+  it('preserves identity values, leading zeros and document type, and detects edits', () => {
+    const r=registration({identity_enabled:true,identity:{iin:'999999999990',document_number:'001234567',document_type:'id_card',patronymic:''}})
+    const f=formFromRegistration(r)
+    const before=buildUpdate(r,f)
+    expect(before.identity?.document_number).toBe('001234567')
+    f.identity!.document_number='009876543'
+    expect(sameUpdate(before,buildUpdate(r,f))).toBe(false)
+    const locked=registration({...r,status:'changes_requested',corrections:[{field:'first_name',reason:'other',comment:null}]})
+    expect(buildUpdate(locked,f).identity?.document_number).toBe('001234567')
   })
 
   it('only flagged fields are editable in changes_requested', () => {

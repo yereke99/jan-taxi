@@ -27,7 +27,7 @@ import { useOrdersStore } from '../../stores/orders'
 import { useSessionStore } from '../../stores/session'
 import { haptics } from '../../telegram'
 import { formatMoney } from '../../utils/format'
-import { haversineMeters, roundCoord, type LatLon } from '../../utils/geo'
+import { hasCoordinates, haversineMeters, roundCoord, type LatLon } from '../../utils/geo'
 import { CATEGORIES, type Category } from '../../utils/status'
 import { useAddressText } from '../../i18n/core'
 
@@ -116,7 +116,7 @@ const runner = createLatest<LatLon, GeoReverse>({
 function resolvePin(center: LatLon): void {
   // Already the pickup (resolved earlier, chosen in search or filled from GPS).
   const place = booking.stops[0]?.place
-  if (place && haversineMeters(place, center) < PIN_SAME_PLACE_M) {
+  if (place && hasCoordinates(place) && haversineMeters(place, center) < PIN_SAME_PLACE_M) {
     runner.cancel()
     pending = null
     pinLoading.value = false
@@ -156,7 +156,7 @@ watch(
   ([map, loc, locating]) => {
     if (!map || centred || userMoved) return
     const target = booking.stops[0]?.place ?? loc
-    if (target) {
+    if (target && hasCoordinates(target)) {
       centred = true
       stage.centerOn(target, 16)
     } else if (!locating && pending === null) {

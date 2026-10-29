@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
@@ -63,6 +64,23 @@ func TestSavePDF(t *testing.T) {
 	if n, err := s.RemoveOrphans(ctx, pool, 0); err != nil || n != 0 {
 		t.Fatalf("orphans removed %d (%v)", n, err)
 	}
+}
+
+func TestIdentityPDFPageAndInspectionLimits(t *testing.T) {
+	pool := testutil.NewDB(t)
+	owner, _ := testutil.CreateUser(t, pool)
+	s := newStore(t)
+	ctx := context.Background()
+	if _, err := s.SavePDF(ctx, pool, owner, PurposeIDFront, minimalPDF); err != nil {
+		t.Fatal("valid identity PDF rejected", err)
+	}
+	three := bytes.ReplaceAll(minimalPDF, []byte("/Kids [3 0 R] /Count 1"), []byte("/Kids [3 0 R 5 0 R 6 0 R] /Count 3"))
+	three = bytes.Replace(three, []byte("trailer"), []byte("5 0 obj <</Type /Page /Parent 2 0 R>> endobj\n6 0 obj <</Type /Page /Parent 2 0 R>> endobj\ntrailer"), 1)
+	_, err := s.SavePDF(ctx, pool, owner, PurposeIDFront, three)
+	wantHTTPError(t, err, 422, "pdf_page_limit")
+	deep := bytes.Replace(minimalPDF, []byte("/Type /Catalog /Pages"), []byte("/Nested "+strings.Repeat("<</Nested ", 40)+"null"+strings.Repeat(">>", 40)+" /Type /Catalog /Pages"), 1)
+	_, err = s.SavePDF(ctx, pool, owner, PurposeIDBack, deep)
+	wantHTTPError(t, err, 422, "pdf_unreadable")
 }
 
 func TestSavePDFRejects(t *testing.T) {

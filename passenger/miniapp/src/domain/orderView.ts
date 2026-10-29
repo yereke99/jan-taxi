@@ -4,7 +4,7 @@
 
 import type { Order, OrderPlace } from '../api/types'
 import { STOP_LETTERS } from '../maps/constants'
-import { haversineMeters } from '../utils/geo'
+import { hasCoordinates, haversineMeters } from '../utils/geo'
 import type { StopMarkerPoint } from '../maps/useStopMarkers'
 import type { LatLon } from '../utils/geo'
 import { isActiveOrderStatus } from '../utils/status'
@@ -108,25 +108,25 @@ export function arrivalMinutes(o: Order, now = Date.now()): number | null {
   }
   const loc = o.driver_location
   const pickup = o.stops[0]
-  if (!loc || !pickup) return null
+  if (!loc || !pickup || !hasCoordinates(pickup)) return null
   return Math.max(1, Math.round((haversineMeters(loc, pickup) * ROAD_FACTOR) / TOWN_SPEED_MPS / 60))
 }
 
 /** Map markers for the order's stops. */
 export function orderMarkers(o: Order): StopMarkerPoint[] {
-  return o.stops.map((s, i) => ({
+  return o.stops.flatMap((s, i) => hasCoordinates(s) ? [{
     lat: s.lat,
     lon: s.lon,
     letter: STOP_LETTERS[i],
     done: s.completed_at !== null && o.status === 'in_progress',
     pulse: o.status === 'searching' && i === 0,
-  }))
+  }] : [])
 }
 
 /** The stop the driver heads to next, or null when no driver is on the way. */
 export function nextStop(o: Order): LatLon | null {
-  if (o.status === 'accepted' || o.status === 'driver_arriving') return o.stops[0] ?? null
-  if (o.status === 'in_progress') return o.stops.find((s, i) => i > 0 && s.completed_at === null) ?? null
+  if (o.status === 'accepted' || o.status === 'driver_arriving') {const s=o.stops[0];return s && hasCoordinates(s) ? s : null}
+  if (o.status === 'in_progress') {const s=o.stops.find((s,i)=>i>0&&s.completed_at===null);return s && hasCoordinates(s)?s:null}
   return null
 }
 
@@ -136,9 +136,9 @@ export function framingPoints(o: Order): LatLon[] {
   if (driver && isActiveOrderStatus(o.status) && o.status !== 'searching') {
     const rest =
       o.status === 'in_progress' ? o.stops.filter((s, i) => i > 0 && s.completed_at === null) : o.stops.slice(0, 1)
-    return [driver, ...rest]
+    return [driver, ...rest.filter(hasCoordinates)]
   }
-  const pts: LatLon[] = [...o.stops]
+  const pts: LatLon[] = o.stops.filter(hasCoordinates)
   const b = o.route.bbox
   if (b) pts.push({ lon: b[0], lat: b[1] }, { lon: b[2], lat: b[3] })
   return pts

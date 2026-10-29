@@ -103,6 +103,7 @@ export interface CommissionPolicy {
 }
 
 export interface PublicConfig {
+  orders?: { manual_destination_enabled: boolean; manual_destination_pricing: string }
   app: string
   default_language: Locale
   languages: Locale[]
@@ -189,6 +190,7 @@ function httpsUrlOrNull(v: unknown): string | null {
 
 export function defaultPublicConfig(): PublicConfig {
   return {
+    orders: {manual_destination_enabled:false,manual_destination_pricing:'disabled'},
     app: '',
     default_language: 'kk',
     languages: [...LOCALES],
@@ -329,6 +331,7 @@ export function normalizePublicConfig(raw: unknown): PublicConfig {
   const languages = Array.isArray(r.languages) ? r.languages.map(locale).filter((l): l is Locale => l !== null) : []
   return {
     app: strOrNull(r.app) ?? d.app,
+    orders: {manual_destination_enabled: rec(r.orders).manual_destination_enabled === true,manual_destination_pricing: strOrNull(rec(r.orders).manual_destination_pricing) ?? 'disabled'},
     default_language: locale(r.default_language) ?? d.default_language,
     languages: languages.length > 0 ? languages : d.languages,
     city,

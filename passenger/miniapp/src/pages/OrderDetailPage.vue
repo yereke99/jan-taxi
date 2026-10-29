@@ -32,7 +32,7 @@ import { useBookingStore } from '../stores/booking'
 import { useOrdersStore } from '../stores/orders'
 import { useSessionStore } from '../stores/session'
 import { formatDateTime, formatDistance, formatDuration, formatMoney } from '../utils/format'
-import { boundsOf, type LatLon } from '../utils/geo'
+import { boundsOf, hasCoordinates, type LatLon } from '../utils/geo'
 import { formatKzPhone } from '../utils/phone'
 import { isActiveOrderStatus, orderStatusTone } from '../utils/status'
 
@@ -72,7 +72,7 @@ const markers = useStopMarkers(map)
 function drawRoute(o: Order, m: MapLibreMap): void {
   markers.setStops(orderMarkers(o).map((p) => ({ ...p, pulse: false })))
   routeLayer.setRoute(o.route.geometry)
-  const pts: LatLon[] = [...o.stops]
+  const pts: LatLon[] = o.stops.filter(hasCoordinates)
   const b = o.route.bbox
   if (b) pts.push({ lon: b[0], lat: b[1] }, { lon: b[2], lat: b[3] })
   const bounds = boundsOf(pts)
@@ -131,7 +131,7 @@ function onDisputeSent(o: Order): void {
       <div class="detail-map">
         <MapView
           :style-url="session.config.map.style_url"
-          :center="order.stops[0] ?? session.config.map.default_center"
+          :center="order.stops.filter(hasCoordinates)[0] ?? session.config.map.default_center"
           :zoom="13"
           :interactive="false"
           @ready="onMapReady"

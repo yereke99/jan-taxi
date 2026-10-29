@@ -2542,6 +2542,22 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
   # ----------------------------------------------------------- admin-drivers
+  /admin/verification/queue:
+    get:
+      operationId: adminGetVerificationQueue
+      tags: [admin-drivers]
+      summary: Document verification queue depth and age
+      x-jantaxi-permission: drivers.moderate
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Bounded OCR queue statistics; no identity data.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VerificationQueueStats'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
   /admin/drivers:
     get:
       operationId: adminListDrivers
@@ -5054,6 +5070,12 @@ components:
       description: Full driver record for moderators and operators. File URLs point to `/api/v1/admin/files/{id}`.
       required: [id, code, status, first_name, last_name, phone, phone_verified, phone_verified_at, city, is_online, online_since, last_heartbeat_at, user, avatar, documents, vehicle, corrections, applications, moderation_events, wallet, welcome_bonus, bonuses, stats, last_location, active_order, rating, rating_count, completed_trips, submitted_at, approved_at, suspended_at, suspended_reason, pd_consent_at, pd_consent_version, created_at, updated_at]
       properties:
+        identity: {$ref: '#/components/schemas/IdentityInput'}
+        verification: {$ref: '#/components/schemas/VerificationSummary'}
+        verification_history:
+          type: array
+          description: Protected extracted values are present only for documents.view administrators; sensitive views are audited.
+          items: {$ref: '#/components/schemas/VerificationSummary'}
         id: {type: string, format: uuid}
         code: {type: string, example: EMB001}
         status: {$ref: '#/components/schemas/DriverStatus'}
@@ -5257,8 +5279,8 @@ components:
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
         tariff_id: {type: string, format: uuid}
         quote_id: {type: [string, 'null'], format: uuid}
-        distance_m: {type: integer, minimum: 0}
-        duration_s: {type: integer, minimum: 0}
+        distance_m: {type: [integer, 'null'], minimum: 0}
+        duration_s: {type: [integer, 'null'], minimum: 0}
         stop_count: {type: integer, minimum: 2, maximum: 5}
         city: {$ref: '#/components/schemas/CityRef'}
         stops:
@@ -5392,7 +5414,7 @@ components:
         pickup: {$ref: '#/components/schemas/StopSummary'}
         destination: {$ref: '#/components/schemas/StopSummary'}
         stop_count: {type: integer, minimum: 2, maximum: 5}
-        distance_m: {type: integer, minimum: 0}
+        distance_m: {type: [integer, 'null'], minimum: 0}
         has_open_dispute: {type: boolean}
         created_at: {type: string, format: date-time}
         accepted_at: {type: [string, 'null'], format: date-time}
@@ -6202,7 +6224,7 @@ components:
         file:
           type: string
           contentMediaType: application/octet-stream
-          description: JPEG, PNG or WebP image, at most 10 MiB.
+          description: JPEG, PNG or WebP image, at most 10 MiB. Identity fronts/backs may also be PDF, at most 5 MiB and two actual pages; no encryption or active content. Avatar and vehicle uploads remain images.
     DriverLastLocation:
       type: object
       required: [lat, lon, accuracy_m, heading, speed_mps, source, recorded_at, received_at, age_s]
@@ -6307,8 +6329,8 @@ components:
           description: Commission reserved from the driver's wallet on acceptance.
           example: 80
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
-        distance_m: {type: integer, minimum: 0, example: 1840}
-        duration_s: {type: integer, minimum: 0, example: 260}
+        distance_m: {type: [integer, 'null'], minimum: 0, example: 1840}
+        duration_s: {type: [integer, 'null'], minimum: 0, example: 260}
         distance_to_pickup_m:
           type: [integer, 'null']
           description: Straight-line distance from the driver's last known location; `null` without a location.
@@ -6353,8 +6375,8 @@ components:
         commission_amount: {type: integer, format: int64, example: 80}
         commission_charged: {type: integer, format: int64, minimum: 0, example: 50, description: 'Commission the driver''s wallet paid for this order (charges minus refunds); 0 when the order is not theirs. Kept when the passenger cancels (§22.2).'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
-        distance_m: {type: integer, minimum: 0, example: 1840}
-        duration_s: {type: integer, minimum: 0, example: 260}
+        distance_m: {type: [integer, 'null'], minimum: 0, example: 1840}
+        duration_s: {type: [integer, 'null'], minimum: 0, example: 260}
         distance_to_pickup_m: {type: [integer, 'null'], example: 650}
         stop_count: {type: integer, minimum: 2, maximum: 5}
         stops:
@@ -6424,7 +6446,7 @@ components:
         pickup: {$ref: '#/components/schemas/StopSummary'}
         destination: {$ref: '#/components/schemas/StopSummary'}
         stop_count: {type: integer, minimum: 2, maximum: 5}
-        distance_m: {type: integer, minimum: 0}
+        distance_m: {type: [integer, 'null'], minimum: 0}
         created_at: {type: string, format: date-time}
         completed_at: {type: [string, 'null'], format: date-time}
         cancelled_at: {type: [string, 'null'], format: date-time}
@@ -6490,6 +6512,9 @@ components:
       type: object
       required: [id, status, code, city, first_name, last_name, phone, phone_verified, avatar, documents, vehicle, corrections, correction_comment, rejection_reason, missing_fields, editable, can_submit, submitted_at, history, pd_consent_at, pd_consent_version]
       properties:
+        identity_enabled: {type: boolean, description: Identity input is required for new submissions when verification is enabled; historical approved profiles remain valid.}
+        identity: {$ref: '#/components/schemas/IdentityInput'}
+        verification: {$ref: '#/components/schemas/VerificationSummary'}
         id:
           type: [string, 'null']
           format: uuid
@@ -6606,6 +6631,7 @@ components:
       description: Full replacement of the text fields; every key must be present, empty strings are allowed while drafting.
       required: [first_name, last_name, vehicle]
       properties:
+        identity: {$ref: '#/components/schemas/IdentityInput'}
         first_name: {type: string, maxLength: 60, description: 'Letters, spaces, `-`, `''`, `.`.', example: Ерлан}
         last_name: {type: string, maxLength: 60, example: Бекенов}
         vehicle: {$ref: '#/components/schemas/VehicleInput'}
@@ -6824,10 +6850,10 @@ components:
       description: |
         Allowed fares for the quote; the passenger picks one of `options`. `min` is the computed
         trip price rounded up to `step` and clamped to the tariff's `[min_fare, max_fare]`;
-        `recommended` equals `min`; `max` is the tariff's `max_fare`.
+        `recommended` equals `min`; `max` is the tariff's `max_fare`. For a manual destination, `min`, `max` and `step` come directly from the active administrator tariff and `recommended` is null.
       required: [recommended, min, max, step, options]
       properties:
-        recommended: {type: integer, minimum: 1, example: 800}
+        recommended: {type: [integer, 'null'], minimum: 1, description: Null for manual destinations; passenger must explicitly choose the fare., example: 800}
         min: {type: integer, minimum: 1, example: 800}
         max: {type: integer, minimum: 1, example: 1500}
         step: {type: integer, minimum: 1, example: 50}
@@ -6870,11 +6896,12 @@ components:
         directly (cookie session).
       required: [id, kind, url, width, height, created_at]
       properties:
+        mime: {type: string, enum: [image/jpeg, application/pdf]}
         id: {type: string, format: uuid}
         kind: {$ref: '#/components/schemas/FileKind'}
         url: {type: string, example: /api/v1/driver/files/4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d}
-        width: {type: integer, minimum: 1, example: 1200}
-        height: {type: integer, minimum: 1, example: 1600}
+        width: {type: integer, minimum: 0, description: Zero for a PDF., example: 1200}
+        height: {type: integer, minimum: 0, description: Zero for a PDF., example: 1600}
         created_at: {type: string, format: date-time}
     GeoJsonLineString:
       type: object
@@ -7228,8 +7255,8 @@ components:
         fare: {type: integer, format: int64, description: 'Agreed fare in KZT, paid to the driver directly.', example: 800}
         currency: {$ref: '#/components/schemas/Currency'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
-        distance_m: {type: integer, minimum: 0}
-        duration_s: {type: integer, minimum: 0}
+        distance_m: {type: [integer, 'null'], minimum: 0}
+        duration_s: {type: [integer, 'null'], minimum: 0}
         stop_count: {type: integer, minimum: 2, maximum: 5}
         city: {$ref: '#/components/schemas/CityRef'}
         stops:
@@ -7524,7 +7551,7 @@ components:
         pickup: {$ref: '#/components/schemas/StopSummary'}
         destination: {$ref: '#/components/schemas/StopSummary'}
         stop_count: {type: integer, minimum: 2, maximum: 5}
-        distance_m: {type: integer, minimum: 0}
+        distance_m: {type: [integer, 'null'], minimum: 0}
         driver_first_name: {type: [string, 'null'], example: Ерлан}
         rating: {type: [integer, 'null'], minimum: 1, maximum: 5}
         can_rate: {type: boolean}
@@ -7721,6 +7748,12 @@ components:
       type: object
       required: [app, default_language, languages, city, map, routing, bots, support, delivery, navigation, vehicle_classes, cargo_sizes, max_passenger_count]
       properties:
+        orders:
+          type: object
+          required: [manual_destination_enabled, manual_destination_pricing]
+          properties:
+            manual_destination_enabled: {type: boolean, default: false, description: Enable only after all order readers support nullable destinations and route totals.}
+            manual_destination_pricing: {type: string, enum: [disabled, passenger_tariff_bounds]}
         app: {type: string, enum: [passenger, driver, admin]}
         default_language: {$ref: '#/components/schemas/Language'}
         languages:
@@ -7847,10 +7880,11 @@ components:
       description: Normalised stop echoed in a quote.
       required: [seq, kind, lat, lon, address, address_details]
       properties:
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
         seq: {type: integer, minimum: 0, maximum: 4}
         kind: {$ref: '#/components/schemas/StopKind'}
-        lat: {type: number}
-        lon: {type: number}
+        lat: {type: [number, 'null']}
+        lon: {type: [number, 'null']}
         address: {type: string, maxLength: 200}
         address_details: {type: [string, 'null'], maxLength: 120}
     ReadinessStatus:
@@ -8073,7 +8107,37 @@ components:
     RegistrationField:
       type: string
       description: Registration field addressed by corrections and `missing_fields`.
-      enum: [avatar, first_name, last_name, phone, id_front, id_back, vehicle_class, vehicle_make_model, vehicle_color, vehicle_plate, vehicle_photos]
+      enum: [avatar, first_name, last_name, phone, id_front, id_back, identity, vehicle_class, vehicle_make_model, vehicle_color, vehicle_plate, vehicle_photos]
+    IdentityInput:
+      type: object
+      description: Protected identity fields. Names are not unique; verified document ownership is unique by issuer, type and normalized number. Leading zeros are preserved. Uncertain recognition never reserves identity ownership.
+      additionalProperties: false
+      properties:
+        document_type: {type: string, enum: [id_card, driving_licence]}
+        iin: {type: string, maxLength: 12, description: Twelve digits with checksum validation on submission; empty while drafting.}
+        document_number: {type: string, maxLength: 20}
+        patronymic: {type: string, maxLength: 60, description: Optional when absent from the document.}
+    VerificationSummary:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [pending, processing, matched, admin_review, approved, superseded]}
+        confidence: {type: [number, 'null'], minimum: 0, maximum: 100}
+        reasons: {type: array, items: {type: string}}
+        attempts: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        finished_at: {type: [string, 'null'], format: date-time}
+        result:
+          type: object
+          description: Extracted identity, per-field confidence and comparisons; only in authorized sensitive responses, never ordinary logs or bot messages.
+          additionalProperties: true
+    VerificationQueueStats:
+      type: object
+      properties:
+        pending: {type: integer, minimum: 0}
+        processing: {type: integer, minimum: 0, maximum: 1}
+        review: {type: integer, minimum: 0}
+        oldest_seconds: {type: number, minimum: 0}
     RegistrationHistoryItem:
       type: object
       required: [action, from_status, to_status, comment, corrections, created_at]
@@ -8150,6 +8214,7 @@ components:
       type: object
       required: [quote_id, expires_at, category, city, stops, distance_m, duration_s, legs, geometry, bbox, fare, currency, commission_bps, payment_methods, vehicle_class, passenger_count, cargo_size, options, locality, tariff_region]
       properties:
+        pricing_mode: {type: string, enum: [passenger_tariff_bounds], description: Present for manual destinations; no route-derived fare recommendation.}
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         quote_id: {type: string, format: uuid}
@@ -8159,8 +8224,8 @@ components:
         stops:
           type: array
           items: {$ref: '#/components/schemas/QuoteStop'}
-        distance_m: {type: integer, minimum: 0}
-        duration_s: {type: integer, minimum: 0}
+        distance_m: {type: [integer, 'null'], minimum: 0}
+        duration_s: {type: [integer, 'null'], minimum: 0}
         legs:
           type: array
           description: One leg per pair of consecutive stops.
@@ -8220,8 +8285,8 @@ components:
           oneOf:
             - $ref: '#/components/schemas/BBox'
             - type: 'null'
-        distance_m: {type: integer, minimum: 0, example: 1840}
-        duration_s: {type: integer, minimum: 0, example: 260}
+        distance_m: {type: [integer, 'null'], minimum: 0, example: 1840}
+        duration_s: {type: [integer, 'null'], minimum: 0, example: 260}
     ServiceType:
       type: string
       description: Derived from the category (`taxi` → `passenger`, `parcel`/`other` → `delivery`).
@@ -8284,11 +8349,12 @@ components:
       type: object
       required: [id, seq, kind, lat, lon, address, address_details, completed_at]
       properties:
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
         id: {type: string, format: uuid}
         seq: {type: integer, minimum: 0, maximum: 4, description: 0 is the pickup.}
         kind: {$ref: '#/components/schemas/StopKind'}
-        lat: {type: number, example: 48.8264}
-        lon: {type: number, example: 58.1442}
+        lat: {type: [number, 'null'], example: 48.8264}
+        lon: {type: [number, 'null'], example: 58.1442}
         address: {type: string, maxLength: 200}
         address_details: {type: [string, 'null'], maxLength: 120, description: 'Entrance, floor, landmark.'}
         completed_at: {type: [string, 'null'], format: date-time}
@@ -8297,8 +8363,9 @@ components:
       additionalProperties: false
       required: [lat, lon, address]
       properties:
-        lat: {type: number, minimum: -90, maximum: 90, example: 48.8264}
-        lon: {type: number, minimum: -180, maximum: 180, example: 58.1442}
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
+        lat: {type: [number, 'null'], minimum: -90, maximum: 90, example: 48.8264}
+        lon: {type: [number, 'null'], minimum: -180, maximum: 180, example: 58.1442}
         address:
           type: string
           description: Display address from search / reverse geocoding (or the formatted coordinates).
@@ -8306,6 +8373,19 @@ components:
           maxLength: 200
           example: 'Жиенқали Тілепбергенов көшесі, 12'
         address_details: {type: [string, 'null'], maxLength: 120, description: 'Entrance, floor or landmark; free-text rules apply. Empty or `null` means none.', example: 2-кіреберіс}
+      allOf:
+        - if:
+            required: [mode]
+            properties:
+              mode: {const: manual}
+          then:
+            properties:
+              lat: {type: 'null'}
+              lon: {type: 'null'}
+          else:
+            properties:
+              lat: {type: number}
+              lon: {type: number}
     StopKind:
       type: string
       enum: [pickup, intermediate, destination]
@@ -8313,10 +8393,11 @@ components:
       type: object
       required: [seq, kind, lat, lon, address]
       properties:
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
         seq: {type: integer, minimum: 0, maximum: 4}
         kind: {$ref: '#/components/schemas/StopKind'}
-        lat: {type: number, example: 48.8264}
-        lon: {type: number, example: 58.1442}
+        lat: {type: [number, 'null'], example: 48.8264}
+        lon: {type: [number, 'null'], example: 58.1442}
         address: {type: string, example: 'Жиенқали Тілепбергенов көшесі, 12'}
     Tariff:
       type: object

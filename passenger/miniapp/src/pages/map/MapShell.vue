@@ -23,7 +23,7 @@ import { useBookingStore } from '../../stores/booking'
 import { useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
 import { canOpenLocationSettings, isTelegram, LocationError, navigateBack, openLocationSettings, useTelegramFullscreen, type DeviceLocation } from '../../telegram'
-import { haversineMeters } from '../../utils/geo'
+import { hasCoordinates, haversineMeters } from '../../utils/geo'
 import { motionMs } from '../../utils/motion'
 
 /** Gap between the sheet top and the floating buttons; clears the attribution row. */
@@ -63,7 +63,7 @@ const tg = useTelegramFullscreen()
 // centre from the config is only the fallback before the first GPS fix.
 const known = location.current ?? booking.stops[0]?.place ?? null
 const initialView = {
-  center: known ? { lat: known.lat, lon: known.lon } : session.config.map.default_center,
+  center: known && hasCoordinates(known) ? { lat: known.lat, lon: known.lon } : session.config.map.default_center,
   zoom: known ? 16 : session.config.map.default_zoom,
 }
 

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -88,7 +89,7 @@ func listCards(ctx context.Context, q db.Querier, p settings.DispatchSettings, d
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.category, o.service_type, o.cargo_type, o.stop_count, o.comment,
 		       o.cargo_description, o.fare, o.currency, o.commission_amount, o.payment_method,
-		       o.distance_m, o.duration_s, o.created_at, o.search_expires_at, `+distanceToPickup+`,
+		       COALESCE(o.distance_m,0), COALESCE(o.duration_s,0), o.created_at, o.search_expires_at, `+distanceToPickup+`,
 		       o.vehicle_class, cvc.name_kk, cvc.name_ru, cvc.name_en, o.passenger_count, o.cargo_size, o.cargo_volume_l,
 		       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en
 		`+orderFrom+`
@@ -237,4 +238,21 @@ func AvailableCard(ctx context.Context, q db.Querier, driverID, orderID uuid.UUI
 		return OrderCard{}, false, err
 	}
 	return cards[0], true, nil
+}
+
+func (o OrderCard) MarshalJSON() ([]byte, error) {
+	type plain OrderCard
+	b, e := json.Marshal(plain(o))
+	if e != nil {
+		return nil, e
+	}
+	if len(o.Stops) == 0 || o.Stops[len(o.Stops)-1].Mode != "manual" {
+		return b, nil
+	}
+	var m map[string]json.RawMessage
+	if e = json.Unmarshal(b, &m); e != nil {
+		return nil, e
+	}
+	m["distance_m"], m["duration_s"] = json.RawMessage(`null`), json.RawMessage(`null`)
+	return json.Marshal(m)
 }

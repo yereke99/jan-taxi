@@ -55,7 +55,8 @@ function kindLabel(s: Stop | StopSummary): string {
       </span>
       <span class="stops__text">
         <span class="stops__kind">{{ kindLabel(s) }}</span>
-        <span class="stops__addr">{{ addr(s.address) }}</span>
+        <span class="stops__addr">{{ s.mode === 'manual' ? s.address : addr(s.address) }}</span>
+        <span v-if="s.mode === 'manual'" class="stops__details">{{ t('manual.label') }}</span>
         <span v-if="details(s)" class="stops__details">{{ details(s) }}</span>
       </span>
     </li>

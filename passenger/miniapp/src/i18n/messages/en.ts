@@ -1,6 +1,17 @@
 import type { PassengerMessages } from './kk'
 
 export const en: PassengerMessages = {
+  manual: {
+    action: "Cannot find the address? Enter it manually",
+    helper: "Enter the place name or a landmark known to local residents.",
+    use_search: "Search for an address",
+    save: "Save",
+    label: "Passenger-entered landmark",
+    route_unknown: "Route not calculated",
+    fare_hint: "Choose a fare within the administrator tariff limits.",
+    fare_required: "Choose the trip fare.",
+    copy_destination: "Copy destination",
+  },
   home: {
     greeting: 'Hello, {name}!',
     greeting_anonymous: 'Hello!',

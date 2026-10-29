@@ -6,7 +6,7 @@
 
 import { isUnnamedPlace } from '../utils/text'
 import type { StopInput } from '../api/types'
-import { roundCoord, type LatLon } from '../utils/geo'
+import { hasCoordinates, roundCoord, type LatLon } from '../utils/geo'
 
 export type StopRole = 'pickup' | 'intermediate' | 'destination'
 
@@ -14,7 +14,9 @@ export const MIN_ROUTE_POINTS = 2
 export const MAX_ROUTE_POINTS = 5
 
 /** A chosen point: address from search, reverse geocoding or coordinates. */
-export interface PlaceValue extends LatLon {
+export interface PlaceValue {
+  lat: number | null
+  lon: number | null
   address: string
   /** Locality line shown under the address. */
   subtitle: string | null
@@ -131,7 +133,7 @@ export function stopsFromPlaces(places: readonly PlaceValue[], maxPoints: number
 }
 
 export function isComplete(stops: readonly RouteStop[]): boolean {
-  return stops.length >= MIN_ROUTE_POINTS && stops.every((s) => s.place !== null)
+  return stops.length >= MIN_ROUTE_POINTS && stops.every((s, i) => s.place !== null && (hasCoordinates(s.place) || (i === stops.length - 1 && s.place.source === 'manual' && s.place.address.trim().length > 0)))
 }
 
 /** Indices of stops the API reported outside Kazakhstan. */
@@ -147,11 +149,12 @@ export function outsideIndices(stops: readonly RouteStop[]): number[] {
 export function toStopInputs(stops: readonly RouteStop[], unnamed = ''): StopInput[] | null {
   if (!isComplete(stops)) return null
   return stops.map((s) => {
-    const address = s.place!.address.trim().slice(0, 200)
+    const address = s.place!.source === 'manual' ? s.place!.address.normalize('NFC').trim() : s.place!.address.trim().slice(0, 200)
     return {
-      lat: roundCoord(s.place!.lat),
-      lon: roundCoord(s.place!.lon),
-      address: isUnnamedPlace(address) ? unnamed || address : address,
+      ...(s.place!.source === 'manual' ? {mode: 'manual' as const} : {}),
+      lat: s.place!.lat === null ? null : roundCoord(s.place!.lat),
+      lon: s.place!.lon === null ? null : roundCoord(s.place!.lon),
+      address: s.place!.source === 'manual' ? address : isUnnamedPlace(address) ? unnamed || address : address,
     }
   })
 }
@@ -159,7 +162,7 @@ export function toStopInputs(stops: readonly RouteStop[], unnamed = ''): StopInp
 /** Identity of the routable part of a route (changes trigger a new quote). */
 export function routeFingerprint(stops: readonly RouteStop[]): string {
   return stops
-    .map((s) => (s.place ? `${roundCoord(s.place.lat)},${roundCoord(s.place.lon)},${s.place.address}` : '-'))
+    .map((s) => (s.place ? `${s.place.source},${s.place.lat === null ? 'null' : roundCoord(s.place.lat)},${s.place.lon === null ? 'null' : roundCoord(s.place.lon)},${s.place.address}` : '-'))
     .join('|')
 }
 

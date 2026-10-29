@@ -38,7 +38,7 @@ import { usePhoneStore } from '../../stores/phone'
 import { useSessionStore } from '../../stores/session'
 import { haptics, navigateBack } from '../../telegram'
 import { formatDistance, formatDuration, formatMoney } from '../../utils/format'
-import type { LatLon } from '../../utils/geo'
+import { hasCoordinates, type LatLon } from '../../utils/geo'
 import { formatKzPhoneInput } from '../../utils/phone'
 import { CATEGORIES, type Category, type PaymentMethod } from '../../utils/status'
 import { TEXT_MAX } from '../../utils/text'
@@ -117,6 +117,10 @@ function fieldError(f: FormField): string {
   return reason ? fieldErrorText(reason) : ''
 }
 
+const manualFare = computed({
+  get: () => booking.fare === null ? '' : String(booking.fare),
+  set: (value: string) => { booking.fare = /^\d+$/.test(value) ? Number(value) : null },
+})
 const phone = computed({
   get: () => booking.recipientPhone,
   set: (v: string) => (booking.recipientPhone = formatKzPhoneInput(v)),
@@ -129,7 +133,7 @@ const cargoPlaceholder = computed(() =>
 // --- Map: the route being confirmed ---------------------------------------------
 
 function framePoints(): LatLon[] {
-  const pts: LatLon[] = placedStops.value.map((s) => s.place)
+  const pts: LatLon[] = placedStops.value.map((s) => s.place).filter(hasCoordinates)
   const b = quote.value?.bbox
   if (b) pts.push({ lon: b[0], lat: b[1] }, { lon: b[2], lat: b[3] })
   return pts
@@ -139,7 +143,7 @@ const autoFit = useAutoFit(stage, framePoints)
 watch(
   quote,
   (q) => {
-    stage.stops.setStops(placedStops.value.map((s) => ({ lat: s.place.lat, lon: s.place.lon, letter: s.letter })))
+    stage.stops.setStops(placedStops.value.flatMap((s) => hasCoordinates(s.place) ? [{ lat: s.place.lat, lon: s.place.lon, letter: s.letter }] : []))
     stage.route.setRoute(q?.geometry ?? null)
     autoFit.refit()
   },
@@ -325,7 +329,7 @@ async function submit(): Promise<void> {
           </span>
           <span v-else class="confirm-fact__value"><JSpinner /></span>
         </div>
-        <div v-if="quote" class="confirm-fact">
+        <div v-if="quote && quote.duration_s !== null" class="confirm-fact">
           <span>{{ t('confirm.duration') }}</span>
           <span class="confirm-fact__value jt-tabular">~{{ formatDuration(quote.duration_s, lang) }}</span>
         </div>
@@ -339,7 +343,8 @@ async function submit(): Promise<void> {
       <!-- Fare -->
       <section class="confirm-fare" :class="{ 'is-stale': stale && option !== null }">
         <h2 class="confirm-fare__title">{{ t('confirm.fare') }}</h2>
-        <FarePicker v-if="option" v-model="booking.fare" :fare="option.fare" :locale="lang" :error="fieldError('fare')" />
+        <JTextField v-if="option && booking.manualDestination" v-model="manualFare" type="number" inputmode="numeric" :label="t('confirm.fare')" :hint="t('manual.fare_hint')" :error="fieldError('fare')" />
+        <FarePicker v-else-if="option" v-model="booking.fare" :fare="option.fare" :locale="lang" :error="fieldError('fare')" />
         <p v-if="option" class="confirm-fare__range jt-tabular">
           {{ t('confirm.fare_range', { min: formatMoney(option.fare.min, lang), max: formatMoney(option.fare.max, lang), step: formatMoney(option.fare.step, lang) }) }}
         </p>

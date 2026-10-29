@@ -27,7 +27,8 @@ const addr = useAddressText()
     <li v-for="(s, i) in stops" :key="s.id" class="order-stops__row" :class="{ 'is-done': showDone && s.completed_at }">
       <StopBadge :letter="STOP_LETTERS[i] ?? ''" :done="showDone && s.completed_at !== null" size="small" />
       <span class="order-stops__text">
-        <span class="order-stops__address">{{ addr(s.address) }}</span>
+        <span class="order-stops__address">{{ s.mode === 'manual' ? s.address : addr(s.address) }}</span>
+        <span v-if="s.mode === 'manual'" class="order-stops__details">{{ t('manual.label') }}</span>
         <span v-if="s.address_details" class="order-stops__details">{{ s.address_details }}</span>
         <span v-if="i === 0 && pickupLocality" class="order-stops__details">{{ pickupLocality }}</span>
       </span>

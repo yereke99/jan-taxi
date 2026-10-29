@@ -117,9 +117,10 @@ func PlateDisplay(normalized, raw *string) string {
 // may be empty: message templates show it as a point on the map, never as
 // coordinates.
 type Route struct {
-	Pickup      string
-	Via         []string // intermediate stops in order
-	Destination string
+	DestinationManual bool
+	Pickup            string
+	Via               []string // intermediate stops in order
+	Destination       string
 }
 
 // ViaText joins the intermediate stops with arrows ("" when there are none);
@@ -149,6 +150,7 @@ func LoadRoute(ctx context.Context, q db.Querier, orderID uuid.UUID) (Route, err
 			r.Pickup = addr
 		case stops.KindDestination:
 			r.Destination = addr
+			r.DestinationManual = s.Mode == "manual"
 		default:
 			r.Via = append(r.Via, addr)
 		}

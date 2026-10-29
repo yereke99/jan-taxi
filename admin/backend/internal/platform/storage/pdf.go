@@ -87,7 +87,7 @@ func (s *Store) CheckPDF(data []byte) error {
 // When q is a transaction that later rolls back, the written file stays on
 // disk without a row; RemoveOrphans deletes such files.
 func (s *Store) SavePDF(ctx context.Context, q db.Querier, owner uuid.UUID, purpose string, data []byte) (File, error) {
-	if purpose != PurposeTopupReceipt {
+	if purpose != PurposeTopupReceipt && purpose != PurposeIDFront && purpose != PurposeIDBack {
 		return File{}, fmt.Errorf("storage: PDFs are accepted for %s only, not %q", PurposeTopupReceipt, purpose)
 	}
 	if len(data) == 0 {
@@ -95,6 +95,15 @@ func (s *Store) SavePDF(ctx context.Context, q db.Querier, owner uuid.UUID, purp
 	}
 	if err := s.CheckPDF(data); err != nil {
 		return File{}, err
+	}
+	if purpose == PurposeIDFront || purpose == PurposeIDBack {
+		doc, err := pdfdoc.Open(data, pdfdoc.Limits{MaxObjects: 10000, MaxStreamBytes: 8 << 20, MaxTotalBytes: 32 << 20, MaxPages: 3})
+		if err != nil || !doc.InspectionComplete() {
+			return File{}, ErrPDFUnreadable
+		}
+		if len(doc.Pages()) == 0 || len(doc.Pages()) > 2 {
+			return File{}, httpx.Unprocessable("pdf_page_limit", "identity documents must have one or two pages")
+		}
 	}
 	sum := sha256.Sum256(data)
 	id := uuid.New()

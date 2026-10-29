@@ -54,12 +54,15 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, fn actionFunc) err
 		if err != nil {
 			return err
 		}
-		return fn(ctx, tx, admin, p)
+		if err := fn(ctx, tx, admin, p); err != nil {
+			return err
+		}
+		return h.verification.AdminDecision(ctx, tx, p.ID)
 	})
 	if err != nil {
 		return err
 	}
-	d, err := LoadDetail(ctx, h.pool, id, admin)
+	d, err := LoadDetail(ctx, h.pool, id, admin, h.verification)
 	if err != nil {
 		return err
 	}
@@ -90,6 +93,10 @@ func openApplication(ctx context.Context, tx pgx.Tx, driverID uuid.UUID, statuse
 }
 
 func reviewApplication(ctx context.Context, tx pgx.Tx, appID uuid.UUID, status string, admin uuid.UUID, comment *string, corrections []drivers.CorrectionItem) error {
+	var actor any
+	if admin != uuid.Nil {
+		actor = admin
+	}
 	raw := []byte("[]")
 	if corrections != nil {
 		var err error
@@ -101,7 +108,7 @@ func reviewApplication(ctx context.Context, tx pgx.Tx, appID uuid.UUID, status s
 		UPDATE driver_applications
 		SET status = $2, reviewed_at = now(), reviewed_by = $3, decision_comment = $4,
 		    corrections = CASE WHEN $6 THEN $5::jsonb ELSE corrections END
-		WHERE id = $1`, appID, status, admin, comment, raw, corrections != nil)
+		WHERE id = $1`, appID, status, actor, comment, raw, corrections != nil)
 	if err != nil {
 		return fmt.Errorf("moderation: review application: %w", err)
 	}
@@ -175,48 +182,7 @@ func (h *Handler) approve(w http.ResponseWriter, r *http.Request) error {
 		if !ok {
 			return invalidTransition(p.Status, "approve")
 		}
-		// The plate and phone claims were taken on submission; re-assert the
-		// plate claim in case the vehicle row was changed since.
-		v, err := vehicles.CurrentForUpdate(ctx, tx, p.ID)
-		if err != nil {
-			return err
-		}
-		if v.Status != vehicles.StatusClaimed {
-			if err := vehicles.SetStatus(ctx, tx, v.ID, vehicles.StatusClaimed); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.Exec(ctx, `UPDATE driver_profiles SET status = 'approved', approved_at = now() WHERE id = $1`, p.ID); err != nil {
-			if db.IsUniqueViolation(err, drivers.PhoneUniqueIndex) {
-				return drivers.ErrPhoneTaken
-			}
-			return fmt.Errorf("moderation: approve: %w", err)
-		}
-		if err := reviewApplication(ctx, tx, appID, "approved", admin.AdminID, comment, nil); err != nil {
-			return err
-		}
-		if _, err := InsertEvent(ctx, tx, Event{
-			DriverID: p.ID, ApplicationID: &appID, ActorType: "admin", AdminID: &admin.AdminID,
-			Action: drivers.ActionApproved, FromStatus: p.Status, ToStatus: drivers.StatusApproved, Comment: comment,
-		}); err != nil {
-			return err
-		}
-		if _, err := wallets.Ensure(ctx, tx, p.ID); err != nil {
-			return wallets.HTTPError(err)
-		}
-		if err := logAudit(ctx, tx, r, "driver.approve", p, map[string]any{
-			"status": drivers.StatusApproved, "application_id": appID, "comment": comment,
-		}); err != nil {
-			return err
-		}
-		if err := notify(ctx, tx, p, notifications.TplModerationApproved, map[string]any{"driver_code": p.Code},
-			"moderation_approved:"+appID.String()); err != nil {
-			return err
-		}
-		if _, err := grantWelcomeBonus(ctx, tx, r, admin, p, v.PlateNormalized); err != nil {
-			return err
-		}
-		return publish(ctx, tx, realtime.ModerationApproved, p, map[string]any{"status": drivers.StatusApproved})
+		return h.approveApplication(ctx, tx, p, appID, admin, comment, r)
 	})
 }
 
@@ -440,7 +406,7 @@ func (h *Handler) suspend(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Validation(fields)
 	}
 	return h.run(w, r, func(ctx context.Context, tx pgx.Tx, admin auth.AdminPrincipal, p drivers.Profile) error {
-		if p.Status != drivers.StatusApproved {
+		if p.Status == drivers.StatusSuspended {
 			return invalidTransition(p.Status, "suspend")
 		}
 		if err := activeOrderConflict(ctx, tx, p.ID); err != nil {
@@ -448,7 +414,7 @@ func (h *Handler) suspend(w http.ResponseWriter, r *http.Request) error {
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE driver_profiles
-			SET status = 'suspended', suspended_at = now(), suspended_reason = $2, is_online = false, online_since = NULL
+			SET suspended_previous_status=status, status = 'suspended', suspended_at = now(), suspended_reason = $2, is_online = false, online_since = NULL
 			WHERE id = $1`, p.ID, reason); err != nil {
 			return fmt.Errorf("moderation: suspend: %w", err)
 		}
@@ -479,24 +445,28 @@ func (h *Handler) restore(w http.ResponseWriter, r *http.Request) error {
 			return invalidTransition(p.Status, "restore")
 		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE driver_profiles SET status = 'approved', suspended_at = NULL, suspended_reason = NULL WHERE id = $1`, p.ID); err != nil {
+			UPDATE driver_profiles SET status = COALESCE(suspended_previous_status,'approved'), suspended_previous_status=NULL, suspended_at = NULL, suspended_reason = NULL WHERE id = $1`, p.ID); err != nil {
 			return fmt.Errorf("moderation: restore: %w", err)
+		}
+		restored, err := drivers.GetProfile(ctx, tx, p.ID)
+		if err != nil {
+			return err
 		}
 		eventID, err := InsertEvent(ctx, tx, Event{
 			DriverID: p.ID, ActorType: "admin", AdminID: &admin.AdminID, Action: drivers.ActionRestored,
-			FromStatus: p.Status, ToStatus: drivers.StatusApproved,
+			FromStatus: p.Status, ToStatus: restored.Status,
 		})
 		if err != nil {
 			return err
 		}
-		if err := logAudit(ctx, tx, r, "driver.restore", p, map[string]any{"status": drivers.StatusApproved}); err != nil {
+		if err := logAudit(ctx, tx, r, "driver.restore", p, map[string]any{"status": restored.Status}); err != nil {
 			return err
 		}
 		if err := notify(ctx, tx, p, notifications.TplDriverRestored, nil,
 			fmt.Sprintf("driver_restored:%s:%d", p.ID, eventID)); err != nil {
 			return err
 		}
-		return drivers.PublishStatus(ctx, tx, p.ID, p.UserID, drivers.StatusApproved, false)
+		return drivers.PublishStatus(ctx, tx, p.ID, p.UserID, restored.Status, false)
 	})
 }
 
@@ -562,4 +532,94 @@ func (h *Handler) updateCity(w http.ResponseWriter, r *http.Request) error {
 			Data:   map[string]any{"driver_id": p.ID, "status": p.Status, "is_online": p.IsOnline, "city_id": city.ID},
 		})
 	})
+}
+
+// AutoApprove is used only after a current, fully matched OCR result is fenced
+// by the verification worker transaction. All existing approval effects run.
+func (h *Handler) AutoApprove(ctx context.Context, tx pgx.Tx, driverID, applicationID uuid.UUID) error {
+	p, err := drivers.LockProfile(ctx, tx, driverID)
+	if err != nil {
+		return err
+	}
+	appID, ok, err := openApplication(ctx, tx, p.ID, drivers.StatusPending)
+	if err != nil {
+		return err
+	}
+	if !ok || p.Status != drivers.StatusPending || appID != applicationID {
+		return invalidTransition(p.Status, "approve")
+	}
+	return h.approveApplication(ctx, tx, p, appID, auth.AdminPrincipal{}, nil, nil)
+}
+func (h *Handler) approveApplication(ctx context.Context, tx pgx.Tx, p drivers.Profile, appID uuid.UUID, admin auth.AdminPrincipal, comment *string, r *http.Request) error {
+	actorType := "admin"
+	var actorID *uuid.UUID
+	if admin.AdminID == uuid.Nil {
+		actorType = "system"
+	} else {
+		id := admin.AdminID
+		actorID = &id
+	}
+	var blocked bool
+	if err := tx.QueryRow(ctx, `SELECT is_blocked FROM users WHERE id=$1`, p.UserID).Scan(&blocked); err != nil {
+		return err
+	}
+	if blocked {
+		return httpx.Forbidden()
+	}
+	if h.verification.Enabled() {
+		in, err := h.verification.ApplicationInput(ctx, tx, appID)
+		if err != nil {
+			return err
+		}
+		if in != nil && !in.Complete() {
+			return httpx.Validation(map[string]string{"identity": "required"})
+		}
+		if in != nil {
+			if err = h.verification.Claim(ctx, tx, p.ID, appID, *in); err != nil {
+				return err
+			}
+		}
+	}
+	// The plate and phone claims were taken on submission; re-assert the
+	// plate claim in case the vehicle row was changed since.
+	v, err := vehicles.CurrentForUpdate(ctx, tx, p.ID)
+	if err != nil {
+		return err
+	}
+	if v.Status != vehicles.StatusClaimed {
+		if err := vehicles.SetStatus(ctx, tx, v.ID, vehicles.StatusClaimed); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE driver_profiles SET status = 'approved', approved_at = now() WHERE id = $1`, p.ID); err != nil {
+		if db.IsUniqueViolation(err, drivers.PhoneUniqueIndex) {
+			return drivers.ErrPhoneTaken
+		}
+		return fmt.Errorf("moderation: approve: %w", err)
+	}
+	if err := reviewApplication(ctx, tx, appID, "approved", admin.AdminID, comment, nil); err != nil {
+		return err
+	}
+	if _, err := InsertEvent(ctx, tx, Event{
+		DriverID: p.ID, ApplicationID: &appID, ActorType: actorType, AdminID: actorID,
+		Action: drivers.ActionApproved, FromStatus: p.Status, ToStatus: drivers.StatusApproved, Comment: comment,
+	}); err != nil {
+		return err
+	}
+	if _, err := wallets.Ensure(ctx, tx, p.ID); err != nil {
+		return wallets.HTTPError(err)
+	}
+	if err := logAudit(ctx, tx, r, "driver.approve", p, map[string]any{
+		"status": drivers.StatusApproved, "application_id": appID, "comment": comment,
+	}); err != nil {
+		return err
+	}
+	if err := notify(ctx, tx, p, notifications.TplModerationApproved, map[string]any{"driver_code": p.Code},
+		"moderation_approved:"+appID.String()); err != nil {
+		return err
+	}
+	if _, err := grantWelcomeBonus(ctx, tx, r, admin, p, v.PlateNormalized); err != nil {
+		return err
+	}
+	return publish(ctx, tx, realtime.ModerationApproved, p, map[string]any{"status": drivers.StatusApproved})
 }

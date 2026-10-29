@@ -3,6 +3,7 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -27,9 +28,11 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/drivers/driverstest"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // TestBusinessFlowsNotifyAndPublish drives every money and state transition
@@ -63,6 +66,31 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 
 	// Driver C registers and is rejected.
 	c := e.registerDriver("Нұрлан", "+77471234502", "456 def 02")
+	// An uncertain OCR result leaves the application pending for the existing
+	// moderator, and queues a localized additional-review acknowledgment.
+	identity, err := verification.NewService(e.pool, verification.Options{
+		Enabled: true, Key: base64.StdEncoding.EncodeToString(make([]byte, 32)), MinConfidence: 98,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identityApp uuid.UUID
+	if err := e.pool.QueryRow(ctx, `SELECT id FROM driver_applications WHERE driver_id=$1 ORDER BY round DESC LIMIT 1`, c.driverID).Scan(&identityApp); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.WithTx(ctx, e.pool, func(tx pgx.Tx) error {
+		if err := identity.SaveInput(ctx, tx, uuid.MustParse(c.driverID), verification.Input{
+			DocumentType: "id_card", IIN: strings.Repeat("1", 11) + "0", DocumentNumber: "123456789",
+		}); err != nil {
+			return err
+		}
+		return identity.Enqueue(ctx, tx, uuid.MustParse(c.driverID), identityApp, "Нұрлан", "Бекенов", []verification.Document{})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if did, err := identity.RunOnce(ctx, uncertainIdentityEngine{}, nil, verification.WorkerOptions{}); err != nil || !did {
+		t.Fatalf("uncertain identity review: did=%v err=%v", did, err)
+	}
 	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+c.driverID+"/reject", map[string]any{"reason": "Құжаттар анық емес"}, http.StatusOK)
 
 	// A's approval credited the welcome bonus (§22.1); C was rejected.
@@ -757,4 +785,11 @@ func fakeOSRMRoute(w http.ResponseWriter, r *http.Request) {
 		}},
 		"waypoints": wps,
 	})
+}
+
+// Empty recognition must go to review rather than approve or reject a driver.
+type uncertainIdentityEngine struct{}
+
+func (uncertainIdentityEngine) Read(context.Context, verification.Job) (verification.Result, error) {
+	return verification.Result{}, nil
 }

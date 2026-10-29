@@ -96,8 +96,8 @@ const fareItems = computed<KeyValueItem[]>(() => {
     { key: 'commission', label: t('orders.commission'), value: commissionText.value },
     { key: 'charged', label: t('orders.commission_charged'), value: o.driver ? (charged.value > 0 ? fmt.money(charged.value) : t('orders.commission_not_charged')) : null },
     { key: 'payment', label: t('orders.payment_method'), value: t(`payment_method.${o.payment_method}`) },
-    { key: 'distance', label: t('orders.distance'), value: fmt.distance(o.distance_m) },
-    { key: 'duration', label: t('orders.duration'), value: fmt.duration(o.duration_s) },
+    { key: 'distance', label: t('orders.distance'), value: o.distance_m == null ? t('orders.route_unknown') : fmt.distance(o.distance_m) },
+    { key: 'duration', label: t('orders.duration'), value: o.duration_s == null ? t('orders.route_unknown') : fmt.duration(o.duration_s) },
     { key: 'tariff_region', label: t('orders.tariff_region'), value: tariffText.value },
     { key: 'category', label: t('orders.category'), value: t(`category.${o.category}`) },
     { key: 'class', label: t('classes.class'), value: className.value },
@@ -254,6 +254,7 @@ useResync(() => void res.reload({ silent: true }))
                 <span class="stops__letter">{{ stopLetter(s.seq) }}</span>
                 <div class="stops__text">
                   <p>{{ s.address }}</p>
+                  <p v-if="s.mode === 'manual'" class="jt-muted">{{ t('orders.manual_destination') }}</p>
                   <p v-if="s.address_details" class="jt-muted">{{ s.address_details }}</p>
                   <p class="jt-muted stops__meta">
                     {{ t(`stop_kind.${s.kind}`) }}

@@ -23,6 +23,7 @@ const viewerIndex = ref<number | null>(null)
 const PHOTO_ORDER = ['plate', 'main', 'back', 'side', 'extra'] as const
 
 interface Evidence extends ViewerImage {
+  mime?: string
   key: string
 }
 
@@ -34,8 +35,8 @@ const identity = computed<Array<Evidence & { missing: boolean }>>(() => {
   ]
   if (docs) {
     out.push(
-      { key: 'id_front', url: docs.id_front?.url ?? '', label: t('correction_field.id_front'), missing: !docs.id_front },
-      { key: 'id_back', url: docs.id_back?.url ?? '', label: t('correction_field.id_back'), missing: !docs.id_back },
+      { mime:docs.id_front?.mime,key: 'id_front', url: docs.id_front?.url ?? '', label: t('correction_field.id_front'), missing: !docs.id_front },
+      { mime:docs.id_back?.mime,key: 'id_back', url: docs.id_back?.url ?? '', label: t('correction_field.id_back'), missing: !docs.id_back },
     )
   }
   return out
@@ -51,7 +52,7 @@ const platePhoto = computed(() => vehiclePhotos.value.find((p) => p.key === prop
 const mainPhoto = computed(() => vehiclePhotos.value.find((p) => p.key === props.driver.vehicle?.photos.find((x) => x.kind === 'main')?.id) ?? null)
 
 /** All images in one viewer sequence (←/→ walks through them). */
-const gallery = computed<Evidence[]>(() => [...identity.value.filter((i) => !i.missing), ...vehiclePhotos.value])
+const gallery = computed<Evidence[]>(() => [...identity.value.filter((i) => !i.missing && i.mime !== 'application/pdf'), ...vehiclePhotos.value])
 
 function openImage(key: string): void {
   const i = gallery.value.findIndex((g) => g.key === key)
@@ -62,6 +63,12 @@ const declaredPerson = computed<KeyValueItem[]>(() => {
   const d = props.driver
   return [
     { key: 'name', label: t('drivers.full_name'), value: `${d.first_name} ${d.last_name}`.trim() },
+    ...(d.identity ? [
+      {key:'iin',label:t('drivers.iin'),value:d.identity.iin,mono:true},
+      {key:'document_number',label:t('drivers.document_number'),value:d.identity.document_number,mono:true},
+      {key:'document_type',label:t('drivers.document_type'),value:d.identity.document_type},
+      {key:'patronymic',label:t('drivers.patronymic'),value:d.identity.patronymic},
+    ]:[]),
     { key: 'phone', label: t('common.phone'), value: d.phone ? `${d.phone} · ${d.phone_verified ? t('drivers.verified') : t('drivers.unverified')}` : null, mono: true },
     { key: 'city', label: t('drivers.region'), value: d.city ? fmt.name(d.city.name) : null },
     { key: 'telegram', label: 'Telegram', value: d.user.username ? `@${d.user.username}` : String(d.user.telegram_user_id), mono: true },
@@ -86,13 +93,27 @@ const declaredVehicle = computed<KeyValueItem[]>(() => {
   <div class="review">
     <section v-if="section !== 'vehicle'" class="review__block">
       <h3 class="review__title">{{ t('drivers.identity') }}</h3>
+      <div v-if="driver.verification" class="review__block">
+        <p>{{ t('drivers.verification') }}: {{ driver.verification.status }} · {{ t('drivers.verification_confidence') }}: {{ driver.verification.confidence ?? '—' }}%</p>
+        <p v-if="driver.verification.reasons.length">{{ t('drivers.verification_reasons') }}: {{ driver.verification.reasons.join(', ') }}</p>
+        <p v-for="conflict in driver.identity_conflicts ?? []" :key="conflict.kind">{{ t('drivers.verification_reasons') }}: {{ conflict.kind }} · <router-link :to="`/drivers/${conflict.driver_id}`">{{ conflict.driver_code }}</router-link> · {{ conflict.status }}</p>
+        <template v-if="driver.verification.result">
+          <p>{{ t('drivers.extracted_identity') }}: {{ driver.verification.result.last_name }} {{ driver.verification.result.first_name }} {{ driver.verification.result.extracted.patronymic }}</p>
+          <p>{{ t('drivers.iin') }}: {{ driver.verification.result.extracted.iin }} · {{ t('drivers.document_number') }}: {{ driver.verification.result.extracted.document_number }}</p>
+          <dl><template v-for="(comparison,field) in driver.verification.result.comparisons" :key="field"><dt>{{ field }}</dt><dd>{{ comparison }} · {{ driver.verification.result.field_confidence[field] }}%</dd></template></dl>
+        </template>
+      </div>
+      <details v-if="driver.verification_history?.length">
+        <summary>{{ t('drivers.verification_history') }}</summary>
+        <p v-for="item in driver.verification_history" :key="item.id">{{ fmt.dateTime(item.created_at) }} · {{ item.status }} · {{ item.confidence ?? '—' }}%</p>
+      </details>
       <div class="review__grid">
         <KeyValueList class="review__declared" :items="declaredPerson" />
         <div class="review__evidence">
           <SecureImage
             v-for="img in identity"
             :key="img.key"
-            :url="img.missing ? null : img.url"
+            :url="img.missing ? null : img.url" :pdf="img.mime === 'application/pdf'"
             :label="img.label"
             height="170px"
             fit="contain"

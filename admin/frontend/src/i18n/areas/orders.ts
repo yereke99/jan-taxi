@@ -1,6 +1,8 @@
 // Orders, order detail and disputes.
 
 const kk = {
+  manual_destination: "Жолаушы көрсеткен орын",
+  route_unknown: "Маршрут есептелмеген",
   order: 'Тапсырыс',
   category: 'Санат',
   passenger: 'Жолаушы',
@@ -119,6 +121,8 @@ const kk = {
 export type OrdersMessages = typeof kk
 
 const ru: OrdersMessages = {
+  manual_destination: "Место указано пассажиром",
+  route_unknown: "Маршрут не рассчитан",
   order: 'Заказ',
   category: 'Категория',
   passenger: 'Пассажир',
@@ -235,6 +239,8 @@ const ru: OrdersMessages = {
 }
 
 const en: OrdersMessages = {
+  manual_destination: "Passenger-entered landmark",
+  route_unknown: "Route not calculated",
   order: 'Order',
   category: 'Category',
   passenger: 'Passenger',

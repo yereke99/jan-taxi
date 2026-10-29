@@ -101,8 +101,12 @@ What needs an operator decision:
       require a dispatch service to keep records of orders and their hand-over to
       drivers, without a stated period. Set a period together with accounting and
       tax requirements.
-- [ ] **Notification outbox** rows (rendered order details) have no cleanup job;
-      decide a period (for example 90 days) and request it.
+- Finished **notification outbox** rows and attempts are pruned after 30 days by
+  `notification_retention`; pending/sending messages are preserved for recovery.
+- Protected entered identity data, OCR results and document ownership fingerprints
+  use the operator's verification key. Restrict key access and include key custody
+  in encrypted backup/restore procedures. Do not log identity values or send them
+  in Telegram notifications. Define their retention together with ID images.
 - [ ] Deleted data persists in backups until they expire; state this in the
       privacy policy.
 

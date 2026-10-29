@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
@@ -18,6 +19,7 @@ const (
 
 // FileRef is a private file reference (OpenAPI FileRef).
 type FileRef struct {
+	Mime      string    `json:"mime"`
 	ID        uuid.UUID `json:"id"`
 	Kind      string    `json:"kind"`
 	URL       string    `json:"url"`
@@ -31,7 +33,11 @@ func NewFileRef(m *FileMeta, kind, base string) *FileRef {
 	if m == nil {
 		return nil
 	}
-	return &FileRef{ID: m.ID, Kind: kind, URL: base + m.ID.String(), Width: m.Width, Height: m.Height, CreatedAt: m.CreatedAt.UTC()}
+	mime := "image/jpeg"
+	if m.Width == 0 {
+		mime = "application/pdf"
+	}
+	return &FileRef{Mime: mime, ID: m.ID, Kind: kind, URL: base + m.ID.String(), Width: m.Width, Height: m.Height, CreatedAt: m.CreatedAt.UTC()}
 }
 
 // CityRef is a short city reference (OpenAPI CityRef).
@@ -151,6 +157,9 @@ type HistoryItem struct {
 
 // RegistrationView is the driver's registration (OpenAPI DriverRegistration).
 type RegistrationView struct {
+	IdentityEnabled   bool                    `json:"identity_enabled"`
+	Identity          *verification.Input     `json:"identity,omitempty"`
+	Verification      *verification.Summary   `json:"verification,omitempty"`
 	ID                *uuid.UUID              `json:"id"`
 	Status            string                  `json:"status"`
 	Code              *string                 `json:"code"`

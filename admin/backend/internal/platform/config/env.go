@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,19 @@ func (e *envReader) int64(key string, def int64) int64 {
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		e.fail(key, "must be an integer")
+		return def
+	}
+	return n
+}
+
+func (e *envReader) decimal(key string, def float64) float64 {
+	v := e.raw(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+		e.fail(key, "must be a finite number")
 		return def
 	}
 	return n

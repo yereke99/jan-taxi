@@ -38,6 +38,7 @@ type PublicOptions struct {
 
 // PublicConfig is the runtime configuration served to the apps (§14).
 type PublicConfig struct {
+	Orders          PublicOrders     `json:"orders"`
 	App             string           `json:"app"`
 	DefaultLanguage string           `json:"default_language"`
 	Languages       []string         `json:"languages"`
@@ -185,6 +186,7 @@ func (s *PublicConfigService) Build(ctx context.Context, app string) (PublicConf
 		return PublicConfig{}, httpx.Validation(map[string]string{"app": reasonInvalid})
 	}
 	q := s.pool
+	manualPolicy := settings.ManualDestinations(ctx, q)
 	lang := s.opts.DefaultLanguage
 	if !slices.Contains(languages, lang) {
 		lang = "kk"
@@ -202,6 +204,7 @@ func (s *PublicConfigService) Build(ctx context.Context, app string) (PublicConf
 		},
 		Delivery:          PublicDelivery{ProhibitedItems: nonNil(settings.ProhibitedItems(ctx, q))},
 		Navigation:        PublicNavigation{TwoGISBaseURL: settings.TwoGISBaseURL(ctx, q)},
+		Orders:            PublicOrders{ManualDestinationEnabled: manualPolicy.Enabled, ManualDestinationPricing: manualPolicy.Pricing},
 		CargoSizes:        slices.Clone(vehicleclasses.CargoSizes),
 		MaxPassengerCount: vehicleclasses.MaxPassengerCount,
 	}
@@ -283,4 +286,9 @@ func (s *PublicConfigService) handle(w http.ResponseWriter, r *http.Request) err
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(append(b, '\n'))
 	return nil
+}
+
+type PublicOrders struct {
+	ManualDestinationEnabled bool   `json:"manual_destination_enabled"`
+	ManualDestinationPricing string `json:"manual_destination_pricing"`
 }

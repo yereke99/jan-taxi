@@ -126,6 +126,7 @@ export const useBookingStore = defineStore('booking', () => {
 
   const maxPoints = computed(() => clampMaxPoints(session.maxRoutePoints))
   const complete = computed(() => isComplete(stops.value))
+  const manualDestination = computed(()=>stops.value[stops.value.length-1]?.place?.source==='manual')
   const canAdd = computed(() => canAddStop(stops.value, maxPoints.value))
   const routeKey = computed(() => `${category.value}|${routeFingerprint(stops.value)}`)
 
@@ -202,6 +203,7 @@ export const useBookingStore = defineStore('booking', () => {
   /** Keeps the fare when the class stays the same and the new range allows it. */
   function syncFare(opt: RouteQuoteOption | null): void {
     if (!opt) return
+    if(manualDestination.value) { if (fareClass !== opt.vehicle_class || !isAllowedFare(opt.fare,fare.value)) fare.value=null; fareClass=opt.vehicle_class; return }
     fare.value = fareClass === opt.vehicle_class ? fareAfterRequote(fare.value, opt.fare) : clampFare(opt.fare, null)
     fareClass = opt.vehicle_class
   }
@@ -304,6 +306,7 @@ export const useBookingStore = defineStore('booking', () => {
   // A new route is a new booking: an earlier pick never comes back, even if
   // the passenger returns to the same addresses later.
   watch(routeKey, (key) => {
+    if(manualDestination.value) {fare.value=null;fareClass=null}
     if (classChoice.value && classChoice.value.route !== key) classChoice.value = null
   })
 
@@ -341,6 +344,7 @@ export const useBookingStore = defineStore('booking', () => {
   }
 
   function setStopPlace(index: number, place: PlaceValue | null): void {
+    if (place?.source === 'manual' && index !== stops.value.length-1) return
     stops.value = setPlace(stops.value, index, place)
     if (index === 0 && place?.source !== 'gps') pickupAccuracy.value = null
     if (stopErrors.value[index] !== undefined) {
@@ -548,6 +552,7 @@ export const useBookingStore = defineStore('booking', () => {
     pickupAccuracy,
     maxPoints,
     complete,
+    manualDestination,
     canAdd,
     routeKey,
     // load and class

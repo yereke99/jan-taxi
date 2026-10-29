@@ -45,3 +45,21 @@ export function telHref(phone: string): string {
   const clean = phone.replace(/[^\d+]/g, '')
   return `tel:${clean}`
 }
+
+/** Validates a complete contact number without truncating or guessing digits. */
+export function normalizeContactPhone(input: string): string | null {
+  const raw = input.trim()
+  if (!raw || raw.length > 64 || !/^\+?[\d\s().-]+$/.test(raw)) return null
+  const digits = raw.replace(/[\s().-]/g, '')
+  if (digits.startsWith('+7')) return /^\+77\d{9}$/.test(digits) ? digits : null
+  if (digits.startsWith('+')) return /^\+[1-9]\d{7,14}$/.test(digits) ? digits : null
+  if (/^[78]7\d{9}$/.test(digits)) return `+7${digits.slice(1)}`
+  if (/^7\d{9}$/.test(digits)) return `+7${digits}`
+  return null
+}
+
+/** A private recipient-specific chat; this only opens the composer. */
+export function whatsAppHref(phone: string): string | null {
+  const normalized = normalizeContactPhone(phone)
+  return normalized ? `https://wa.me/${normalized.slice(1)}` : null
+}

@@ -290,6 +290,9 @@ func (s *Service) createOrder(w http.ResponseWriter, r *http.Request) error {
 			}
 			return quoteError(ctx, tx, n.QuoteID, err)
 		}
+		if pricing.Manual(quote.Stops) && !settings.ManualDestinations(ctx, tx).Allowed() {
+			return httpx.Validation(map[string]string{"quote_id": "manual_destination_disabled"})
+		}
 		checkCategory(quote.Category, req, &n, fields)
 		if len(fields) == 0 {
 			checkBlocked(ctx, tx, quote.Category, n, fields)
@@ -371,7 +374,7 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 		RETURNING id, number`,
 		passengerID, q.CityID, q.Category, lifecycle.ServiceType(q.Category), lifecycle.CargoType(q.Category),
 		n.CargoDescription, n.RecipientPhone, n.Ack && q.Category != lifecycle.CategoryTaxi, n.Comment, n.Fare,
-		q.CommissionBps, commission, n.PaymentMethod, q.TariffID, q.ID, q.DistanceM, q.DurationS,
+		q.CommissionBps, commission, n.PaymentMethod, q.TariffID, q.ID, pricing.Metric(q.DistanceM, pricing.Manual(q.Stops)), pricing.Metric(q.DurationS, pricing.Manual(q.Stops)),
 		len(q.Stops), pickup.Lat, pickup.Lon, n.IdempotencyKey,
 		q.VehicleClass, q.PassengerCount, q.CargoSize, q.CargoVolumeL, policy.Mode, q.Locality).Scan(&id, &number)
 	switch {
@@ -387,7 +390,7 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 
 	in := make([]stops.Input, len(q.Stops))
 	for i, st := range q.Stops {
-		in[i] = stops.Input{Lat: st.Lat, Lon: st.Lon, Address: st.Address, AddressDetails: lifecycle.StrPtr(st.AddressDetails)}
+		in[i] = stops.Input{Mode: st.Mode, Lat: st.Lat, Lon: st.Lon, Address: st.Address, AddressDetails: lifecycle.StrPtr(st.AddressDetails)}
 	}
 	stored, err := stops.Insert(ctx, tx, id, in)
 	if err != nil {
@@ -421,6 +424,7 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 }
 
 type snapshotStop struct {
+	Mode           string  `json:"mode"`
 	Seq            int     `json:"seq"`
 	Kind           string  `json:"kind"`
 	Lat            float64 `json:"lat"`
@@ -432,13 +436,17 @@ type snapshotStop struct {
 func insertRouteSnapshot(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, q pricing.StoredQuote, list []stops.Stop) error {
 	ss := make([]snapshotStop, len(list))
 	for i, s := range list {
-		ss[i] = snapshotStop{Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address, AddressDetails: s.AddressDetails}
+		ss[i] = snapshotStop{Mode: s.Mode, Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address, AddressDetails: s.AddressDetails}
 	}
 	legs := make([]RouteLeg, len(q.Legs))
 	for i, l := range q.Legs {
 		legs[i] = RouteLeg{DistanceM: l.DistanceM, DurationS: l.DurationS}
 	}
-	stopsJSON, err := json.Marshal(ss)
+	var snapshot any = ss
+	if pricing.Manual(q.Stops) {
+		snapshot = list
+	}
+	stopsJSON, err := json.Marshal(snapshot)
 	if err != nil {
 		return err
 	}
@@ -446,7 +454,11 @@ func insertRouteSnapshot(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, q pr
 	if err != nil {
 		return err
 	}
-	bboxJSON, err := json.Marshal(q.BBox)
+	var bbox any = q.BBox
+	if pricing.Manual(q.Stops) && len(q.Legs) == 0 {
+		bbox = nil
+	}
+	bboxJSON, err := json.Marshal(bbox)
 	if err != nil {
 		return err
 	}
@@ -457,7 +469,7 @@ func insertRouteSnapshot(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, q pr
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO order_route_snapshots (order_id, provider, stops, stops_hash, geometry, legs, bbox, distance_m, duration_s)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		orderID, RouteProvider, stopsJSON, q.StopsHash, geometry, legsJSON, bboxJSON, q.DistanceM, q.DurationS); err != nil {
+		orderID, RouteProvider, stopsJSON, q.StopsHash, geometry, legsJSON, bboxJSON, pricing.Metric(q.DistanceM, pricing.Manual(q.Stops)), pricing.Metric(q.DurationS, pricing.Manual(q.Stops))); err != nil {
 		return fmt.Errorf("orders: insert route snapshot: %w", err)
 	}
 	return nil
