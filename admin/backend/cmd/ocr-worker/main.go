@@ -3,17 +3,19 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/yereke99/jantaxi/admin/backend/internal/moderation"
-	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
-	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
-	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/yereke99/jantaxi/admin/backend/internal/moderation"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/logging"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
+	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 func main() {
@@ -27,6 +29,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	log := logging.New(cfg.LogLevel, cfg.LogFormat).With("service", "ocr-worker")
+	slog.SetDefault(log)
+	log.Info("OCR worker starting", "enabled", cfg.VerificationEnabled, "auto_approve", cfg.VerificationAutoApprove, "min_confidence", cfg.VerificationMinConfidence)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	pool, err := db.Open(ctx, cfg.DatabaseURL, 4)
@@ -34,7 +39,7 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
-	svc, err := verification.NewService(pool, verification.Options{Enabled: cfg.VerificationEnabled, Key: cfg.VerificationKey, AutoApprove: cfg.VerificationAutoApprove, MinConfidence: cfg.VerificationMinConfidence, QueueLimit: cfg.VerificationQueueLimit})
+	svc, err := verification.NewService(pool, verification.Options{Enabled: cfg.VerificationEnabled, Key: cfg.VerificationKey, AutoApprove: cfg.VerificationAutoApprove, MinConfidence: cfg.VerificationMinConfidence, QueueLimit: cfg.VerificationQueueLimit, Log: log})
 	if err != nil {
 		return err
 	}
@@ -62,5 +67,10 @@ func run() error {
 			return fmt.Errorf("invalid OCR_MAX_ATTEMPTS")
 		}
 	}
-	return svc.Run(ctx, verification.LocalEngine{Service: svc, Store: store}, mh.AutoApprove, verification.WorkerOptions{Timeout: timeout, PollInterval: poll, MaxAttempts: attempts})
+	engine := verification.LocalEngine{Service: svc, Store: store, Recognizer: "/opt/jantaxi/ocr/recognize.py"}
+	if err := engine.Check(ctx); err != nil {
+		return err
+	}
+	log.Info("OCR engine ready", "engine", "pp-ocrv5-cyrillic-onnx", "timeout", timeout, "max_attempts", attempts)
+	return svc.Run(ctx, engine, mh.AutoApprove, verification.WorkerOptions{Timeout: timeout, PollInterval: poll, MaxAttempts: attempts})
 }

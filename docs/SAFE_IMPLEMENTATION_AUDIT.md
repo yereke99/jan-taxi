@@ -1,6 +1,6 @@
 # Jan Taxi — audit and implementation notes, 29 October 2026
 
-Baseline inspected: commit `b7378a2`. Scope: contacts, manual final destination,
+Baseline inspected: commit `b7378a2`. Scope: contacts, manual addresses after pickup A,
 driver document verification and related security. Existing UI components and
 tokens, order lifecycle, wallet calculations and historical records are retained.
 Production was not accessed or deployed. Real Telegram device testing belongs to
@@ -12,7 +12,8 @@ The platform already has transactional order acceptance, pickup-based PostGIS
 matching, private document storage, application rounds, permission-based admin
 review and a durable notification outbox. Extend these rather than replace them.
 
-Confirmed policy decisions: a passenger explicitly selects the fare for manual B
+Confirmed policy decisions: a passenger explicitly selects the fare for a route
+with manual stops after A
 inside the active administrator tariff's minimum/maximum/step; existing commission
 rules apply. Confident complete identity matches may auto-approve; uncertainty,
 conflicts or processing failure go to administrators. Document numbers have unique
@@ -81,12 +82,13 @@ behavior; stale jobs cannot override a new round or an administrator.
 ## 18.4 Database analysis and rollback
 
 PostgreSQL 17/PostGIS 3.5; migrations are embedded Goose SQL. New versions:
-`00010_manual_destinations.sql` and `00011_driver_verification.sql`.
+`00010_manual_destinations.sql`, `00011_driver_verification.sql` and
+`00012_manual_route_stops.sql`.
 
 Existing `orders`, `order_stops`, `fare_quotes`, `order_route_snapshots`,
 `driver_profiles`, `driver_documents`, `driver_applications`, wallets/ledger,
-moderation events and notification tables are reused. Final manual B has both
-coordinates SQL NULL; A/intermediates/geocoded B retain valid coordinate pairs.
+moderation events and notification tables are reused. Manual stops after A have
+both coordinates SQL NULL; A and all geocoded stops retain valid coordinate pairs.
 Unknown full-trip totals are NULL. Existing numerical historical values remain.
 Pickup geography/GiST indexes and monetary records remain intact.
 
@@ -110,7 +112,7 @@ No backup restore or destructive rollback was executed on production.
 ## 18.5 UI changes and localization
 
 Reuse current sheets, controls, colors, spacing and 44 px contact actions.
-Passenger search gains a final-B-only manual option and inline field; switching
+Passenger search gains a manual option and inline field for every stop after A; switching
 mode retains pickup, intermediate stops and unrelated choices. Driver contacts
 retain Telegram chat and gain WhatsApp/copy; maps and order/admin/history show a
 manual landmark label. Registration adds compact identity fields/type and hints;
@@ -129,11 +131,14 @@ target with an explicit queue/additional-review qualification, not a guarantee.
 
 ## 18.6 OCR architecture and resource limits
 
-Initial local engine: Tesseract 5 with only `kaz/rus/eng`; PDF handling uses
-Poppler. Text-layer extraction is corroborated with visible OCR and never proves
-authenticity. Tesseract fast/best models trade speed for accuracy. PaddleOCR's
-CPU multilingual mobile models are an alternative if a broader authorized corpus
-demonstrates better field accuracy; its larger runtime was not added.
+The production worker uses PP-OCRv5 mobile Cyrillic recognition through pinned
+RapidOCR/ONNX Runtime, with Poppler for PDFs. Build-time downloads verify model
+hashes; the runtime needs no model downloads or remote OCR service. Tesseract
+remains a legacy engine path used for comparison. Text-layer extraction is
+corroborated with visible OCR and never proves authenticity. Combined screenshots
+are cropped to the two card regions before recognition when the layout is clear.
+Identical files in both document slots are recognized once. See
+[adapter notes](../deploy/ocr/README.md) for model sources and decoder policy.
 
 Submitted examples include separate physical sides, a combined viewer PNG with
 an absent patronymic, and a licence illustration. Viewer chrome/file names must
@@ -192,7 +197,7 @@ manual A/B modes, admin tariff boundaries, 4.9/5.1 and 9.9/10.1 km matching,
 commission/idempotency/lifecycle, guarded migrations, field/confidence parsing,
 malformed uploads, duplicate ownership, resubmission, stale admin/OCR races,
 retry/restart leases, once-only bonus and 20 concurrent registration submissions.
-Concurrent worker tests verify peak OCR concurrency one. Real Tesseract resource
+Concurrent worker tests verify peak OCR concurrency one. Real recognizer resource
 observations are separate from synthetic queue stress and from full-stack load.
 
 Operator/customer device tests still cover iOS/Android Telegram, dialer prompts,
@@ -203,10 +208,10 @@ WhatsApp/Business/missing app, contact taps at sheet positions and visual layout
 - Complete Go suite passed with the race detector, real isolated PostGIS and the
   opt-in OpenAPI route check: `go test -race -p 4 -count=1 ./...` with
   `JT_CHECK_OPENAPI=1` and an isolated `TEST_DATABASE_URL`.
-- Passenger 327, driver 419 and admin 111 tests passed: 857 frontend tests total.
+- Passenger 330, driver 419 and admin 111 tests passed: 860 frontend tests total.
 - All three app/node TypeScript configurations, production builds and local lint
   passed. The shared-core check verified 82 files. Compose configuration parses.
-- The final OCR worker image built successfully with Tesseract 5.3 and Poppler.
+- The OCR worker image built successfully with PP-OCRv5 / ONNX Runtime and Poppler.
 - Twenty synthetic concurrent registration submissions returned in approximately
   213 ms in the local test; this is not a production latency measurement. Twenty
   queued jobs across four concurrent callers maintained maximum processing one.
@@ -239,9 +244,10 @@ memory or demonstrate full-stack performance on the production 4-CPU/6-GB host.
 - Confirm jurisdiction/storage/consent requirements for IIN, documents and OCR
   with the operator's Kazakhstan data-protection policy; local processing does
   not itself establish all legal obligations.
-- Manual B cannot prove destination service-area membership from text alone.
+- Manual stops cannot prove service-area membership from text alone.
 - Numeric-only legacy clients cannot truthfully receive coordinates for manual
-  B. The write toggle stays off until all deployed readers/bots are upgraded.
+  stops. Deploy API, readers and bots together. The default manual setting is now
+  enabled as requested; explicit administrator overrides remain authoritative.
 - Calibrate recognition on a broader authorized set before relying on a claimed
   automatic approval rate. Automatic field matching does not verify forgery,
   liveness, document possession or vehicle-photo authenticity.
@@ -252,8 +258,9 @@ memory or demonstrate full-stack performance on the production 4-CPU/6-GB host.
    matching private files archive. Confirm storage/key custody and host headroom.
 2. Build/deploy the API, all frontends and bots together using normal procedures;
    the existing migration service applies embedded migrations before API startup.
-3. Enable `orders.manual_destination_enabled` in admin settings after readers
-   upgrade. Pricing policy is `passenger_tariff_bounds`, using the active tariff.
+3. Check `orders.manual_destination_enabled` in admin settings after readers
+   upgrade (default true; explicit false is retained). Pricing policy is
+   `passenger_tariff_bounds`, using the active tariff.
 4. Store a separate base64 32-byte `VERIFICATION_KEY` securely, enable
    `VERIFICATION_ENABLED`, and include the `ocr` Compose profile. Preserve this
    key with encrypted backups. Autoapproval follows `VERIFICATION_AUTO_APPROVE`.
@@ -264,3 +271,51 @@ memory or demonstrate full-stack performance on the production 4-CPU/6-GB host.
 Production activation and destructive actions require the operator's explicit
 deployment instruction. Do not run Down against feature data or invent missing
 destination coordinates to fit an old reader.
+
+## Follow-up regression fixes
+
+Pickup GPS was previously saved only after reverse geocoding finished. An
+HTTP 503 from that provider, or navigation cancelling its request, left A empty:
+the route could show manual B while Next stayed disabled and no preview request
+was sent. A valid GPS fix is now saved immediately with accuracy. Street-name
+lookup only adds display text; it cannot replace the actual coordinates or a
+newer user selection. Map pins can also be saved while their name is resolving.
+The backend still validates all known coordinates and pickup coverage.
+
+All stops after A can be typed manually, within the existing total of five points.
+Migration 12 allows manual intermediate stops. Mixed routes keep every known
+coordinate and address; unknown stops keep text and SQL NULL coordinates. No
+complete-route distance or time is fabricated, and OSRM is skipped if any stop
+is manual. Fare selection uses the administrator's tariff min/max/step. Matching
+still uses A only; navigation retains the known prefix up to the first manual
+stop. Integration tests cover 3/5 mixed stops and five fully rural stops through
+creation, acceptance and sequential completion, as well as route preview.
+
+The real local recognizer integration generated non-document test panels with
+synthetic identity fields. The same combined PNG, then PDF, was uploaded in both
+slots. Both reached the worker's approved outcome at the default 98 threshold using
+a synthetic approval callback, with one unique file processed per job. Shared
+production approval guards are covered separately by integration tests. The final
+image run took 9.2/9.9 seconds respectively; the 1-CPU, 768-MiB container peaked
+at 639234048 bytes (about 610 MiB). These are
+local test measurements, not guarantees for arbitrary phone photos or host load.
+The earlier Tesseract observations above are historical comparisons. Supplied
+photos can still require review for uncertain readings or different Kazakh and
+Russian letters in the entered name. The threshold was not lowered.
+
+Worker logs now show readiness, queue counts, job attempts, preparation counts,
+field comparison states/scores, reason codes and bounded failure stages. They
+exclude recognized text, names, IIN, document numbers and subprocess stderr.
+The integration test checks that synthetic private values do not reach logs.
+
+Top-up creation messages in kk/ru/en now include the configured HTTPS Kaspi Pay
+link and explicit bold instructions to send the original PDF back to the bot.
+A supplied original Russian Kaspi PDF was tested locally without committing its
+contents: amount, recipient, IIN/BIN and receipt identity parsed; one credit was
+applied in an isolated database and duplicate submission returned HTTP 409
+without changing the balance. Existing Kazakh parser, recipient checks, unique
+receipt claims and once-only welcome bonus remain covered by the full suite.
+
+No CI/build cleanup or recurring data removal was added. Server deployment was
+requested, but this session's Terminal control was denied and independent SSH
+authentication failed. No production commands were run by this session.

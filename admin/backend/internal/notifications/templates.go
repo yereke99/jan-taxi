@@ -125,6 +125,7 @@ const (
 	KindDuration  ParamKind = "duration"
 	KindPlace     ParamKind = "place"
 	KindLink      ParamKind = "link"
+	KindHTTPSLink ParamKind = "https_link"
 	KindFile      ParamKind = "file"
 )
 
@@ -492,11 +493,11 @@ var registry = buildRegistry([]*Template{
 	},
 	{
 		Key: TplTopUpCreated, Bots: driverOnly,
-		Params: []Param{pTopUpID, pReference, pAmount},
+		Params: []Param{pTopUpID, pReference, pAmount, {Name: "payment_url", Kind: KindHTTPSLink, Optional: true, Description: "Configured HTTPS Kaspi Pay payment URL, snapshotted on the top-up"}},
 		Bodies: labels(
-			"<b>Толтыру өтінімі жасалды</b>\nСомасы: {{amount}}\nТөлем коды: <b>{{reference}}</b>\nKaspi арқылы төлеп, қосымшада төлемді растаңыз.",
-			"<b>Заявка на пополнение создана</b>\nСумма: {{amount}}\nКод платежа: <b>{{reference}}</b>\nОплатите через Kaspi и подтвердите оплату в приложении.",
-			"<b>Top-up request created</b>\nAmount: {{amount}}\nPayment reference: <b>{{reference}}</b>\nPay via Kaspi, then confirm the payment in the app."),
+			"<b>Толтыру өтінімі жасалды</b>\nСомасы: {{amount}}\nТөлем коды: <b>{{reference}}</b>\n<a href=\"{{payment_url}}\">Kaspi Pay арқылы төлеу</a>\n\n1. Kaspi-де дәл {{amount}} төлеңіз.\n2. «Чекті бөлісу» → Telegram → осы бот.\n<b>3. Чекті осы чатқа PDF файл ретінде жіберіңіз.</b>\nФото мен скриншот автоматты толтыруға жарамайды. Чек сәйкес келсе, сома бір рет түседі; күмәнді төлемді әкімші тексереді.",
+			"<b>Заявка на пополнение создана</b>\nСумма: {{amount}}\nКод платежа: <b>{{reference}}</b>\n<a href=\"{{payment_url}}\">Оплатить через Kaspi Pay</a>\n\n1. Оплатите в Kaspi ровно {{amount}}.\n2. «Поделиться чеком» → Telegram → этот бот.\n<b>3. Отправьте оригинальный PDF-чек в этот чат.</b>\nФото и скриншот не подходят для автоматического зачисления. Если чек совпадает, сумма зачислится один раз; сомнительный платёж проверит администратор.",
+			"<b>Top-up request created</b>\nAmount: {{amount}}\nPayment reference: <b>{{reference}}</b>\n<a href=\"{{payment_url}}\">Pay via Kaspi Pay</a>\n\n1. Pay exactly {{amount}} in Kaspi.\n2. Share receipt → Telegram → this bot.\n<b>3. Send the original PDF receipt to this chat.</b>\nPhotos and screenshots cannot trigger automatic credit. A matching receipt credits the amount once; uncertain payments go to an administrator."),
 		Button: &Button{Label: labels("Төлемді ашу", "Открыть платёж", "Open payment"), StartParam: "topup_{{topup_id}}"},
 	},
 	{

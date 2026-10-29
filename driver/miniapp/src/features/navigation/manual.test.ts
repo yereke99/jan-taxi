@@ -13,9 +13,9 @@ describe('navigation with a manual final landmark',()=>{
   expect(navigationPrefix([a,via,b])).toEqual([a,via]);expect(navigationPrefix([b])).toEqual([])
   expect(planNavigation({base:'https://2gis.kz',platform:'android',origin:a,remaining:navigationPrefix([b])})).toBeNull()
  })
- it('never skips invalid intermediate points or manual points before the end',()=>{
+ it('stops navigation at the first manual point without skipping it',()=>{
   expect(navigationPrefix([a,{lat:null,lon:null},via,b])).toEqual([])
-  expect(navigationPrefix([a,b,via])).toEqual([])
+  expect(navigationPrefix([a,b,via])).toEqual([a])
   expect(navigationPrefix([a,{...b,lat:48.9}])).toEqual([])
  })
 })

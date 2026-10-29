@@ -38,7 +38,15 @@ func (s *Service) Run(ctx context.Context, engine Engine, approve ApproveFunc, o
 	// duplicate deployments. Per-job lease tokens also fence stale completions.
 	for ctx.Err() == nil {
 		_, err := db.RunExclusive(ctx, s.pool, "driver_ocr_worker", func(lockCtx context.Context) error {
+			s.opt.Log.Info("OCR worker lease acquired")
+			nextReport := time.Time{}
 			for lockCtx.Err() == nil {
+				if time.Now().After(nextReport) {
+					if stats, err := s.QueueStats(lockCtx); err == nil {
+						s.opt.Log.Info("OCR queue", "pending", stats.Pending, "processing", stats.Processing, "admin_review", stats.Review, "oldest_pending_s", stats.OldestSeconds)
+					}
+					nextReport = time.Now().Add(time.Minute)
+				}
 				did, err := s.RunOnce(lockCtx, engine, approve, opt)
 				if err != nil {
 					return err
@@ -69,6 +77,9 @@ func (s *Service) RunOnce(ctx context.Context, engine Engine, approve ApproveFun
 	if j == nil {
 		return false, err
 	}
+	started := time.Now()
+	log := s.opt.Log.With("job_id", j.ID, "application_id", j.ApplicationID, "attempt", j.Attempts)
+	log.Info("OCR job started", "document_slots", len(j.Documents))
 	if opt.MaxAttempts <= 0 {
 		opt.MaxAttempts = 3
 	}
@@ -82,7 +93,11 @@ func (s *Service) RunOnce(ctx context.Context, engine Engine, approve ApproveFun
 		cancel()
 		if err == nil {
 			r = Assess(r, j.Snapshot, s.opt.MinConfidence)
-			return true, s.finish(ctx, *j, r, approve)
+			err = s.finish(ctx, *j, r, approve)
+			if err != nil {
+				log.Error("OCR result could not be committed", "duration_ms", time.Since(started).Milliseconds())
+			}
+			return true, err
 		}
 	}
 	// Errors deliberately contain no engine output, identity values or raw file
@@ -99,13 +114,19 @@ func (s *Service) RunOnce(ctx context.Context, engine Engine, approve ApproveFun
 		delay = 0
 		reason = "processing_interrupted"
 	}
+	stage, code, exit := failureDetails(err)
+	updated := false
 	err = db.WithTx(clean, s.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(clean, `UPDATE driver_verification_jobs SET status=$3,reasons=jsonb_build_array($4::text),next_attempt_at=now()+$5*interval '1 second',locked_until=NULL,lease_token=NULL,finished_at=CASE WHEN $3='admin_review' THEN now() END,updated_at=now(),attempts=attempts-CASE WHEN $6 THEN 1 ELSE 0 END WHERE id=$1 AND lease_token=$2 AND status='processing'`, j.ID, j.Token, status, reason, delay.Seconds(), ctx.Err() != nil)
-		if err == nil && tag.RowsAffected() > 0 && status == "admin_review" {
+		updated = err == nil && tag.RowsAffected() > 0
+		if updated && status == "admin_review" {
 			return s.notifyReview(clean, tx, j.DriverID, j.ApplicationID)
 		}
 		return err
 	})
+	if err == nil && updated {
+		log.Warn("OCR processing failed", "status", status, "reason", reason, "failure_stage", stage, "failure_code", code, "exit_code", exit, "retry_in_s", delay.Seconds(), "duration_ms", time.Since(started).Milliseconds())
+	}
 	return true, err
 }
 func (s *Service) finish(ctx context.Context, j Job, r Result, approve ApproveFunc) error {
@@ -113,7 +134,8 @@ func (s *Service) finish(ctx context.Context, j Job, r Result, approve ApproveFu
 	if err != nil {
 		return err
 	}
-	return db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+	outcome := ""
+	err = db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		// Match moderation's lock order: driver, application, then job. Never let a
 		// delayed OCR result replace a newer resubmission or an admin decision.
 		var status string
@@ -182,6 +204,15 @@ func (s *Service) finish(ctx context.Context, j Job, r Result, approve ApproveFu
 		if err = audit.Log(ctx, tx, nil, audit.Entry{Action: "driver.verification_completed", EntityType: "driver", EntityID: j.DriverID.String(), After: map[string]any{"application_id": j.ApplicationID, "status": next, "confidence": r.Confidence, "reasons": r.Reasons}}); err != nil {
 			return err
 		}
+		outcome = next
 		return realtime.Publish(ctx, tx, realtime.Event{Type: "driver.verification_updated", Scopes: []string{realtime.DriverScope(j.DriverID), realtime.AdminScope}, Data: map[string]any{"driver_id": j.DriverID, "application_id": j.ApplicationID, "status": next}})
 	})
+	if err == nil {
+		if outcome == "" {
+			s.opt.Log.Info("OCR result ignored", "job_id", j.ID, "reason", "lease_changed")
+		} else {
+			s.opt.Log.Info("OCR job completed", "job_id", j.ID, "application_id", j.ApplicationID, "status", outcome, "confidence", r.Confidence, "reasons", r.Reasons, "engine", r.Engine, assessmentLog(r))
+		}
+	}
+	return err
 }

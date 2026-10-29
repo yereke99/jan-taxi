@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
+import { reverseGeocode } from '../api/geo'
 import { createOrder } from '../api/orders'
 import { previewRoute } from '../api/routes'
 import type { Order, RouteQuote, RouteQuoteOption } from '../api/types'
@@ -95,11 +96,58 @@ beforeEach(() => {
   vi.useFakeTimers()
   preview.mockReset()
   create.mockReset()
+  vi.mocked(reverseGeocode).mockReset()
 })
 
 afterEach(() => vi.useRealTimers())
 
 describe('booking store: route preview', () => {
+  it('keeps GPS A when street lookup is unavailable and allows manual B to continue', async () => {
+    const b = useBookingStore()
+    preview.mockResolvedValue(quote({ distance_m: null, duration_s: null }))
+    vi.mocked(reverseGeocode).mockRejectedValue(new ApiError(503, 'geocoding_unavailable', 'unavailable'))
+    const loc = { lat: 48.82, lon: 58.14, accuracy_m: 12, heading: null, speed_mps: null, timestamp: Date.now(), source: 'browser' as const }
+    await b.setPickupFromLocation(loc)
+    b.setStopPlace(1, { lat: null, lon: null, address: 'Старый клуб', source: 'manual', subtitle: null, inServiceArea: null })
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.stops[0]?.place).toMatchObject({ lat: loc.lat, lon: loc.lon, source: 'gps' })
+    expect(preview.mock.calls[0]![0].stops[1]).toMatchObject({ mode: 'manual', lat: null, lon: null })
+    expect(b.canContinue).toBe(true)
+  })
+
+  it('saves the fix before leaving for B can cancel the optional street lookup', async () => {
+    const b = useBookingStore()
+    preview.mockResolvedValue(quote({ distance_m: null, duration_s: null }))
+    let finish!: (value: Awaited<ReturnType<typeof reverseGeocode>>) => void
+    vi.mocked(reverseGeocode).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const ctrl = new AbortController()
+    const loc = { lat: 48.82, lon: 58.14, accuracy_m: 12, heading: null, speed_mps: null, timestamp: Date.now(), source: 'browser' as const }
+    const lookup = b.setPickupFromLocation(loc, ctrl.signal)
+    expect(b.stops[0]?.place).toMatchObject({ lat: loc.lat, lon: loc.lon })
+    ctrl.abort()
+    finish({ lat: 49, lon: 59, title: 'Different place', subtitle: null, source: 'photon', in_service_area: true })
+    await lookup
+    b.setStopPlace(1, { lat: null, lon: null, address: 'Ауылдағы үй', source: 'manual', subtitle: null, inServiceArea: null })
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.canContinue).toBe(true)
+    expect(b.stops[0]?.place?.lat).toBe(loc.lat)
+  })
+
+  it('quotes a manual intermediate with a geolocated destination while retaining admin fare bounds', async () => {
+    const b = useBookingStore()
+    preview.mockResolvedValue(quote({ distance_m: null, duration_s: null }))
+    b.setStopPlace(0, place('A', 48.82))
+    b.setStopPlace(1, place('B', 48.84))
+    b.addStop()
+    b.setStopPlace(1, { lat: null, lon: null, address: 'У магазина', source: 'manual', subtitle: null, inServiceArea: null })
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.canContinue).toBe(true)
+    expect(b.manualDestination).toBe(true)
+    expect(b.fare).toBeNull()
+    expect(b.selectedOption?.fare).toEqual(SEDAN_FARE)
+    expect(preview.mock.calls[0]![0].stops.map(s => s.mode ?? 'geocoded')).toEqual(['geocoded', 'manual', 'geocoded'])
+  })
+
   it('quotes once after the debounce and never auto-reorders the stops', async () => {
     const b = useBookingStore()
     // The API echoes stops; even a differently ordered echo must not reorder the editor.

@@ -3,25 +3,28 @@ package verification
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
-	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
 )
 
 type Engine interface {
 	Read(context.Context, Job) (Result, error)
 }
 type LocalEngine struct {
-	Service *Service
-	Store   *storage.Store
+	Service    *Service
+	Store      *storage.Store
+	Recognizer string
 }
 type boundedBuffer struct {
 	bytes.Buffer
@@ -51,9 +54,61 @@ func run(ctx context.Context, dir, bin string, args ...string) ([]byte, error) {
 	cmd.Stdout = out
 	cmd.Stderr = discard
 	if err := cmd.Run(); err != nil {
-		return nil, errors.New("local document processing failed")
+		code, exit := "failed", 0
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			code = "timeout"
+		case errors.Is(ctx.Err(), context.Canceled):
+			code = "interrupted"
+		case errors.Is(err, exec.ErrNotFound):
+			code = "unavailable"
+		default:
+			var e *exec.ExitError
+			if errors.As(err, &e) {
+				code, exit = "exit", e.ExitCode()
+			}
+		}
+		return nil, &processingError{Stage: bin, Code: code, ExitCode: exit}
 	}
 	return out.Bytes(), nil
+}
+
+// Check fails at startup if the installed executables or language models are
+// missing, rather than silently retrying every driver's application.
+func (e LocalEngine) Check(ctx context.Context) error {
+	bins := []string{"pdfinfo", "pdftotext", "pdftoppm"}
+	if e.Recognizer != "" {
+		bins = append(bins, "python3")
+	} else {
+		bins = append(bins, "tesseract")
+	}
+	for _, bin := range bins {
+		if _, err := exec.LookPath(bin); err != nil {
+			return &processingError{Stage: bin, Code: "unavailable"}
+		}
+	}
+	check, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if e.Recognizer != "" {
+		_, err := run(check, os.TempDir(), "python3", e.Recognizer, "--check")
+		return err
+	}
+	b, err := run(check, os.TempDir(), "tesseract", "--list-langs")
+	if err != nil {
+		return err
+	}
+	for _, lang := range []string{"kaz", "rus", "eng"} {
+		found := false
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.TrimSpace(line) == lang {
+				found = true
+			}
+		}
+		if !found {
+			return &processingError{Stage: "tesseract", Code: "language_missing"}
+		}
+	}
+	return nil
 }
 func (e LocalEngine) Read(ctx context.Context, j Job) (Result, error) {
 	dir, err := os.MkdirTemp("", "jantaxi-ocr-")
@@ -64,9 +119,12 @@ func (e LocalEngine) Read(ctx context.Context, j Job) (Result, error) {
 	var lines []Line
 	var embedded []Line
 	var sources []string
+	cardSources := map[string]bool{}
 	seen := map[string]bool{}
+	duplicates := 0
 	for i, d := range j.Documents {
 		if seen[d.SHA256] {
+			duplicates++
 			continue
 		}
 		seen[d.SHA256] = true
@@ -124,33 +182,73 @@ func (e LocalEngine) Read(ctx context.Context, j Job) (Result, error) {
 				return Result{}, errors.New("document rendering failed")
 			}
 		}
-		for _, image := range images {
+		prepared := make([]string, 0, len(images)*2)
+		crops := 0
+		for _, p := range images {
+			cards, err := prepareCards(ctx, p)
+			if err != nil {
+				return Result{}, err
+			}
+			if len(cards) == 0 {
+				prepared = append(prepared, p)
+			} else {
+				prepared = append(prepared, cards...)
+				crops += len(cards)
+				for _, card := range cards {
+					cardSources[card] = true
+				}
+			}
+		}
+		e.Service.opt.Log.Info("OCR document prepared", "job_id", j.ID, "document_slot", i, "kind", meta.Purpose, "mime", meta.Mime, "pages", len(images), "card_crops", crops)
+		for _, image := range prepared {
 			sources = append(sources, image)
-			b, err := run(ctx, dir, "tesseract", image, "stdout", "-l", "kaz+rus+eng", "--oem", "1", "tsv")
+			if e.Recognizer != "" {
+				continue
+			}
+			b, err := run(ctx, dir, "tesseract", image, "stdout", "-l", "kaz+rus+eng", "--oem", "1", "-c", "tessedit_create_tsv=1")
 			if err != nil {
 				return Result{}, err
 			}
 			found, err := ParseTSV(bytes.NewReader(b))
 			if err != nil {
-				return Result{}, fmt.Errorf("OCR output invalid")
+				return Result{}, &processingError{Stage: "tesseract", Code: "output_invalid"}
+			}
+			for i := range found {
+				found[i].FromCard = cardSources[image]
 			}
 			lines = append(lines, found...)
 		}
 	}
+	if e.Recognizer != "" {
+		// Image decoding/PNG preparation is finished. Return its transient heap
+		// before starting ONNX so both processes fit the shared container limit.
+		debug.FreeOSMemory()
+		lines, err = e.recognize(ctx, dir, sources, cardSources)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	e.Service.opt.Log.Info("OCR documents read", "job_id", j.ID, "unique_documents", len(seen), "duplicate_slots", duplicates, "images", len(sources), "lines", len(lines))
 	r := Extract(lines)
+	if e.Recognizer != "" {
+		r.Engine = "pp-ocrv5-cyrillic-onnx"
+	}
 	// Sparse-text segmentation is a single bounded fallback for photographed
 	// cards/screenshots. It contributes evidence; it cannot erase conflicts or
 	// increase the confidence of an already uncertain extraction.
-	if incomplete(r, e.Service.opt.MinConfidence) {
+	if e.Recognizer == "" && incomplete(r, e.Service.opt.MinConfidence) {
 		var sparse []Line
 		for _, p := range sources {
-			b, err := run(ctx, dir, "tesseract", p, "stdout", "-l", "kaz+rus+eng", "--oem", "1", "--psm", "11", "tsv")
+			b, err := run(ctx, dir, "tesseract", p, "stdout", "-l", "kaz+rus+eng", "--oem", "1", "--psm", "11", "-c", "tessedit_create_tsv=1")
 			if err != nil {
 				return Result{}, err
 			}
 			found, err := ParseTSV(bytes.NewReader(b))
 			if err != nil {
-				return Result{}, errors.New("OCR output invalid")
+				return Result{}, &processingError{Stage: "tesseract", Code: "output_invalid"}
+			}
+			for i := range found {
+				found[i].FromCard = cardSources[p]
 			}
 			sparse = append(sparse, found...)
 		}
@@ -158,7 +256,7 @@ func (e LocalEngine) Read(ctx context.Context, j Job) (Result, error) {
 		r.Engine = "tesseract-kaz-rus-eng+psm11"
 	}
 	if len(embedded) > 0 {
-		r.Engine = "pdftotext+tesseract-kaz-rus-eng"
+		r.Engine = "pdftotext+" + r.Engine
 		text := Extract(embedded)
 		for _, pair := range []struct{ name, a, b string }{{"iin", r.Extracted.IIN, text.Extracted.IIN}, {"document_number", r.Extracted.DocumentNumber, text.Extracted.DocumentNumber}, {"first_name", r.FirstName, text.FirstName}, {"last_name", r.LastName, text.LastName}, {"document_type", r.DocumentType, text.DocumentType}} {
 			if pair.a != "" && pair.b != "" && NormalizeName(pair.a) != NormalizeName(pair.b) {
@@ -167,6 +265,32 @@ func (e LocalEngine) Read(ctx context.Context, j Job) (Result, error) {
 		}
 	}
 	return r, nil
+}
+
+func (e LocalEngine) recognize(ctx context.Context, dir string, sources []string, cards map[string]bool) ([]Line, error) {
+	args := append([]string{e.Recognizer}, sources...)
+	b, err := run(ctx, dir, "python3", args...)
+	if err != nil {
+		return nil, err
+	}
+	var pages [][]Line
+	if err = json.Unmarshal(b, &pages); err != nil || len(pages) != len(sources) {
+		return nil, &processingError{Stage: "recognizer", Code: "output_invalid"}
+	}
+	var lines []Line
+	for i, page := range pages {
+		if len(page) > 1000 {
+			return nil, &processingError{Stage: "recognizer", Code: "output_limit"}
+		}
+		for _, line := range page {
+			if len(line.Text) > 4096 {
+				return nil, &processingError{Stage: "recognizer", Code: "output_limit"}
+			}
+			line.FromCard = cards[sources[i]]
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
 }
 func incomplete(r Result, min float64) bool {
 	if r.DocumentType == "" || r.FirstName == "" || r.LastName == "" || !r.Extracted.Complete() {

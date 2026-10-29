@@ -277,6 +277,7 @@ type AdminOrderListItem struct {
 	Pickup           stops.Summary     `json:"pickup"`
 	Destination      stops.Summary     `json:"destination"`
 	StopCount        int               `json:"stop_count"`
+	Unknown          bool              `json:"-"`
 	DistanceM        int               `json:"distance_m"`
 	HasOpenDispute   bool              `json:"has_open_dispute"`
 	CreatedAt        time.Time         `json:"created_at"`
@@ -340,7 +341,7 @@ func listAdminOrders(ctx context.Context, q db.Querier, f adminFilter, limit, of
 		       o.fare, o.currency, o.commission_amount, o.payment_method,
 		       o.passenger_id, pu.telegram_user_id, pu.first_name, pu.last_name, pu.username, pu.phone_e164, pu.is_blocked,
 		       d.id, d.code, d.first_name, d.last_name, COALESCE(d.phone_e164, du.phone_e164),
-		       o.stop_count, COALESCE(o.distance_m,0),
+		       o.stop_count, COALESCE(o.distance_m,0), o.distance_m IS NULL,
 		       EXISTS (SELECT 1 FROM disputes ds WHERE ds.order_id = o.id AND ds.status = 'open'),
 		       o.created_at, o.accepted_at, o.completed_at, o.cancelled_at, o.cancelled_by, o.cancel_reason_code,
 		       `+endpointColumns+`,
@@ -369,7 +370,7 @@ func scanAdminListItem(row pgx.CollectableRow) (AdminOrderListItem, error) {
 		&it.City.Name.KK, &it.City.Name.RU, &it.City.Name.EN, &it.Fare, &it.Currency, &it.CommissionAmount,
 		&it.PaymentMethod, &it.Passenger.ID, &it.Passenger.TelegramUserID, &it.Passenger.FirstName,
 		&it.Passenger.LastName, &it.Passenger.Username, &it.Passenger.Phone, &it.Passenger.IsBlocked,
-		&dID, &dCode, &dFirst, &dLast, &dPhone, &it.StopCount, &it.DistanceM, &it.HasOpenDispute,
+		&dID, &dCode, &dFirst, &dLast, &dPhone, &it.StopCount, &it.DistanceM, &it.Unknown, &it.HasOpenDispute,
 		&it.CreatedAt, &it.AcceptedAt, &it.CompletedAt, &it.CancelledAt, &it.CancelledBy, &it.CancelReasonCode}
 	dest = append(dest, endpointDest(&it.Pickup, &it.Destination)...)
 	dest = append(dest, loadDest(&it.OrderLoad)...)

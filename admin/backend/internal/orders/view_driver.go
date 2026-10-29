@@ -225,6 +225,7 @@ type DriverOrderSummary struct {
 	Pickup            stops.Summary `json:"pickup"`
 	Destination       stops.Summary `json:"destination"`
 	StopCount         int           `json:"stop_count"`
+	Unknown           bool          `json:"-"`
 	DistanceM         int           `json:"distance_m"`
 	CreatedAt         time.Time     `json:"created_at"`
 	CompletedAt       *time.Time    `json:"completed_at"`
@@ -237,7 +238,7 @@ func listDriverHistory(ctx context.Context, q db.Querier, driverID uuid.UUID, li
 	beforeAt, beforeID := cursorArgs(c)
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.status, o.category, o.fare, o.currency, o.commission_amount, `+commissionChargedColumn+`,
-		       o.payment_method, o.stop_count, COALESCE(o.distance_m,0), o.created_at, o.completed_at, o.cancelled_at, o.cancelled_by,
+		       o.payment_method, o.stop_count, COALESCE(o.distance_m,0), o.distance_m IS NULL, o.created_at, o.completed_at, o.cancelled_at, o.cancelled_by,
 		       `+endpointColumns+`,
 		       `+loadColumns+`, `+placeColumns+`
 		FROM orders o `+endpointJoins+loadJoin+placeJoin+`
@@ -251,7 +252,7 @@ func listDriverHistory(ctx context.Context, q db.Querier, driverID uuid.UUID, li
 	items, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DriverOrderSummary, error) {
 		var s DriverOrderSummary
 		dest := []any{&s.ID, &s.Number, &s.Status, &s.Category, &s.Fare, &s.Currency, &s.CommissionAmount,
-			&s.CommissionCharged, &s.PaymentMethod, &s.StopCount, &s.DistanceM, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt, &s.CancelledBy}
+			&s.CommissionCharged, &s.PaymentMethod, &s.StopCount, &s.DistanceM, &s.Unknown, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt, &s.CancelledBy}
 		dest = append(dest, endpointDest(&s.Pickup, &s.Destination)...)
 		dest = append(dest, loadDest(&s.OrderLoad)...)
 		err := row.Scan(append(dest, placeDest(&s.OrderPlace)...)...)

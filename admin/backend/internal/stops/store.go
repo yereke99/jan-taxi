@@ -33,8 +33,8 @@ func Insert(ctx context.Context, q db.Querier, orderID uuid.UUID, in []Input) ([
 		if p.Mode != "geocoded" && p.Mode != "manual" {
 			return nil, fmt.Errorf("stops: invalid mode")
 		}
-		if p.Mode == "manual" && i != len(in)-1 {
-			return nil, fmt.Errorf("stops: manual point must be final")
+		if p.Mode == "manual" && i == 0 {
+			return nil, fmt.Errorf("stops: pickup must have coordinates")
 		}
 		if p.Mode == "manual" {
 			if _, err := CleanAddress(p.Address); err != nil {

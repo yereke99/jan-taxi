@@ -249,7 +249,7 @@ onMounted(() => {
           <li>
             <span class="tu__num">3</span>
             <span class="tu__step">
-              <span>{{ t('topup.how_step3') }}</span>
+				<strong>{{ t('topup.how_step3') }}</strong>
               <span class="tu__hint">{{ t('topup.how_step3_hint') }}</span>
             </span>
           </li>

@@ -112,14 +112,14 @@ export function planNavigation(input: {
   return { primaryUrl: fullRouteUrl(input.base, input.origin, stops), primaryMode: 'full', nextUrl, note: null }
 }
 
-/** A manual final landmark has no navigation coordinates. Preserve the known
+/** A manual landmark has no navigation coordinates. Preserve the known
  * prefix (especially pickup A), but never skip a malformed real waypoint. */
 export function navigationPrefix(stops: readonly { mode?: string; lat: number | null; lon: number | null }[]): NavPoint[] {
   const points: NavPoint[] = []
   for (let i = 0; i < stops.length; i++) {
     const stop = stops[i]!
     if (stop.mode === 'manual') {
-      if (i !== stops.length - 1 || stop.lat !== null || stop.lon !== null) return []
+      if (i === 0 || stop.lat !== null || stop.lon !== null) return []
       break
     }
     if (typeof stop.lat !== 'number' || typeof stop.lon !== 'number') return []

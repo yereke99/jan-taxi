@@ -178,6 +178,11 @@ func checkValue(p Param, v any) error {
 		if !linkRe.MatchString(s) {
 			return errors.New("must be https://t.me/<username> or tg://user?id=<id>")
 		}
+	case KindHTTPSLink:
+		s, _ := toString(v)
+		if !httpsLink(s) {
+			return errors.New("must be a valid HTTPS URL")
+		}
 	case KindFile:
 		s, _ := toString(v)
 		if _, err := uuid.Parse(s); err != nil {
@@ -313,6 +318,14 @@ func buttonURL(miniAppURL, pattern string, params map[string]any) (string, bool)
 	return u.String(), true
 }
 
+func httpsLink(raw string) bool {
+	if len(raw) > 2048 || strings.ContainsAny(raw, "\r\n\t ") {
+		return false
+	}
+	u, err := url.ParseRequestURI(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Opaque == ""
+}
+
 // formatValue renders one param; ok is false when the value is missing/empty.
 func formatValue(p Param, v any, lang string) (string, bool) {
 	if isEmpty(v) {
@@ -383,6 +396,12 @@ func formatValue(p Param, v any, lang string) (string, bool) {
 	case KindLink:
 		s, ok := toString(v)
 		if !ok || !linkRe.MatchString(s) {
+			return "", false
+		}
+		return html.EscapeString(s), true
+	case KindHTTPSLink:
+		s, ok := toString(v)
+		if !ok || !httpsLink(s) {
 			return "", false
 		}
 		return html.EscapeString(s), true

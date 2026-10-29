@@ -190,7 +190,7 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) error {
 	go func() { localityCh <- h.places.Locality(ctx, pts[0]) }()
 	var route Route
 	route.Geometry = json.RawMessage(`null`)
-	if len(pts) > 1 {
+	if !manual && len(pts) > 1 {
 		route, err = h.router.Route(ctx, pts)
 	}
 	if err != nil {
@@ -422,8 +422,8 @@ func (req previewRequest) validateRoute(maxPoints int) (previewInput, error) {
 			s.Mode = "geocoded"
 		}
 		if s.Mode == "manual" {
-			if i != len(req.Stops)-1 {
-				fields[p+"mode"] = "manual_destination_only"
+			if i == 0 {
+				fields[p+"mode"] = "pickup_coordinates_required"
 			}
 			if in.Lat != nil || in.Lon != nil {
 				fields[p+"lat"] = "not_allowed"
@@ -480,7 +480,11 @@ func coordinate(fields map[string]string, key string, v *float64, limit float64)
 
 func (q routeQuote) MarshalJSON() ([]byte, error) {
 	type plain routeQuote
-	if len(q.Stops) == 0 || q.Stops[len(q.Stops)-1].Mode != "manual" {
+	manual := false
+	for _, s := range q.Stops {
+		manual = manual || s.Mode == "manual"
+	}
+	if !manual {
 		return json.Marshal(plain(q))
 	}
 	b, err := json.Marshal(plain(q))
@@ -491,7 +495,7 @@ func (q routeQuote) MarshalJSON() ([]byte, error) {
 	if err = json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
-	if len(q.Stops) > 0 && q.Stops[len(q.Stops)-1].Mode == "manual" {
+	if manual {
 		m["distance_m"], m["duration_s"] = nil, nil
 		m["pricing_mode"] = "passenger_tariff_bounds"
 		if len(q.Legs) == 0 {

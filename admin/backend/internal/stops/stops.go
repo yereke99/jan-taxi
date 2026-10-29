@@ -235,5 +235,10 @@ func marshalPoint(v any, mode string) ([]byte, error) {
 	return json.Marshal(m)
 }
 func HasManual(list []Stop) bool {
-	return len(list) > 0 && list[len(list)-1].Mode == "manual"
+	for _, s := range list {
+		if s.Mode == "manual" {
+			return true
+		}
+	}
+	return false
 }

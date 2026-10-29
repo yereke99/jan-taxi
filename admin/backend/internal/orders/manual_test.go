@@ -138,6 +138,67 @@ func TestManualDestinationRadiusBoundaries(t *testing.T) {
 	}
 }
 
+func TestMixedManualStopsPreservePickupAndCompleteInOrder(t *testing.T) {
+	for _, list := range [][]pricing.QuoteStop{
+		{embiStops[0], {Mode: "manual", Address: "У старого клуба"}, embiStops[1]},
+		{embiStops[0], {Mode: "manual", Address: "Первый сельский адрес"}, embiStops[1], {Mode: "manual", Address: "Второй сельский адрес"}, embiStops[2]},
+		{embiStops[0], {Mode: "manual", Address: "У клуба"}, {Mode: "manual", Address: "У школы"}, {Mode: "manual", Address: "У магазина"}, {Mode: "manual", Address: "Дом у озера"}},
+	} {
+		t.Run(fmt.Sprint(len(list)), func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			pid, pc := e.passenger()
+			drv := e.driverAt("EMB", 1000, 48.827, 58.1442)
+			tr, err := pricing.ActiveTariff(ctx, e.pool, e.cityID, "taxi", "sedan")
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := pricing.CreateQuote(ctx, e.pool, pricing.NewQuote{UserID: pid, CityID: e.cityID, Tariff: tr, Stops: list, Geometry: json.RawMessage(`null`), Fare: pricing.Fare{Recommended: tr.MinFare, Min: tr.MinFare, Max: tr.MaxFare, Step: tr.FareStep, Options: pricing.Options(tr.MinFare, tr.MaxFare, tr.FareStep)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := e.do(pc, http.MethodPost, "/orders", taxiBody(q, 800))
+			e.expect(res, http.StatusCreated, "")
+			var o orders.Order
+			res.decode(t, &o)
+			if len(o.Stops) != len(list) || o.Stops[0].Lat != list[0].Lat {
+				t.Fatal("route or real pickup changed")
+			}
+			if e.count(`SELECT count(*) FROM orders WHERE id=$1 AND distance_m IS NULL`, o.ID) != 1 {
+				t.Fatal("unknown route assigned a fake distance")
+			}
+			for i, s := range list {
+				if o.Stops[i].Address != s.Address || (s.Mode != "manual" && (o.Stops[i].Lat != s.Lat || o.Stops[i].Lon != s.Lon)) {
+					t.Fatal("stored stop text or coordinates changed")
+				}
+				if s.Mode == "manual" && e.count(`SELECT count(*) FROM order_stops WHERE order_id=$1 AND seq=$2 AND mode='manual' AND lat IS NULL AND lon IS NULL AND location IS NULL`, o.ID, i) != 1 {
+					t.Fatal("manual stop has invented coordinates")
+				}
+			}
+			e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil), http.StatusOK, "")
+			e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/start", o.ID), nil), http.StatusOK, "")
+			for _, s := range o.Stops[1 : len(o.Stops)-1] {
+				e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/stops/%s/complete", o.ID, s.ID), nil), http.StatusOK, "")
+			}
+			e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/complete", o.ID), nil), http.StatusOK, "")
+			for _, tc := range []struct {
+				c        caller
+				endpoint string
+			}{{pc, "/orders"}, {drv.c, "/driver/orders/history"}} {
+				h := e.do(tc.c, http.MethodGet, tc.endpoint, nil)
+				e.expect(h, http.StatusOK, "")
+				var raw map[string]any
+				if err = json.Unmarshal(h.Body, &raw); err != nil {
+					t.Fatal(err)
+				}
+				if raw["items"].([]any)[0].(map[string]any)["distance_m"] != nil {
+					t.Fatal("history invents a full route distance")
+				}
+			}
+		})
+	}
+}
+
 func manualMigration(t *testing.T) (string, string) {
 	t.Helper()
 	raw, err := migrations.FS.ReadFile("00010_manual_destinations.sql")

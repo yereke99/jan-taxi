@@ -68,3 +68,50 @@ func TestRealKaspiReceiptCreditsAutomatically(t *testing.T) {
 		t.Fatalf("duplicate = %s", dup.raw)
 	}
 }
+
+// The operator supplies an original receipt outside the repository. All money
+// movement below is confined to disposable test databases, never the server.
+func TestSuppliedKaspiReceipt(t *testing.T) {
+	path := os.Getenv("JT_KASPI_RECEIPT_FILE")
+	if path == "" {
+		t.Skip("set JT_KASPI_RECEIPT_FILE to a private calibration PDF")
+	}
+	pdf, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal("receipt unavailable")
+	}
+	ctx := context.Background()
+	r := receipt.Parse(ctx, pdf, receipt.Options{FileName: filepath.Base(path)})
+	if r.ParseStatus != receipt.StatusParsed || len(r.Blocking()) > 0 || r.Amount <= 0 || r.PaidAt == nil || r.RecipientBIN == "" || r.Serial == "" {
+		t.Fatalf("receipt parsing: status=%s blocking=%v missing=%v", r.ParseStatus, r.Blocking(), r.Missing)
+	}
+	t.Log("original PDF parsed: amount, recipient, BIN, receipt serial and payment time present")
+	e := newEnv(t)
+	setSetting(t, e, "company.bin", r.RecipientBIN)
+	setSetting(t, e, "kaspi.recipient_name", r.RecipientName)
+	setSetting(t, e, "topup.receipt_max_age_hours", int64(720))
+	d := e.driver("approved")
+	id, _ := createTopUp(t, d, r.Amount)
+	if _, err = e.pool.Exec(ctx, `UPDATE top_up_requests SET created_at=$2 WHERE id=$1`, id, r.PaidAt.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	res := serve(t, d.h, uploadRequest(t, id, filepath.Base(path), pdf))
+	if res.code != http.StatusOK {
+		t.Fatal("original receipt upload failed")
+	}
+	rc := receiptBody(t, res)
+	if res.body["status"] != StatusConfirmed || rc["decision"] != DecisionAutoConfirmed {
+		t.Fatalf("credit blocked: reasons=%v", reasonsOf(rc))
+	}
+	if balanceNow, _ := balance(t, e.pool, d.DriverID); balanceNow != r.Amount {
+		t.Fatal("incorrect credited amount")
+	}
+	again, _ := createTopUp(t, d, r.Amount)
+	dup := serve(t, d.h, uploadRequest(t, again, filepath.Base(path), pdf))
+	if dup.code != http.StatusConflict || dup.errCode() != "receipt_already_used" {
+		t.Fatal("receipt reused")
+	}
+	if balanceNow, _ := balance(t, e.pool, d.DriverID); balanceNow != r.Amount {
+		t.Fatal("duplicate credited twice")
+	}
+}

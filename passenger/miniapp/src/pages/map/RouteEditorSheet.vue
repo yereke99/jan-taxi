@@ -12,7 +12,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { reverseGeocode } from '../../api/geo'
 import FarePreview from '../../components/booking/FarePreview.vue'
 import RouteStopList from '../../components/booking/RouteStopList.vue'
-import { JButton, JSheet, toast } from '../../components/ui'
+import { JButton, JSheet } from '../../components/ui'
 import { loadProblem } from '../../domain/vehicleClass'
 import { useErrorText } from '../../i18n/core'
 import { STOP_LETTERS } from '../../maps'
@@ -88,6 +88,8 @@ async function onMarkerDrag(markerPos: number, point: LatLon): Promise<void> {
   dragControllers.get(index)?.abort()
   const ctrl = new AbortController()
   dragControllers.set(index, ctrl)
+  // A pin is usable even while the optional street-name provider is offline.
+  booking.setStopPlace(index, { lat: roundCoord(point.lat), lon: roundCoord(point.lon), address: '', subtitle: null, source: 'map', inServiceArea: null })
   try {
     const r = await reverseGeocode(point, { lang: session.language, signal: ctrl.signal })
     if (ctrl.signal.aborted) return
@@ -100,9 +102,8 @@ async function onMarkerDrag(markerPos: number, point: LatLon): Promise<void> {
       inServiceArea: r.in_service_area,
     })
     if (!r.in_service_area) haptics.notification('error')
-  } catch (err) {
+  } catch {
     if (ctrl.signal.aborted) return
-    toast.error(errorText(err))
     syncMarkers()
   } finally {
     if (dragControllers.get(index) === ctrl) dragControllers.delete(index)

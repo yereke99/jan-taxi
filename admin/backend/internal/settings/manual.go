@@ -6,7 +6,7 @@ import (
 )
 
 // ManualDestinationPolicy uses the same validated defaults shown to operators.
-// Enablement is a reader-first rollout switch; money remains the active tariff's
+// An explicit administrator disable is retained; money remains the active tariff's
 // min/max/step. It never supplies coordinates or a distance-based recommendation.
 type ManualDestinationPolicy struct {
 	Enabled bool

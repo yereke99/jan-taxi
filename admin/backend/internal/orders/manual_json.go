@@ -40,15 +40,15 @@ func (o AdminOrder) MarshalJSON() ([]byte, error) {
 }
 func (o OrderSummary) MarshalJSON() ([]byte, error) {
 	type plain OrderSummary
-	return unknownMetrics(plain(o), o.Destination.Mode == "manual")
+	return unknownMetrics(plain(o), o.Unknown || o.Destination.Mode == "manual")
 }
 func (o DriverOrderSummary) MarshalJSON() ([]byte, error) {
 	type plain DriverOrderSummary
-	return unknownMetrics(plain(o), o.Destination.Mode == "manual")
+	return unknownMetrics(plain(o), o.Unknown || o.Destination.Mode == "manual")
 }
 func (o AdminOrderListItem) MarshalJSON() ([]byte, error) {
 	type plain AdminOrderListItem
-	return unknownMetrics(plain(o), o.Destination.Mode == "manual")
+	return unknownMetrics(plain(o), o.Unknown || o.Destination.Mode == "manual")
 }
 func (o RouteSnapshot) MarshalJSON() ([]byte, error) {
 	type plain RouteSnapshot

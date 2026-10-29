@@ -194,6 +194,7 @@ type OrderSummary struct {
 	Pickup          stops.Summary `json:"pickup"`
 	Destination     stops.Summary `json:"destination"`
 	StopCount       int           `json:"stop_count"`
+	Unknown         bool          `json:"-"`
 	DistanceM       int           `json:"distance_m"`
 	DriverFirstName *string       `json:"driver_first_name"`
 	Rating          *int          `json:"rating"`
@@ -224,7 +225,7 @@ func listPassengerOrders(ctx context.Context, q db.Querier, passengerID uuid.UUI
 	beforeAt, beforeID := cursorArgs(c)
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.status, o.category, o.service_type, o.fare, o.currency, o.payment_method,
-		       o.stop_count, COALESCE(o.distance_m,0), d.first_name, r.rating, o.driver_id IS NOT NULL,
+		       o.stop_count, COALESCE(o.distance_m,0), o.distance_m IS NULL, d.first_name, r.rating, o.driver_id IS NOT NULL,
 		       o.created_at, o.completed_at, o.cancelled_at, `+endpointColumns+`, `+loadColumns+`, `+placeColumns+`
 		FROM orders o
 		LEFT JOIN driver_profiles d ON d.id = o.driver_id
@@ -242,7 +243,7 @@ func listPassengerOrders(ctx context.Context, q db.Querier, passengerID uuid.UUI
 		var rating *int16
 		var hasDriver bool
 		dest := []any{&s.ID, &s.Number, &s.Status, &s.Category, &s.ServiceType, &s.Fare, &s.Currency, &s.PaymentMethod,
-			&s.StopCount, &s.DistanceM, &s.DriverFirstName, &rating, &hasDriver, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt}
+			&s.StopCount, &s.DistanceM, &s.Unknown, &s.DriverFirstName, &rating, &hasDriver, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt}
 		dest = append(dest, endpointDest(&s.Pickup, &s.Destination)...)
 		dest = append(dest, loadDest(&s.OrderLoad)...)
 		if err := row.Scan(append(dest, placeDest(&s.OrderPlace)...)...); err != nil {

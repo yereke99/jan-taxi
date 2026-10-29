@@ -103,10 +103,10 @@ watch(trimmed, (q) => {
   runner.schedule(q)
 })
 
-const recent = computed(() => orders.places.filter(p=>isDestination.value || hasCoordinates(p)))
+const recent = computed(() => orders.places.filter(p=>!isPickup.value || hasCoordinates(p)))
 const manualMode = ref(false)
 const manualText = ref('')
-const canManual = computed(()=>isDestination.value && session.config.orders?.manual_destination_enabled === true && session.config.orders.manual_destination_pricing === 'passenger_tariff_bounds')
+const canManual = computed(()=>!isPickup.value && session.config.orders?.manual_destination_enabled === true && session.config.orders.manual_destination_pricing === 'passenger_tariff_bounds')
 const manualValid = computed(()=>codePointLength(cleanText(manualText.value))>0 && codePointLength(cleanText(manualText.value))<=200)
 function saveManual(): void { if(!canManual.value || !manualValid.value)return; choose({lat:null,lon:null,address:cleanText(manualText.value),subtitle:null,source:'manual',inServiceArea:null}) }
 
@@ -123,7 +123,7 @@ function done(): void {
 }
 
 function choose(place: PlaceValue): void {
-  if (!isDestination.value && !hasCoordinates(place)) return
+  if (isPickup.value && !hasCoordinates(place)) return
   booking.setStopPlace(index.value, place)
   done()
 }

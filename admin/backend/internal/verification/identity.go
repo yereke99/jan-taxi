@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -32,6 +33,7 @@ type Options struct {
 	AutoApprove   bool
 	MinConfidence float64
 	QueueLimit    int
+	Log           *slog.Logger
 }
 type Service struct {
 	pool *pgxpool.Pool
@@ -59,6 +61,9 @@ type Document struct {
 }
 
 func NewService(pool *pgxpool.Pool, opt Options) (*Service, error) {
+	if opt.Log == nil {
+		opt.Log = slog.Default()
+	}
 	s := &Service{pool: pool, opt: opt}
 	if !opt.Enabled {
 		return s, nil

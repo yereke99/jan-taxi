@@ -133,7 +133,9 @@ export function stopsFromPlaces(places: readonly PlaceValue[], maxPoints: number
 }
 
 export function isComplete(stops: readonly RouteStop[]): boolean {
-  return stops.length >= MIN_ROUTE_POINTS && stops.every((s, i) => s.place !== null && (hasCoordinates(s.place) || (i === stops.length - 1 && s.place.source === 'manual' && s.place.address.trim().length > 0)))
+  return stops.length >= MIN_ROUTE_POINTS && stops.every((s, i) => s.place !== null && (s.place.source === 'manual'
+    ? i > 0 && s.place.lat === null && s.place.lon === null && s.place.address.trim().length > 0
+    : hasCoordinates(s.place)))
 }
 
 /** Indices of stops the API reported outside Kazakhstan. */

@@ -89,11 +89,11 @@ var (
 
 var registry = []Def{
 	{
-		Key: "orders.manual_destination_enabled", Kind: KindBool, Default: false,
+		Key: "orders.manual_destination_enabled", Kind: KindBool, Default: true,
 		Description: Localized{
-			KK: "Координатсыз соңғы мекенжайды қолмен енгізуге рұқсат беру",
-			RU: "Разрешить ручной ввод конечного адреса без координат",
-			EN: "Allow a manually entered final destination without coordinates",
+			KK: "A нүктесінен кейінгі мекенжайларды координатсыз қолмен енгізуге рұқсат беру",
+			RU: "Разрешить ручной ввод адресов после точки A без координат",
+			EN: "Allow manually entered addresses after pickup A without coordinates",
 		},
 	},
 	{

@@ -164,8 +164,9 @@ func (s *Service) insertTopUp(ctx context.Context, d walletDriver, amount int64,
 		}
 		reference := fmt.Sprintf("%s-TOPUP-%06d", d.Code, number)
 		var payURL *string
-		if u := s.kaspi.PaymentURL(ctx); u != "" {
-			payURL = &u
+		paymentURL := s.kaspi.PaymentURL(ctx)
+		if paymentURL != "" {
+			payURL = &paymentURL
 		}
 		expiry := settings.TopUpExpiry(ctx, tx)
 		if err := tx.QueryRow(ctx, `
@@ -183,7 +184,7 @@ func (s *Service) insertTopUp(ctx context.Context, d walletDriver, amount int64,
 		}
 		if err := notifications.Enqueue(ctx, tx, notifications.Notification{
 			Bot: notifications.DriverBot, UserID: d.UserID, Template: notifications.TplTopUpCreated,
-			Params:    map[string]any{"topup_id": id.String(), "reference": reference, "amount": amount},
+			Params:    map[string]any{"topup_id": id.String(), "reference": reference, "amount": amount, "payment_url": paymentURL},
 			DedupeKey: "topup_created:" + id.String(),
 		}); err != nil {
 			return fmt.Errorf("payments: enqueue topup_created: %w", err)

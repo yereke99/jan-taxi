@@ -246,7 +246,11 @@ func (o OrderCard) MarshalJSON() ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
-	if len(o.Stops) == 0 || o.Stops[len(o.Stops)-1].Mode != "manual" {
+	manual := false
+	for _, s := range o.Stops {
+		manual = manual || s.Mode == "manual"
+	}
+	if !manual {
 		return b, nil
 	}
 	var m map[string]json.RawMessage

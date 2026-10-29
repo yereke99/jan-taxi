@@ -84,7 +84,7 @@ func TestAssessmentNeverApprovesUncertainty(t *testing.T) {
 	}
 }
 func TestExtractLayoutsAndViewerFilename(t *testing.T) {
-	lines := []Line{{"999999999990-2026102516224.png", 99}, {"УДОСТОВЕРЕНИЕ ЛИЧНОСТИ", 99}, {"ТЕГІ / ФАМИЛИЯ", 99}, {"ҚАЛИЕВ", 99}, {"АТЫ / ИМЯ", 99}, {"ӘЛІ", 99}, {"ӘКЕСІНІҢ АТЫ / ОТЧЕСТВО", 99}, {"ТУҒАН КҮНІ / ДАТА РОЖДЕНИЯ", 99}, {"ЖСН / ИИН 999999999990", 99}, {"001234567", 99}}
+	lines := []Line{{Text: "999999999990-2026102516224.png", Confidence: 99}, {Text: "УДОСТОВЕРЕНИЕ ЛИЧНОСТИ", Confidence: 99}, {Text: "ТЕГІ / ФАМИЛИЯ", Confidence: 99}, {Text: "ҚАЛИЕВ", Confidence: 99}, {Text: "АТЫ / ИМЯ", Confidence: 99}, {Text: "ӘЛІ", Confidence: 99}, {Text: "ӘКЕСІНІҢ АТЫ / ОТЧЕСТВО", Confidence: 99}, {Text: "ТУҒАН КҮНІ / ДАТА РОЖДЕНИЯ", Confidence: 99}, {Text: "ЖСН / ИИН 999999999990", Confidence: 99}, {Text: "001234567", Confidence: 99}}
 	r := Extract(lines)
 	if r.Extracted.IIN != "999999999990" || r.Extracted.Patronymic != "" || r.Extracted.DocumentNumber != "001234567" {
 		t.Fatalf("wrong field classification: %+v", r)
@@ -92,11 +92,11 @@ func TestExtractLayoutsAndViewerFilename(t *testing.T) {
 	if len(Assess(r, identityFixture(), 98).Reasons) != 0 {
 		t.Fatal("labelled physical card not matched")
 	}
-	licence := Extract([]Line{{"DRIVING LICENCE", 99}, {"1. ҚАЛИЕВ / QALIEV", 99}, {"2. ӘЛІ / ALI", 99}, {"4d) ЖСН / IIN 999999999990", 99}, {"5. AA № 000012", 99}})
+	licence := Extract([]Line{{Text: "DRIVING LICENCE", Confidence: 99}, {Text: "1. ҚАЛИЕВ / QALIEV", Confidence: 99}, {Text: "2. ӘЛІ / ALI", Confidence: 99}, {Text: "4d) ЖСН / IIN 999999999990", Confidence: 99}, {Text: "5. AA № 000012", Confidence: 99}})
 	if licence.DocumentType != "driving_licence" || licence.Extracted.DocumentNumber != "AA000012" || licence.Extracted.IIN != "999999999990" {
 		t.Fatal("licence number confused with IIN")
 	}
-	onlyFilename := Extract([]Line{{"999999999990-20261025.png", 99}})
+	onlyFilename := Extract([]Line{{Text: "999999999990-20261025.png", Confidence: 99}})
 	if onlyFilename.Extracted.IIN != "" {
 		t.Fatal("viewer filename used as IIN")
 	}
@@ -116,5 +116,49 @@ func TestFallbackCannotEraseUncertaintyOrConflicts(t *testing.T) {
 	merged := MergeEvidence(a, b)
 	if merged.Fields["iin"] != 62 || len(merged.Reasons) == 0 || len(Assess(merged, identityFixture(), 98).Reasons) == 0 {
 		t.Fatal("fallback hid uncertainty or conflict")
+	}
+}
+
+func TestFieldScoresExcludeUnrelatedLabelWordsAndPreserveUncertainDigits(t *testing.T) {
+	for _, score := range []float64{99, 62} {
+		lines := []Line{
+			{Text: "УДОСТОВЕРЕНИЕ", Confidence: 99}, {Text: "ЛИЧНОСТИ", Confidence: 99},
+			{Text: "ТЕГІ/ФАМИЛИЯ", Confidence: 99}, {Text: "ҚАЛИЕВ", Confidence: 99},
+			{Text: "АТЫ/ИМЯ", Confidence: 99}, {Text: "ӘЛІ", Confidence: 99},
+			{Text: "ЖСН / ИИН 999999 999990", Confidence: 14, Words: []Word{{Text: "ЖСН", Confidence: 14}, {Text: "/", Confidence: 14}, {Text: "ИИН", Confidence: 99}, {Text: "999999", Confidence: score}, {Text: "999990", Confidence: 99}}},
+			{Text: "001234567", Confidence: 99},
+		}
+		r := Extract(lines)
+		if r.Extracted.IIN != identityFixture().IIN || r.Fields["iin"] != score || r.DocumentType != "id_card" {
+			t.Fatal("field evidence lost")
+		}
+		r = Assess(r, identityFixture(), 98)
+		if (len(r.Reasons) == 0) != (score == 99) {
+			t.Fatal("field uncertainty ignored", r.Reasons)
+		}
+	}
+}
+
+func TestLicenceCombinedGivenNameAndConflictingNames(t *testing.T) {
+	want := identityFixture()
+	want.DocumentType = "driving_licence"
+	want.DocumentNumber = "AA000012"
+	want.Patronymic = "ӘКЕСІҰЛЫ"
+	r := highConfidenceResult()
+	r.DocumentType = want.DocumentType
+	r.Extracted.DocumentType = want.DocumentType
+	r.Extracted.DocumentNumber = want.DocumentNumber
+	r.FirstName = want.FirstName + " " + want.Patronymic
+	r = Assess(r, want, 98)
+	if len(r.Reasons) != 0 || r.FirstName != want.FirstName || r.Extracted.Patronymic != want.Patronymic {
+		t.Fatal("licence field 2 not compared as a whole", r.Reasons)
+	}
+	r = Extract([]Line{{Text: "DRIVING LICENCE", Confidence: 99}, {Text: "1. ҚАЛИЕВ / QALIEV", Confidence: 99}, {Text: "1. БАСҚА / BASQA", Confidence: 99}})
+	if !strings.Contains(strings.Join(r.Reasons, ","), "conflicting_last_name") {
+		t.Fatal("another licence name overwrote the first")
+	}
+	r = Extract([]Line{{Text: "УДОСТОВЕРЕНИЕ ЛИЧНОСТИ", Confidence: 99}, {Text: "001234567 009876543", Confidence: 99}})
+	if !strings.Contains(strings.Join(r.Reasons, ","), "conflicting_document_number") {
+		t.Fatal("second number in the same line was skipped")
 	}
 }

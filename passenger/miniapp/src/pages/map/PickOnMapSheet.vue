@@ -51,7 +51,7 @@ const resolving = ref(true)
 const failed = ref(false)
 
 const outside = computed(() => result.value?.in_service_area === false || (point.value !== null && !isInKazakhstanBBox(point.value)))
-const canConfirm = computed(() => !resolving.value && point.value !== null && !outside.value)
+const canConfirm = computed(() => point.value !== null && !outside.value)
 const address = computed(() => (result.value || (point.value && failed.value) ? addr(result.value?.title) : ''))
 /** Subtitle under the name: the area line, unless it repeats the label. */
 const subtitle = computed(() => {

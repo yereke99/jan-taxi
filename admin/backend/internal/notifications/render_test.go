@@ -129,6 +129,31 @@ func TestFormatMoney(t *testing.T) {
 	}
 }
 
+func TestTopUpMessageContainsPaymentLinkAndPDFInstructions(t *testing.T) {
+	tpl, _ := Lookup(TplTopUpCreated)
+	params := map[string]any{"topup_id": uuid.NewString(), "reference": "TEST-TOPUP-1", "amount": 500, "payment_url": "https://pay.kaspi.kz/pay/test?one=1&two=2"}
+	if err := tpl.ValidateParams(params); err != nil {
+		t.Fatal(err)
+	}
+	for _, lang := range Languages {
+		msg, err := tpl.Render(lang, tpl.DefaultBody(lang), params, "https://example.com/driver/")
+		if err != nil || !strings.Contains(msg.Text, "PDF") || !strings.Contains(msg.Text, `href="https://pay.kaspi.kz/pay/test?one=1&amp;two=2"`) {
+			t.Fatal("missing or unsafe payment instructions", err)
+		}
+	}
+	for _, bad := range []string{"javascript:alert(1)", "http://pay.kaspi.kz/pay/test", "https://user:pass@pay.kaspi.kz/pay/test"} {
+		params["payment_url"] = bad
+		if tpl.ValidateParams(params) == nil {
+			t.Fatal("invalid payment link accepted")
+		}
+	}
+	delete(params, "payment_url")
+	msg, err := tpl.Render(LangRU, tpl.DefaultBody(LangRU), params, "")
+	if err != nil || strings.Contains(msg.Text, "href=") || !strings.Contains(msg.Text, "PDF") {
+		t.Fatal("missing URL must retain PDF guidance")
+	}
+}
+
 func offerParams(orderID uuid.UUID) map[string]any {
 	return map[string]any{
 		"order_id":       orderID.String(),

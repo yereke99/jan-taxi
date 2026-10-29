@@ -267,7 +267,7 @@ func LoadQuoteForUpdate(ctx context.Context, tx pgx.Tx, quoteID, userID uuid.UUI
 	for i, s := range raw {
 		sq.Stops[i] = QuoteStop{Mode: s.Mode, Address: s.Address}
 		if s.Mode == "manual" {
-			if i != len(raw)-1 || s.Lat != nil || s.Lon != nil {
+			if i == 0 || s.Lat != nil || s.Lon != nil {
 				return StoredQuote{}, fmt.Errorf("invalid stored manual stop")
 			}
 		} else {
@@ -334,7 +334,14 @@ func CleanupQuotes(ctx context.Context, q db.Querier, olderThan time.Duration) (
 
 func round6(v float64) float64 { return math.Round(v*1e6) / 1e6 }
 
-func Manual(list []QuoteStop) bool { return len(list) > 0 && list[len(list)-1].Mode == "manual" }
+func Manual(list []QuoteStop) bool {
+	for _, s := range list {
+		if s.Mode == "manual" {
+			return true
+		}
+	}
+	return false
+}
 
 // Metric preserves unknown full-route values as SQL NULL rather than zero.
 func Metric(v int, unknown bool) any {

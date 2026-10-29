@@ -3,6 +3,7 @@ package verification
 import (
 	"bufio"
 	"encoding/csv"
+	"errors"
 	"io"
 	"math"
 	"regexp"
@@ -14,7 +15,50 @@ import (
 type Line struct {
 	Text       string
 	Confidence float64
+	Words      []Word
+	FromCard   bool
+	Conflict   bool
 }
+
+type Word struct {
+	Text       string
+	Confidence float64
+}
+
+// score measures the words that supplied a field, rather than unrelated words
+// in the same bilingual label, barcode, or row. It never raises a word's score.
+func (l Line) score(value string) float64 {
+	if len(l.Words) == 0 {
+		return l.Confidence
+	}
+	value = NormalizeName(value)
+	if value == "" {
+		return l.Confidence
+	}
+	text := NormalizeName(l.Text)
+	score, found := 100.0, false
+	for from := 0; from < len(text); {
+		start := strings.Index(text[from:], value)
+		if start < 0 {
+			break
+		}
+		start += from
+		end, pos := start+len(value), 0
+		for _, word := range l.Words {
+			length := len(NormalizeName(word.Text))
+			if pos < end && pos+length > start {
+				score, found = min(score, word.Confidence), true
+			}
+			pos += length + 1
+		}
+		from = end
+	}
+	if found {
+		return score
+	}
+	return l.Confidence
+}
+
 type Result struct {
 	Extracted    Input              `json:"extracted"`
 	FirstName    string             `json:"first_name"`
@@ -34,15 +78,21 @@ func ParseTSV(r io.Reader) ([]Line, error) {
 	cr.Comma = '\t'
 	cr.FieldsPerRecord = -1
 	cr.LazyQuotes = true
+	header, err := cr.Read()
+	if err != nil || len(header) < 12 || header[0] != "level" || header[10] != "conf" || header[11] != "text" {
+		return nil, errors.New("invalid OCR TSV header")
+	}
 	var lines []Line
 	key := ""
 	var text []string
+	var words []Word
 	conf := 100.0
 	flush := func() {
 		if len(text) > 0 {
-			lines = append(lines, Line{strings.Join(text, " "), conf})
+			lines = append(lines, Line{Text: strings.Join(text, " "), Confidence: conf, Words: words})
 		}
 		text = nil
+		words = nil
 		conf = 100
 	}
 	for {
@@ -70,6 +120,7 @@ func ParseTSV(r io.Reader) ([]Line, error) {
 			key = next
 		}
 		text = append(text, word)
+		words = append(words, Word{Text: word, Confidence: c})
 		if c < conf {
 			conf = c
 		}
@@ -79,17 +130,89 @@ func ParseTSV(r io.Reader) ([]Line, error) {
 }
 
 var iinRE = regexp.MustCompile(`(?:^|[^0-9])([0-9]{12})(?:$|[^0-9])`)
-var docRE = regexp.MustCompile(`(?:^|[^0-9])([0-9]{9})(?:$|[^0-9])`)
 var licenceNameRE = regexp.MustCompile(`^([12])[.)]\s+(.+)$`)
 var licenceNumberRE = regexp.MustCompile(`^5[.)]\s+(.+)$`)
+var numericRunRE = regexp.MustCompile(`[0-9]+`)
+
+func exactNumbers(text string, size int) []string {
+	var out []string
+	for _, v := range numericRunRE.FindAllString(text, -1) {
+		if len(v) == size {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func compactSpaces(text string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+func (l Line) numericScore(value string) float64 {
+	best, found := 100.0, false
+	for i := range l.Words {
+		joined, score := "", 100.0
+		for _, word := range l.Words[i:] {
+			if strings.Trim(word.Text, "0123456789") != "" {
+				break
+			}
+			joined += word.Text
+			score = min(score, word.Confidence)
+			if joined == value {
+				best, found = min(best, score), true
+				break
+			}
+			if len(joined) >= len(value) {
+				break
+			}
+		}
+	}
+	if found {
+		return best
+	}
+	return l.score(value)
+}
+
+var personalLabels = []struct {
+	field string
+	re    *regexp.Regexp
+}{
+	{"patronymic", regexp.MustCompile(`(?:^|[ /|:])(?:ОТЧЕСТВО|ӘКЕСІНІҢ АТЫ)`)},
+	{"iin", regexp.MustCompile(`(?:^|[ /|:])(?:ЖСН|ИИН|IIN)`)},
+	{"last_name", regexp.MustCompile(`(?:^|[ /|:])(?:ФАМИЛИЯ|ТЕГІ)`)},
+	{"first_name", regexp.MustCompile(`(?:^|[ /|:])(?:ИМЯ|АТЫ)`)},
+}
+
+func personalField(t string) (string, string) {
+	for _, label := range personalLabels {
+		end := -1
+		for _, match := range label.re.FindAllStringIndex(t, -1) {
+			if match[1] == len(t) || strings.ContainsRune(" /|:", rune(t[match[1]])) || (label.field == "iin" && t[match[1]] >= '0' && t[match[1]] <= '9') {
+				end = match[1]
+			}
+		}
+		if end >= 0 {
+			return label.field, strings.Trim(t[end:], " /|:")
+		}
+	}
+	return "", ""
+}
 
 func Extract(lines []Line) Result {
 	r := Result{Fields: map[string]float64{}, Comparisons: map[string]string{}, Reasons: []string{}, Engine: "tesseract-kaz-rus-eng"}
 	text := make([]string, 0, len(lines))
 	for _, l := range lines {
+		if l.Conflict {
+			r.Reasons = append(r.Reasons, "conflicting_ocr_reading")
+		}
 		text = append(text, NormalizeName(l.Text))
 	}
-	all := strings.Join(text, "\n")
+	all := strings.Join(text, " ")
 	if strings.Contains(all, "ЖЕКЕ КУӘЛІК") || strings.Contains(all, "УДОСТОВЕРЕНИЕ ЛИЧНОСТИ") {
 		r.DocumentType = "id_card"
 	}
@@ -101,9 +224,28 @@ func Extract(lines []Line) Result {
 	}
 	for _, l := range lines {
 		t := NormalizeName(l.Text)
-		if strings.Contains(t, "ЖЕКЕ КУӘЛІК") || strings.Contains(t, "УДОСТОВЕРЕНИЕ ЛИЧНОСТИ") || strings.Contains(t, "DRIVING LICENCE") || strings.Contains(t, "ВОДИТЕЛЬСКОЕ УДОСТОВЕРЕНИЕ") || strings.Contains(t, "ЖҮРГІЗУШІ КУӘЛІГІ") {
-			if old, ok := r.Fields["document_type"]; !ok || l.Confidence < old {
-				r.Fields["document_type"] = l.Confidence
+		for _, title := range []string{"ЖЕКЕ КУӘЛІК", "УДОСТОВЕРЕНИЕ ЛИЧНОСТИ", "DRIVING LICENCE", "ВОДИТЕЛЬСКОЕ УДОСТОВЕРЕНИЕ", "ЖҮРГІЗУШІ КУӘЛІГІ"} {
+			if !strings.Contains(t, title) {
+				continue
+			}
+			c := l.score(title)
+			if old, ok := r.Fields["document_type"]; !ok || c < old {
+				r.Fields["document_type"] = c
+			}
+		}
+	}
+	// Detectors may put the two words of a title into adjacent boxes. Join only
+	// when no complete title had its own score, keeping the actual scores.
+	if _, ok := r.Fields["document_type"]; !ok && r.DocumentType != "" {
+		for i := 0; i+1 < len(lines); i++ {
+			joined := NormalizeName(lines[i].Text + " " + lines[i+1].Text)
+			for _, title := range []string{"ЖЕКЕ КУӘЛІК", "УДОСТОВЕРЕНИЕ ЛИЧНОСТИ", "DRIVING LICENCE", "ВОДИТЕЛЬСКОЕ УДОСТОВЕРЕНИЕ", "ЖҮРГІЗУШІ КУӘЛІГІ"} {
+				if strings.Contains(joined, title) {
+					c := min(lines[i].Confidence, lines[i+1].Confidence)
+					if old, ok := r.Fields["document_type"]; !ok || c < old {
+						r.Fields["document_type"] = c
+					}
+				}
 			}
 		}
 	}
@@ -118,14 +260,24 @@ func Extract(lines []Line) Result {
 				val := strings.TrimSpace(strings.Split(m[2], "/")[0])
 				if nameValue(val) {
 					if m[1] == "1" {
+						if r.LastName != "" && r.LastName != val {
+							r.Reasons = append(r.Reasons, "conflicting_last_name")
+							continue
+						}
 						r.LastName = val
-						if old, ok := r.Fields["last_name"]; !ok || l.Confidence < old {
-							r.Fields["last_name"] = l.Confidence
+						c := l.score(val)
+						if old, ok := r.Fields["last_name"]; !ok || c < old {
+							r.Fields["last_name"] = c
 						}
 					} else {
+						if r.FirstName != "" && r.FirstName != val {
+							r.Reasons = append(r.Reasons, "conflicting_first_name")
+							continue
+						}
 						r.FirstName = val
-						if old, ok := r.Fields["first_name"]; !ok || l.Confidence < old {
-							r.Fields["first_name"] = l.Confidence
+						c := l.score(val)
+						if old, ok := r.Fields["first_name"]; !ok || c < old {
+							r.Fields["first_name"] = c
 						}
 					}
 				}
@@ -138,47 +290,59 @@ func Extract(lines []Line) Result {
 						r.Reasons = append(r.Reasons, "conflicting_document_number")
 					} else {
 						r.Extracted.DocumentNumber = v
-						if old, ok := r.Fields["document_number"]; !ok || l.Confidence < old {
-							r.Fields["document_number"] = l.Confidence
+						c := l.score(strings.TrimSpace(m[1]))
+						if old, ok := r.Fields["document_number"]; !ok || c < old {
+							r.Fields["document_number"] = c
 						}
 					}
 				}
 				continue
 			}
 		}
-		switch {
-		case strings.Contains(t, "ЖСН") || strings.Contains(t, "ИИН") || strings.Contains(t, "IIN"):
-			field = "iin"
-		case strings.Contains(t, "ФАМИЛИЯ"):
-			field = "last_name"
-		case strings.Contains(t, "ОТЧЕСТВО"):
-			field = "patronymic"
-		case strings.Contains(t, "ИМЯ") && !strings.Contains(t, "ФАМИЛИЯ"):
-			field = "first_name"
-		}
+		field, inline := personalField(t)
 		if field == "" {
 			continue
 		}
-		val := ""
+		val := inline
 		c := l.Confidence
 		if field == "iin" {
+			candidates := exactNumbers(t, 12)
+			if len(candidates) > 1 {
+				for _, candidate := range candidates[1:] {
+					if candidate != candidates[0] {
+						r.Reasons = append(r.Reasons, "conflicting_iin")
+					}
+				}
+			}
 			if m := iinRE.FindStringSubmatch(t); len(m) > 1 {
 				val = m[1]
 			}
+		}
+		if val != "" {
+			c = l.score(val)
 		}
 		if val == "" && i+1 < len(lines) {
 			candidate := strings.TrimSpace(lines[i+1].Text)
 			if !isLabel(candidate) {
 				val = candidate
-				c = min(c, lines[i+1].Confidence)
+				c = lines[i+1].score(candidate)
 			}
 		}
 		if field == "iin" {
-			m := iinRE.FindStringSubmatch(val)
-			if len(m) < 2 {
+			values := exactNumbers(compactSpaces(val), 12)
+			if len(values) == 0 {
 				continue
 			}
-			val = m[1]
+			val = values[0]
+			for _, other := range values[1:] {
+				if other != val {
+					r.Reasons = append(r.Reasons, "conflicting_iin")
+				}
+			}
+			c = l.numericScore(val)
+			if !strings.Contains(compactSpaces(l.Text), val) && i+1 < len(lines) {
+				c = lines[i+1].numericScore(val)
+			}
 		} else {
 			val = NormalizeName(val)
 			if !nameValue(val) {
@@ -219,15 +383,34 @@ func Extract(lines []Line) Result {
 	// across both sides; MRZ numeric runs and viewer filenames don't qualify.
 	if r.DocumentType == "id_card" {
 		for _, l := range lines {
-			for _, m := range docRE.FindAllStringSubmatch(l.Text, -1) {
-				v := m[1]
+			// A complete twelve-digit run inside a detected card can only be
+			// the IIN in these layouts. Viewer filenames are outside these crops.
+			// Do not repair digits, guess from MRZ, or accept ambiguous candidates.
+			if l.FromCard {
+				for _, v := range exactNumbers(l.Text, 12) {
+					if !ValidIIN(v) {
+						continue
+					}
+					if r.Extracted.IIN != "" && r.Extracted.IIN != v {
+						r.Reasons = append(r.Reasons, "conflicting_iin")
+						continue
+					}
+					r.Extracted.IIN = v
+					c := l.numericScore(v)
+					if old, ok := r.Fields["iin"]; !ok || c < old {
+						r.Fields["iin"] = c
+					}
+				}
+			}
+			for _, v := range exactNumbers(l.Text, 9) {
 				if r.Extracted.DocumentNumber != "" && r.Extracted.DocumentNumber != v {
 					r.Reasons = append(r.Reasons, "conflicting_document_number")
 					continue
 				}
 				r.Extracted.DocumentNumber = v
-				if old, ok := r.Fields["document_number"]; !ok || l.Confidence < old {
-					r.Fields["document_number"] = l.Confidence
+				c := l.score(v)
+				if old, ok := r.Fields["document_number"]; !ok || c < old {
+					r.Fields["document_number"] = c
 				}
 			}
 		}
@@ -236,6 +419,9 @@ func Extract(lines []Line) Result {
 }
 func isLabel(s string) bool {
 	s = NormalizeName(s)
+	if field, _ := personalField(s); field != "" {
+		return true
+	}
 	for _, v := range []string{"ФАМИЛИЯ", "ИМЯ", "ОТЧЕСТВО", "ТУҒАН", "РОЖДЕНИЯ", "ЖСН", "ИИН", "ЖЫНЫСЫ", "ДАТА", "БЕРІЛГЕН"} {
 		if strings.Contains(s, v) {
 			return true
@@ -264,6 +450,15 @@ func Assess(r Result, want Snapshot, min float64) Result {
 	r.Comparisons = map[string]string{}
 	if r.Reasons == nil {
 		r.Reasons = []string{}
+	}
+	// Licence field 2 may contain both given name and patronymic. Split the
+	// recognized string only when the entire entered pair matches it exactly.
+	// No characters are inferred from a partial name or transliterated.
+	if r.DocumentType == "driving_licence" && want.Patronymic != "" && r.Extracted.Patronymic == "" && NormalizeName(r.FirstName) == NormalizeName(want.FirstName+" "+want.Patronymic) {
+		full := NormalizeName(r.FirstName)
+		split := len(NormalizeName(want.FirstName))
+		r.FirstName, r.Extracted.Patronymic = full[:split], full[split+1:]
+		r.Fields["patronymic"] = r.Fields["first_name"]
 	}
 	if r.DocumentType != "id_card" && r.DocumentType != "driving_licence" {
 		r.Reasons = append(r.Reasons, "unsupported_document")

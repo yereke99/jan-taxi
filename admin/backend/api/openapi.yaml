@@ -624,7 +624,7 @@ paths:
       summary: Route and fare quote
       description: |
         Validates 2..N stops (N = the smaller of `MAX_ROUTE_POINTS` and the setting
-        `routing.max_points`, at most 5; pickup first, destination last), checks every point is
+        `routing.max_points`, at most 5; pickup first, destination last), checks every coordinate-bearing point is
         inside Kazakhstan, resolves the tariff region of the pickup (the city owning the smallest
         active zone that covers it, so a configured city wins inside its zone; otherwise the
         nationwide default region `KAZ`; never the nearest city), names the settlement of the
@@ -642,6 +642,9 @@ paths:
         one quote per class in `options[]` (valid for 10 minutes); `POST /orders` references the
         chosen option's `quote_id`. The top-level quote fields (`city` and `tariff_region`
         included) repeat the first option for older clients.
+        Pickup A always requires coordinates. Any later stop may be manual text with null
+        coordinates. If any stop is manual, OSRM is not called and complete-route metrics
+        are null; the passenger chooses a fare within the active administrator tariff.
         Rate limited per user (30/min, burst 10, `Retry-After: 10`).
 
         422 cases: `validation_failed` (`fields.category` = `required | invalid | not_allowed`
@@ -7162,7 +7165,7 @@ components:
             required: [name, kind, optional, description]
             properties:
               name: {type: string, example: order_number}
-              kind: {type: string, enum: [text, money, number, id, category], description: '`money` is formatted as `1 500 ₸`.'}
+              kind: {type: string, enum: [text, money, number, id, category, localized, payment, cargo_size, distance, duration, place, link, https_link, file], description: '`money` is formatted as `1 500 ₸`; `https_link` is a validated HTTPS payment URL.'}
               optional: {type: boolean, description: Body lines that use an empty optional parameter are dropped.}
               description: {type: string}
         button:
@@ -7752,7 +7755,7 @@ components:
           type: object
           required: [manual_destination_enabled, manual_destination_pricing]
           properties:
-            manual_destination_enabled: {type: boolean, default: false, description: Enable only after all order readers support nullable destinations and route totals.}
+            manual_destination_enabled: {type: boolean, default: true, description: Allows manual addresses after pickup A; an explicit administrator disable is honored.}
             manual_destination_pricing: {type: string, enum: [disabled, passenger_tariff_bounds]}
         app: {type: string, enum: [passenger, driver, admin]}
         default_language: {$ref: '#/components/schemas/Language'}
@@ -7880,7 +7883,7 @@ components:
       description: Normalised stop echoed in a quote.
       required: [seq, kind, lat, lon, address, address_details]
       properties:
-        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
         seq: {type: integer, minimum: 0, maximum: 4}
         kind: {$ref: '#/components/schemas/StopKind'}
         lat: {type: [number, 'null']}
@@ -8349,7 +8352,7 @@ components:
       type: object
       required: [id, seq, kind, lat, lon, address, address_details, completed_at]
       properties:
-        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
         id: {type: string, format: uuid}
         seq: {type: integer, minimum: 0, maximum: 4, description: 0 is the pickup.}
         kind: {$ref: '#/components/schemas/StopKind'}
@@ -8363,7 +8366,7 @@ components:
       additionalProperties: false
       required: [lat, lon, address]
       properties:
-        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
         lat: {type: [number, 'null'], minimum: -90, maximum: 90, example: 48.8264}
         lon: {type: [number, 'null'], minimum: -180, maximum: 180, example: 58.1442}
         address:
@@ -8393,7 +8396,7 @@ components:
       type: object
       required: [seq, kind, lat, lon, address]
       properties:
-        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Only the final destination may be manual; manual coordinates are both null.}
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
         seq: {type: integer, minimum: 0, maximum: 4}
         kind: {$ref: '#/components/schemas/StopKind'}
         lat: {type: [number, 'null'], example: 48.8264}

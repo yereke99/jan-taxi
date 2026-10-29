@@ -189,7 +189,7 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 		"fare":           o.Fare,
 		"payment_method": payment,
 	}
-	if route.DestinationManual {
+	if route.HasManualStops {
 		delete(params, "route_distance")
 		delete(params, "route_duration")
 	}

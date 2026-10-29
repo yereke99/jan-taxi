@@ -54,6 +54,7 @@ import { isApiError, newIdempotencyKey } from '../services/http'
 import type { DeviceLocation } from '../telegram'
 import type { Category, PaymentMethod } from '../utils/status'
 import { useSessionStore } from './session'
+import { roundCoord, isValidLatLon } from '../utils/geo'
 
 export const PREVIEW_DEBOUNCE_MS = 400
 /** A quote this close to its expiry is renewed before it is used. */
@@ -123,10 +124,11 @@ export const useBookingStore = defineStore('booking', () => {
   const stops = ref<RouteStop[]>(createStops())
   /** Accuracy of the GPS fix used for the pickup, while the pickup came from GPS. */
   const pickupAccuracy = ref<number | null>(null)
+  let pickupRevision = 0
 
   const maxPoints = computed(() => clampMaxPoints(session.maxRoutePoints))
   const complete = computed(() => isComplete(stops.value))
-  const manualDestination = computed(()=>stops.value[stops.value.length-1]?.place?.source==='manual')
+  const manualDestination = computed(()=>stops.value.some((s,i)=>i>0 && s.place?.source==='manual'))
   const canAdd = computed(() => canAddStop(stops.value, maxPoints.value))
   const routeKey = computed(() => `${category.value}|${routeFingerprint(stops.value)}`)
 
@@ -344,7 +346,8 @@ export const useBookingStore = defineStore('booking', () => {
   }
 
   function setStopPlace(index: number, place: PlaceValue | null): void {
-    if (place?.source === 'manual' && index !== stops.value.length-1) return
+    if (place?.source === 'manual' && index === 0) return
+    if (index === 0) pickupRevision++
     stops.value = setPlace(stops.value, index, place)
     if (index === 0 && place?.source !== 'gps') pickupAccuracy.value = null
     if (stopErrors.value[index] !== undefined) {
@@ -381,18 +384,26 @@ export const useBookingStore = defineStore('booking', () => {
 
   /** Fills the pickup from a GPS fix (reverse geocoded; coordinates when that fails). */
   async function setPickupFromLocation(loc: DeviceLocation, signal?: AbortSignal): Promise<void> {
-    let place: PlaceValue
-    try {
-      const r = await reverseGeocode(loc, { lang: session.language, signal })
-      place = { lat: r.lat, lon: r.lon, address: r.title, subtitle: r.title ? r.subtitle : null, source: 'gps', inServiceArea: r.in_service_area }
-    } catch (err) {
-      if (signal?.aborted) return
-      if (isApiError(err) && !err.isNetworkError && err.code !== 'too_many_requests' && err.code !== 'internal') throw err
-      // Unnamed point: the UI shows "Point on the map", never coordinates.
-      place = { lat: loc.lat, lon: loc.lon, address: '', subtitle: null, source: 'gps', inServiceArea: null }
-    }
+    if (signal?.aborted) return
+    if (!isValidLatLon(loc)) throw new Error('Invalid GPS coordinates')
+    const place: PlaceValue = { lat: roundCoord(loc.lat), lon: roundCoord(loc.lon), address: '', subtitle: null, source: 'gps', inServiceArea: null }
+    // Save the fix before the optional address lookup: navigation can abort it.
     setStopPlace(0, place)
     pickupAccuracy.value = loc.accuracy_m
+    const revision = pickupRevision
+    try {
+      const r = await reverseGeocode(loc, { lang: session.language, signal })
+      if (signal?.aborted || pickupRevision !== revision) return
+      setStopPlace(0, { ...place, address: r.title, subtitle: r.title ? r.subtitle : null, inServiceArea: r.in_service_area })
+    } catch (err) {
+      if (signal?.aborted || pickupRevision !== revision) return
+      if (isApiError(err) && err.code === 'outside_service_area') {
+        setStopPlace(0, { ...place, inServiceArea: false })
+        throw err
+      }
+      // Street-name availability must not discard a real fix. The route API
+      // still validates service coverage and all coordinates before ordering.
+    }
   }
 
   /** Starts a new booking with the given category and places ("order again", recent place). */
@@ -522,6 +533,7 @@ export const useBookingStore = defineStore('booking', () => {
 
   /** Clears the route, load and details (after an order was created). Category and payment stay. */
   function resetDraft(): void {
+    pickupRevision++
     runner.cancel()
     stops.value = createStops()
     pickupAccuracy.value = null

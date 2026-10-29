@@ -117,10 +117,10 @@ func PlateDisplay(normalized, raw *string) string {
 // may be empty: message templates show it as a point on the map, never as
 // coordinates.
 type Route struct {
-	DestinationManual bool
-	Pickup            string
-	Via               []string // intermediate stops in order
-	Destination       string
+	HasManualStops bool
+	Pickup         string
+	Via            []string // intermediate stops in order
+	Destination    string
 }
 
 // ViaText joins the intermediate stops with arrows ("" when there are none);
@@ -144,13 +144,13 @@ func LoadRoute(ctx context.Context, q db.Querier, orderID uuid.UUID) (Route, err
 	}
 	var r Route
 	for _, s := range list {
+		r.HasManualStops = r.HasManualStops || s.Mode == "manual"
 		addr := textutil.Clean(s.Address)
 		switch s.Kind {
 		case stops.KindPickup:
 			r.Pickup = addr
 		case stops.KindDestination:
 			r.Destination = addr
-			r.DestinationManual = s.Mode == "manual"
 		default:
 			r.Via = append(r.Via, addr)
 		}
