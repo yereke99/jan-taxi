@@ -232,6 +232,7 @@ services:
         limits:
           memory: ${OCR_MEM_LIMIT:-768m}
           cpus: "${OCR_CPUS:-1}"
+          pids: 64
     logging: *logging
 
   passenger-bot:

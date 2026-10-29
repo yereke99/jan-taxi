@@ -107,7 +107,7 @@ preflight: ## Check the env file for missing values, placeholders and inconsiste
 
 config: ## Validate compose.yaml against the env file
 	$(require_env_file)
-	$(COMPOSE) config -q && echo "compose configuration is valid"
+	$(COMPOSE) config -q && $(COMPOSE) --profile ocr config -q && echo "compose configuration is valid (including OCR)"
 
 ##@ Local live stack (Docker + Cloudflare quick tunnel, development only; docs/DEPLOYMENT.md §10)
 
