@@ -59,7 +59,7 @@ help: ## Show this help
 
 ##@ Stack (Docker Compose, reads .env)
 
-.PHONY: up down restart build ps logs health config preflight
+.PHONY: up down restart build rebuild ps logs health config preflight
 up: ## Check .env (deploy/preflight.sh), build missing images and start the stack
 	$(require_env_file)
 	@if [ "$(SKIP_PREFLIGHT)" != 1 ]; then sh deploy/preflight.sh "$(ENV_FILE)"; fi
@@ -76,6 +76,11 @@ restart: ## Restart all services, or one: make restart SERVICE=api
 build: ## Build images (tag releases with IMAGE_TAG=<git sha>), or one: make build SERVICE=api
 	$(require_env_file)
 	$(COMPOSE) build --pull $(SERVICE)
+
+rebuild: ## Remove generated frontend builds and rebuild images sequentially without build cache
+	$(require_env_file)
+	rm -rf -- passenger/miniapp/dist driver/miniapp/dist admin/frontend/dist
+	$(COMPOSE) --parallel 1 build --pull --no-cache $(SERVICE)
 
 ps: ## List containers and their health
 	$(require_env_file)
