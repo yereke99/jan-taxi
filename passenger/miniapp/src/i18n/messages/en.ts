@@ -2,7 +2,8 @@ import type { PassengerMessages } from './kk'
 
 export const en: PassengerMessages = {
   manual: {
-    action: "Cannot find the address? Enter it manually",
+    action: "Enter address manually",
+    action_hint: "Cannot find the address? Tap here.",
     helper: "Enter the place name or a landmark known to local residents.",
     use_search: "Search for an address",
     save: "Save",

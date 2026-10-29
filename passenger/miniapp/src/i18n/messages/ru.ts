@@ -2,7 +2,8 @@ import type { PassengerMessages } from './kk'
 
 export const ru: PassengerMessages = {
   manual: {
-    action: "Не нашли адрес? Укажите место вручную",
+    action: "Ввести адрес вручную",
+    action_hint: "Не нашли адрес? Нажмите здесь.",
     helper: "Укажите название места или ориентир, известный местным жителям.",
     use_search: "Поиск адреса",
     save: "Сохранить",

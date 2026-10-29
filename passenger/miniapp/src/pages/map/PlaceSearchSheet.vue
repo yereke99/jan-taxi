@@ -4,13 +4,13 @@
   order history, "use my location" for the pickup and "choose on map".
 -->
 <script setup lang="ts">
-import { Clock, LocateFixed, MapPin, MapPinned } from '@lucide/vue'
+import { ChevronRight, Clock, LocateFixed, MapPin, MapPinned, SquarePen } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { GEO_SEARCH_MIN_CHARS, searchPlaces } from '../../api/geo'
 import type { GeoPlace } from '../../api/types'
-import { JSheet, JSkeleton, JSpinner, JTextField, toast } from '../../components/ui'
+import { JButton, JSheet, JSkeleton, JSpinner, JTextField, toast } from '../../components/ui'
 import { createLatest } from '../../domain/latest'
 import type { PlaceValue } from '../../domain/route'
 import { useAddressText, useErrorText } from '../../i18n/core'
@@ -106,8 +106,14 @@ watch(trimmed, (q) => {
 const recent = computed(() => orders.places.filter(p=>!isPickup.value || hasCoordinates(p)))
 const manualMode = ref(false)
 const manualText = ref('')
+const manualField = ref<InstanceType<typeof JTextField> | null>(null)
 const canManual = computed(()=>!isPickup.value && session.config.orders?.manual_destination_enabled === true && session.config.orders.manual_destination_pricing === 'passenger_tariff_bounds')
 const manualValid = computed(()=>codePointLength(cleanText(manualText.value))>0 && codePointLength(cleanText(manualText.value))<=200)
+function openManual(): void {
+  manualText.value = query.value
+  manualMode.value = true
+  void nextTick(() => manualField.value?.focus())
+}
 function saveManual(): void { if(!canManual.value || !manualValid.value)return; choose({lat:null,lon:null,address:cleanText(manualText.value),subtitle:null,source:'manual',inServiceArea:null}) }
 
 /** Distance from where the search was made, so far-away matches are obvious. */
@@ -182,13 +188,20 @@ onBeforeUnmount(() => runner.cancel())
       </div>
     </template>
 
-    <div v-if="manualMode && canManual" class="search-actions">
-      <JTextField v-model="manualText" :label="t('manual.label')" :hint="t('manual.helper')" :max="200" />
-      <button type="button" class="search-row" :disabled="!manualValid" @click="saveManual">{{ t('manual.save') }}</button>
-      <button type="button" class="search-row" @click="manualMode=false">{{ t('manual.use_search') }}</button>
+    <div v-if="manualMode && canManual" class="search-actions search-actions--manual">
+      <JTextField ref="manualField" v-model="manualText" :label="t('manual.label')" :hint="t('manual.helper')" :max="200" />
+      <JButton block :disabled="!manualValid" @click="saveManual">{{ t('manual.save') }}</JButton>
+      <JButton block variant="secondary" @click="manualMode=false">{{ t('manual.use_search') }}</JButton>
     </div>
     <div v-else class="search-actions">
-      <button v-if="canManual" type="button" class="search-row" @click="manualMode=true; manualText=query">{{ t('manual.action') }}</button>
+      <button v-if="canManual" type="button" class="search-row search-row--manual" @click="openManual">
+        <span class="search-row__icon"><SquarePen :size="20" :stroke-width="2" aria-hidden="true" /></span>
+        <span class="search-row__text">
+          <span class="search-row__title">{{ t('manual.action') }}</span>
+          <span class="search-row__subtitle">{{ t('manual.action_hint') }}</span>
+        </span>
+        <ChevronRight class="search-row__chevron" :size="20" :stroke-width="2" aria-hidden="true" />
+      </button>
       <button v-if="isPickup" type="button" class="search-row" :disabled="usingLocation" @click="useMyLocation">
         <span class="search-row__icon is-accent">
           <JSpinner v-if="usingLocation" />
@@ -258,6 +271,10 @@ onBeforeUnmount(() => runner.cancel())
   margin-bottom: var(--jt-space-4);
 }
 
+.search-actions--manual {
+  gap: var(--jt-space-3);
+}
+
 .search-section {
   display: flex;
   flex-direction: column;
@@ -285,6 +302,22 @@ onBeforeUnmount(() => runner.cancel())
 
 .search-row:active:not(:disabled) {
   opacity: var(--jt-opacity-pressed);
+}
+
+.search-row--manual {
+  padding: var(--jt-space-3);
+  margin-bottom: var(--jt-space-2);
+  border-radius: var(--jt-radius-field);
+  background: var(--jt-button-secondary-bg);
+}
+
+.search-row--manual .search-row__title {
+  font: var(--jt-font-headline);
+}
+
+.search-row__chevron {
+  flex: none;
+  color: var(--jt-color-label-secondary);
 }
 
 .search-row__icon {
