@@ -12,6 +12,8 @@ export type StopRole = 'pickup' | 'intermediate' | 'destination'
 
 export const MIN_ROUTE_POINTS = 2
 export const MAX_ROUTE_POINTS = 5
+/** Longest stop address the API accepts (code points after cleaning, StopInput.address). */
+export const MAX_ADDRESS_LENGTH = 200
 
 /** A chosen point: address from search, reverse geocoding or coordinates. */
 export interface PlaceValue {
@@ -20,10 +22,21 @@ export interface PlaceValue {
   address: string
   /** Locality line shown under the address. */
   subtitle: string | null
-  /** 'place', a geocoder name, 'coordinates' or 'gps'. */
+  /** 'place', a geocoder name, 'coordinates', 'gps' or 'manual' (a stop after A without coordinates). */
   source: string
   /** false when the API reported the point outside Kazakhstan; null if unknown. */
   inServiceArea: boolean | null
+  /**
+   * The address is the passenger's own text for a point that keeps its
+   * coordinates: pickup A typed by hand stays at the pin or GPS position
+   * drivers are dispatched to.
+   */
+  typed?: boolean
+}
+
+/** True when the address was written by the passenger (a manual stop or a typed pickup). */
+export function isTypedPlace(p: PlaceValue | null | undefined): boolean {
+  return !!p && (p.source === 'manual' || p.typed === true)
 }
 
 export interface RouteStop {
@@ -146,17 +159,20 @@ export function outsideIndices(stops: readonly RouteStop[]): number[] {
 /**
  * The API request stops in the user's order, or null while incomplete. A
  * point without a name is sent as `unnamed` ("Point on the map"), never as
- * coordinates text.
+ * coordinates text. Text the passenger wrote is sent as written; a typed
+ * pickup is an ordinary stop with its coordinates (only manual stops after A
+ * have none).
  */
 export function toStopInputs(stops: readonly RouteStop[], unnamed = ''): StopInput[] | null {
   if (!isComplete(stops)) return null
   return stops.map((s) => {
-    const address = s.place!.source === 'manual' ? s.place!.address.normalize('NFC').trim() : s.place!.address.trim().slice(0, 200)
+    const typed = isTypedPlace(s.place)
+    const address = typed ? s.place!.address.normalize('NFC').trim() : s.place!.address.trim().slice(0, MAX_ADDRESS_LENGTH)
     return {
       ...(s.place!.source === 'manual' ? {mode: 'manual' as const} : {}),
       lat: s.place!.lat === null ? null : roundCoord(s.place!.lat),
       lon: s.place!.lon === null ? null : roundCoord(s.place!.lon),
-      address: s.place!.source === 'manual' ? address : isUnnamedPlace(address) ? unnamed || address : address,
+      address: typed ? address : isUnnamedPlace(address) ? unnamed || address : address,
     }
   })
 }

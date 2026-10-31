@@ -5,6 +5,7 @@ export const en: PassengerMessages = {
     action: "Enter address manually",
     action_hint: "Cannot find the address? Tap here.",
     helper: "Enter the place name or a landmark known to local residents.",
+    pickup_helper: "Describe the place so the driver finds you quickly, e.g. “Next to the mosque, blue gate”. The driver comes to point A on the map.",
     use_search: "Search for an address",
     save: "Save",
     label: "Passenger-entered landmark",

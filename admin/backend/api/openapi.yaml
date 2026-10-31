@@ -7419,7 +7419,7 @@ components:
           type: integer
           minimum: 1
           maximum: 2147483647
-          description: One of the quote's `fare.options`.
+          description: One of the quote's `fare.options`. The passenger app orders a taxi at the chosen class's price (`fare.recommended`, or the first option when the recommendation is null) and lets the passenger choose the fare of a parcel or other delivery.
           example: 800
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
         comment: {type: [string, 'null'], maxLength: 120, example: Кіреберіс алдында күтемін}
@@ -8379,12 +8379,12 @@ components:
       additionalProperties: false
       required: [lat, lon, address]
       properties:
-        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
+        mode: {type: string, enum: [geocoded, manual], default: geocoded, description: 'Any stop after pickup A may be manual; manual coordinates are both null. Pickup A always has coordinates (`pickup_coordinates_required`): a pickup the passenger describes in their own words is a geocoded stop at the pin or GPS point whose address is that text.'}
         lat: {type: [number, 'null'], minimum: -90, maximum: 90, example: 48.8264}
         lon: {type: [number, 'null'], minimum: -180, maximum: 180, example: 58.1442}
         address:
           type: string
-          description: Display address from search / reverse geocoding (or the formatted coordinates).
+          description: Display address from search / reverse geocoding (or the formatted coordinates), or the passenger's own words for a manual stop or a typed pickup A.
           minLength: 1
           maxLength: 200
           example: 'Жиенқали Тілепбергенов көшесі, 12'

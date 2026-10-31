@@ -15,6 +15,11 @@
 //   for another load no longer offers it, the default is used until it is
 //   offered again. The fare belongs to the chosen class and restarts at that
 //   class's recommendation when it changes.
+// * A taxi has no fare input: the order goes out at the chosen class's price
+//   (the price on its row, also for routes with a manual destination). Only
+//   parcel and other deliveries let the passenger choose the fare.
+// * Pickup A can be described in the passenger's own words (setPickupText);
+//   A still keeps the pin or GPS coordinates that dispatch measures from.
 // * POST /orders carries an idempotency key that stays the same while the
 //   payload is the same, so a retry after a lost response replays the
 //   original order instead of creating a second one.
@@ -36,6 +41,7 @@ import {
   clampMaxPoints,
   createStops,
   isComplete,
+  MAX_ADDRESS_LENGTH,
   moveStop as moveStopIn,
   outsideIndices,
   removeEmptyStops,
@@ -53,8 +59,9 @@ import type { CargoSize } from '../services/config'
 import { isApiError, newIdempotencyKey } from '../services/http'
 import type { DeviceLocation } from '../telegram'
 import type { Category, PaymentMethod } from '../utils/status'
+import { cleanText, codePointLength } from '../utils/text'
 import { useSessionStore } from './session'
-import { roundCoord, isValidLatLon } from '../utils/geo'
+import { hasCoordinates, roundCoord, isValidLatLon } from '../utils/geo'
 
 export const PREVIEW_DEBOUNCE_MS = 400
 /** A quote this close to its expiry is renewed before it is used. */
@@ -184,6 +191,8 @@ export const useBookingStore = defineStore('booking', () => {
   const recipientPhone = ref('')
   const prohibitedItemsAck = ref(false)
   const fare = ref<number | null>(null)
+  /** Only deliveries have a fare input; a taxi always costs the chosen class's price. */
+  const fareEditable = computed(() => isDelivery(category.value))
   const paymentMethod = ref<PaymentMethod>('cash')
   const fieldErrors = ref<Partial<Record<FormField, string>>>({})
   const submitting = ref(false)
@@ -202,9 +211,18 @@ export const useBookingStore = defineStore('booking', () => {
   }))
 
   // --- Preview -------------------------------------------------------------
-  /** Keeps the fare when the class stays the same and the new range allows it. */
+  /**
+   * A taxi takes the class's price (its row's recommended fare). A delivery
+   * keeps the passenger's fare when the class stays the same and the new
+   * range allows it.
+   */
   function syncFare(opt: RouteQuoteOption | null): void {
     if (!opt) return
+    if (!fareEditable.value) {
+      fare.value = clampFare(opt.fare, null)
+      fareClass = opt.vehicle_class
+      return
+    }
     if(manualDestination.value) { if (fareClass !== opt.vehicle_class || !isAllowedFare(opt.fare,fare.value)) fare.value=null; fareClass=opt.vehicle_class; return }
     fare.value = fareClass === opt.vehicle_class ? fareAfterRequote(fare.value, opt.fare) : clampFare(opt.fare, null)
     fareClass = opt.vehicle_class
@@ -406,6 +424,28 @@ export const useBookingStore = defineStore('booking', () => {
     }
   }
 
+  /**
+   * Pickup A in the passenger's own words, for places the map search does not
+   * know («Мешіттің жанында, көк қақпа»). Only the address changes: A keeps
+   * the point it already has (the pin, the GPS fix or a found place), else it
+   * takes the device position, because drivers are found by radius from A's
+   * coordinates and the API checks them against Kazakhstan. Returns false and
+   * changes nothing without such a point or for an empty or too long text.
+   */
+  function setPickupText(text: string, device: DeviceLocation | null = null): boolean {
+    const address = cleanText(text)
+    if (!address || codePointLength(address) > MAX_ADDRESS_LENGTH) return false
+    const current = stops.value[0]?.place ?? null
+    if (current && hasCoordinates(current)) {
+      setStopPlace(0, { ...current, address, typed: true })
+      return true
+    }
+    if (!device || !isValidLatLon(device)) return false
+    setStopPlace(0, { lat: roundCoord(device.lat), lon: roundCoord(device.lon), address, subtitle: null, source: 'gps', inServiceArea: null, typed: true })
+    pickupAccuracy.value = device.accuracy_m
+    return true
+  }
+
   /** Starts a new booking with the given category and places ("order again", recent place). */
   function prefill(next: Category, places: readonly PlaceValue[], load: LoadPrefill = {}): void {
     resetDraft()
@@ -438,7 +478,9 @@ export const useBookingStore = defineStore('booking', () => {
   function validate(): boolean {
     const errors: Partial<Record<FormField, string>> = validateDetails(detailsInput.value)
     const opt = selectedOption.value
-    if (opt && !isAllowedFare(opt.fare, fare.value)) errors.fare = 'invalid'
+    // A taxi shows no fare field: it always goes at the chosen class's price.
+    if (opt && !fareEditable.value) syncFare(opt)
+    else if (opt && !isAllowedFare(opt.fare, fare.value)) errors.fare = 'invalid'
     fieldErrors.value = errors
     return Object.keys(errors).length === 0
   }
@@ -589,6 +631,7 @@ export const useBookingStore = defineStore('booking', () => {
     recipientPhone,
     prohibitedItemsAck,
     fare,
+    fareEditable,
     paymentMethod,
     fieldErrors,
     submitting,
@@ -605,6 +648,7 @@ export const useBookingStore = defineStore('booking', () => {
     pruneEmptyStops,
     moveStop,
     setPickupFromLocation,
+    setPickupText,
     prefill,
     schedulePreview,
     requote,

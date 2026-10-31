@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { reverseGeocode } from '../api/geo'
 import { createOrder } from '../api/orders'
+import { parseQuote } from '../api/parse'
 import { previewRoute } from '../api/routes'
 import type { Order, RouteQuote, RouteQuoteOption } from '../api/types'
 import type { PlaceValue } from '../domain/route'
 import { ApiError } from '../services/http'
+import type { Category } from '../utils/status'
 import { PREVIEW_DEBOUNCE_MS, useBookingStore } from './booking'
 import { useSessionStore } from './session'
 
@@ -133,7 +135,7 @@ describe('booking store: route preview', () => {
     expect(b.stops[0]?.place?.lat).toBe(loc.lat)
   })
 
-  it('quotes a manual intermediate with a geolocated destination while retaining admin fare bounds', async () => {
+  it('quotes a manual intermediate with a geolocated destination within the admin fare bounds', async () => {
     const b = useBookingStore()
     preview.mockResolvedValue(quote({ distance_m: null, duration_s: null }))
     b.setStopPlace(0, place('A', 48.82))
@@ -143,7 +145,8 @@ describe('booking store: route preview', () => {
     await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
     expect(b.canContinue).toBe(true)
     expect(b.manualDestination).toBe(true)
-    expect(b.fare).toBeNull()
+    // Nothing to type for a taxi: the chosen class's price.
+    expect(b.fare).toBe(SEDAN_FARE.recommended)
     expect(b.selectedOption?.fare).toEqual(SEDAN_FARE)
     expect(preview.mock.calls[0]![0].stops.map(s => s.mode ?? 'geocoded')).toEqual(['geocoded', 'manual', 'geocoded'])
   })
@@ -226,8 +229,9 @@ describe('booking store: order submission', () => {
     expect(b.stops.every((s) => s.place === null)).toBe(true)
   })
 
-  it('sends the chosen fare, payment and category fields', async () => {
+  it("sends the class's price, payment and category fields of a taxi", async () => {
     const b = await readyBooking()
+    // A taxi has no fare input; any other value is replaced by the class's price.
     b.fare = 800
     b.paymentMethod = 'bank_transfer'
     b.comment = '  екінші  подъезд '
@@ -235,7 +239,7 @@ describe('booking store: order submission', () => {
     await b.submit()
     expect(create.mock.calls[0]![0]).toMatchObject({
       quote_id: expect.any(String),
-      fare: 800,
+      fare: 700,
       payment_method: 'bank_transfer',
       comment: 'екінші подъезд',
     })
@@ -375,37 +379,37 @@ describe('booking store: vehicle class and load (§21)', () => {
     expect(preview.mock.calls.length).toBe(calls)
   })
 
-  it("orders with the chosen class's quote and restarts the fare at its recommendation", async () => {
+  it("orders a taxi with the chosen class's quote at that class's price", async () => {
     const q = twoClasses()
     const b = await readyBooking(q)
+    expect(b.fareEditable).toBe(false)
     expect(b.selectedOption?.vehicle_class).toBe('sedan')
-    b.fare = 850
+    expect(b.fare).toBe(700)
     b.setVehicleClass('minivan')
     expect(b.selectedOption?.vehicle_class).toBe('minivan')
     expect(b.fare).toBe(1200)
-    b.fare = 1400
     // Not offered: ignored.
     b.setVehicleClass('truck')
     expect(b.vehicleClass).toBe('minivan')
 
     create.mockResolvedValueOnce(order())
     expect((await b.submit()).kind).toBe('created')
-    expect(create.mock.calls[0]![0]).toMatchObject({ quote_id: q.options[1]!.quote_id, fare: 1400 })
+    expect(create.mock.calls[0]![0]).toMatchObject({ quote_id: q.options[1]!.quote_id, fare: 1200 })
   })
 
-  it('validates the fare against the chosen class', async () => {
+  it('never asks a taxi passenger to correct a fare', async () => {
     const b = await readyBooking(twoClasses())
     b.setVehicleClass('minivan')
     b.fare = 800
-    expect(b.validate()).toBe(false)
-    expect(b.fieldErrors.fare).toBe('invalid')
+    expect(b.validate()).toBe(true)
+    expect(b.fieldErrors).toEqual({})
+    expect(b.fare).toBe(1200)
     expect(create).not.toHaveBeenCalled()
   })
 
   it('keeps the chosen class as a preference across re-quotes', async () => {
     const b = await readyBooking(twoClasses())
     b.setVehicleClass('minivan')
-    b.fare = 1300
 
     // 9 passengers: only a minibus can go; the minivan comes back for 6.
     preview.mockResolvedValueOnce(quote({ options: [option('microbus', { fare: { recommended: 2000, min: 2000, max: 3000, step: 500, options: [2000, 2500, 3000] } })] }))
@@ -421,12 +425,12 @@ describe('booking store: vehicle class and load (§21)', () => {
     expect(b.selectedOption?.vehicle_class).toBe('minivan')
     expect(b.fare).toBe(1200)
 
-    // Same class after a re-quote: the passenger's fare stays when still allowed.
-    b.fare = 1400
-    preview.mockResolvedValueOnce(twoClasses())
+    // Same class after a re-quote: a taxi follows the class's new price.
+    preview.mockResolvedValueOnce(quote({ options: [option('sedan'), option('minivan', { fare: { ...MINIVAN_FARE, recommended: 1300, min: 1300, options: [1300, 1400, 1500] } })] }))
     b.setPassengerCount(7)
     await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
-    expect(b.fare).toBe(1400)
+    expect(b.selectedOption?.vehicle_class).toBe('minivan')
+    expect(b.fare).toBe(1300)
   })
 
   // Order #1034: a class picked for an earlier route must not come back for a new one.
@@ -542,5 +546,209 @@ describe('booking store: vehicle class and load (§21)', () => {
     expect(b.cargoSize).toBe('l')
     expect(b.vehicleClass).toBe('cargo_van')
     expect(b.passengerCount).toBe(1)
+  })
+})
+
+/** Fares from lo to hi in steps. */
+function fareRange(lo: number, hi: number, step: number): number[] {
+  const out: number[] = []
+  for (let v = lo; v <= hi; v += step) out.push(v)
+  return out
+}
+
+/**
+ * A quote for a route with a manual stop, as the API sends it: no route
+ * metrics and no recommendation, only each class's tariff bounds (sedan
+ * 400–1500, minivan 1000–3000). The app's price of a class is then its
+ * tariff minimum, the first allowed fare.
+ */
+function manualQuote(category: Category = 'taxi'): RouteQuote {
+  const classOption = (vehicleClass: string, min: number, max: number) => ({
+    vehicle_class: vehicleClass,
+    icon: vehicleClass,
+    seats_max: vehicleClass === 'minivan' ? 8 : 4,
+    cargo_volume_l: 400,
+    quote_id: `00000000-0000-4000-8000-0000000002${String(++quoteSeq).padStart(2, '0')}`,
+    expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    fare: { recommended: null, min, max, step: 50, options: fareRange(min, max, 50) },
+    commission_bps: 1000,
+    eta_s: null,
+  })
+  const options = [classOption('sedan', 400, 1500), classOption('minivan', 1000, 3000)]
+  return parseQuote({
+    quote_id: options[0]!.quote_id,
+    expires_at: options[0]!.expires_at,
+    category,
+    vehicle_class: 'sedan',
+    passenger_count: category === 'taxi' ? 1 : null,
+    cargo_size: category === 'taxi' ? null : 's',
+    stops: [],
+    distance_m: null,
+    duration_s: null,
+    legs: [],
+    geometry: null,
+    bbox: null,
+    pricing_mode: 'passenger_tariff_bounds',
+    fare: options[0]!.fare,
+    commission_bps: 1000,
+    payment_methods: ['cash', 'bank_transfer'],
+    options,
+  })
+}
+
+const MANUAL_B: PlaceValue = { lat: null, lon: null, address: 'Ескі мәдениет үйі', subtitle: null, source: 'manual', inServiceArea: null }
+
+describe('booking store: fare (taxi at the class price, deliveries choose)', () => {
+  it('prices a taxi with a manual destination at the chosen class, with nothing to type', async () => {
+    const b = useBookingStore()
+    const q = manualQuote()
+    preview.mockResolvedValue(q)
+    b.setStopPlace(0, place('Ембі, Абай 1', 48.82))
+    b.setStopPlace(1, MANUAL_B)
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.manualDestination).toBe(true)
+    expect(b.fareEditable).toBe(false)
+    // The price on the sedan row: the tariff minimum of a manual route.
+    expect(b.selectedOption?.fare.recommended).toBe(400)
+    expect(b.fare).toBe(400)
+    b.setVehicleClass('minivan')
+    expect(b.fare).toBe(1000)
+    expect(b.validate()).toBe(true)
+
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).toMatchObject({ quote_id: q.options[1]!.quote_id, fare: 1000 })
+  })
+
+  it("lets the passenger choose a delivery's fare within the chosen class", async () => {
+    const b = useBookingStore()
+    b.setCategory('other')
+    const q = quote({ category: 'other', passenger_count: null, cargo_size: 's', options: [option('sedan'), option('minivan', { fare: MINIVAN_FARE, seats_max: 8 })] })
+    preview.mockResolvedValue(q)
+    b.setStopPlace(0, place('A', 48.82))
+    b.setStopPlace(1, place('B', 48.84))
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.fareEditable).toBe(true)
+    expect(b.fare).toBe(700)
+    // Another class restarts at its recommendation; a fare outside it is an error to correct.
+    b.setVehicleClass('minivan')
+    expect(b.fare).toBe(1200)
+    b.fare = 800
+    expect(b.validate()).toBe(false)
+    expect(b.fieldErrors.fare).toBe('invalid')
+
+    // Same class after a re-quote: the passenger's fare stays when still allowed.
+    b.fare = 1400
+    b.setCargoSize('m')
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(preview).toHaveBeenCalledTimes(2)
+    expect(b.fare).toBe(1400)
+
+    b.cargoDescription = 'Құжаттар'
+    b.prohibitedItemsAck = true
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).toMatchObject({ quote_id: q.options[1]!.quote_id, fare: 1400 })
+  })
+
+  it('still asks for the fare of a delivery with a manual destination', async () => {
+    const b = useBookingStore()
+    b.setCategory('parcel')
+    preview.mockResolvedValue(manualQuote('parcel'))
+    b.setStopPlace(0, place('A', 48.82))
+    b.setStopPlace(1, MANUAL_B)
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.fareEditable).toBe(true)
+    expect(b.fare).toBeNull()
+    expect(b.validate()).toBe(false)
+    expect(b.fieldErrors.fare).toBe('invalid')
+    b.fare = 450
+    b.validate()
+    expect(b.fieldErrors.fare).toBeUndefined()
+  })
+})
+
+describe('booking store: pickup A in the passenger’s own words', () => {
+  const TYPED = 'Мешіттің жанында, көк қақпа'
+  const fix = { lat: 48.8211, lon: 58.152, accuracy_m: 240, heading: null, speed_mps: null, timestamp: Date.now(), source: 'browser' as const }
+
+  it('keeps the pin coordinates and sends the typed text as the pickup address', async () => {
+    const b = useBookingStore()
+    preview.mockResolvedValue(quote())
+    b.setStopPlace(0, { ...place('Ембі, Абай 1', 48.82), subtitle: 'Ембі', source: 'map' })
+    b.setStopPlace(1, place('Ембі, вокзал', 48.84))
+    expect(b.setPickupText('  Мешіттің жанында,\n көк  қақпа ')).toBe(true)
+    expect(b.stops[0]!.place).toEqual({ lat: 48.82, lon: 58.1, address: TYPED, subtitle: 'Ембі', source: 'map', inServiceArea: true, typed: true })
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(preview).toHaveBeenCalledTimes(1)
+    expect(preview.mock.calls[0]![0].stops).toEqual([
+      { lat: 48.82, lon: 58.1, address: TYPED },
+      { lat: 48.84, lon: 58.1, address: 'Ембі, вокзал' },
+    ])
+    expect(b.canContinue).toBe(true)
+
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).toMatchObject({ fare: 700 })
+  })
+
+  it('quotes typed A with a manual B: only B goes without coordinates', async () => {
+    const b = useBookingStore()
+    const q = manualQuote()
+    preview.mockResolvedValue(q)
+    b.setStopPlace(0, place('A', 48.82))
+    expect(b.setPickupText(TYPED)).toBe(true)
+    b.setStopPlace(1, MANUAL_B)
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(preview.mock.calls[0]![0].stops).toEqual([
+      { lat: 48.82, lon: 58.1, address: TYPED },
+      { mode: 'manual', lat: null, lon: null, address: MANUAL_B.address },
+    ])
+    expect(b.canContinue).toBe(true)
+
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).toMatchObject({ quote_id: q.options[0]!.quote_id, fare: 400 })
+  })
+
+  it('takes the device position when A has no point yet, and refuses without one', () => {
+    const b = useBookingStore()
+    expect(b.setPickupText(TYPED)).toBe(false)
+    expect(b.stops[0]!.place).toBeNull()
+    expect(b.setPickupText(TYPED, fix)).toBe(true)
+    expect(b.stops[0]!.place).toEqual({ lat: 48.8211, lon: 58.152, address: TYPED, subtitle: null, source: 'gps', inServiceArea: null, typed: true })
+    // The low-accuracy warning still concerns the point drivers are sent to.
+    expect(b.pickupAccuracy).toBe(240)
+  })
+
+  it('refuses an empty or too long text and keeps the pickup', () => {
+    const b = useBookingStore()
+    const a = place('Ембі, Абай 1', 48.82)
+    b.setStopPlace(0, a)
+    expect(b.setPickupText(' \n ')).toBe(false)
+    expect(b.setPickupText('ә'.repeat(201))).toBe(false)
+    expect(b.stops[0]!.place).toEqual(a)
+    expect(b.setPickupText('ә'.repeat(200))).toBe(true)
+  })
+
+  it('a street lookup still running for the GPS fix never replaces the typed text', async () => {
+    const b = useBookingStore()
+    let finish!: (value: Awaited<ReturnType<typeof reverseGeocode>>) => void
+    vi.mocked(reverseGeocode).mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+    const lookup = b.setPickupFromLocation(fix)
+    expect(b.setPickupText(TYPED)).toBe(true)
+    finish({ lat: fix.lat, lon: fix.lon, title: 'Абай көшесі, 5', subtitle: 'Ембі', source: 'photon', in_service_area: true })
+    await lookup
+    expect(b.stops[0]!.place).toMatchObject({ lat: fix.lat, lon: fix.lon, address: TYPED, source: 'gps', typed: true })
+    expect(b.pickupAccuracy).toBe(240)
+  })
+
+  it('a new point for A replaces the typed text', () => {
+    const b = useBookingStore()
+    b.setStopPlace(0, place('A', 48.82))
+    b.setPickupText(TYPED)
+    const moved: PlaceValue = { ...place('Абай көшесі, 5', 48.83), source: 'map' }
+    b.setStopPlace(0, moved)
+    expect(b.stops[0]!.place).toEqual(moved)
   })
 })

@@ -5,6 +5,7 @@ import {
   clampMaxPoints,
   createStops,
   isComplete,
+  isTypedPlace,
   moveStop,
   normalizeStops,
   outsideIndices,
@@ -154,6 +155,22 @@ describe('route editor rules', () => {
     expect(routeFingerprint(moveStop(s, 1, 2))).not.toBe(f)
     expect(routeFingerprint(setPlace(s, 4, place('Other', 49, 58)))).not.toBe(f)
     expect(routeFingerprint([...s])).toBe(f)
+  })
+
+  it('sends a pickup typed by the passenger as written, with its coordinates', () => {
+    const typed: PlaceValue = { ...place('Мешіттің жанында, көк қақпа', 48.82641234, 58.14421234), source: 'gps', typed: true }
+    let s = createStops(keys())
+    s = setPlace(s, 0, typed)
+    s = setPlace(s, 1, place('Вокзал', 48.8291, 58.1504))
+    expect(isComplete(s)).toBe(true)
+    expect(isTypedPlace(typed)).toBe(true)
+    expect(isTypedPlace(place('Вокзал'))).toBe(false)
+    // An ordinary stop (no manual mode): dispatch and the Kazakhstan check use A's point.
+    expect(toStopInputs(s, 'Картадағы нүкте')![0]).toEqual({ lat: 48.826412, lon: 58.144212, address: 'Мешіттің жанында, көк қақпа' })
+    // Even text that looks like coordinates is the passenger's own words.
+    s = setPlace(s, 0, { ...typed, address: '12, 5' })
+    expect(toStopInputs(s, 'Картадағы нүкте')![0]!.address).toBe('12, 5')
+    expect(routeFingerprint(setPlace(s, 0, { ...typed, address: 'Көк қақпа' }))).not.toBe(routeFingerprint(s))
   })
 })
 

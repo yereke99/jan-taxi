@@ -1,7 +1,8 @@
 <!--
   Details and confirmation: the vehicle class options with the passenger
   count (taxi) or cargo size (deliveries), category-specific fields, the fare
-  picker, the payment method and a summary of the whole order. Changing the
+  picker (deliveries only: a taxi goes at the chosen class's price, nothing to
+  type), the payment method and a summary of the whole order. Changing the
   load re-quotes; while the new quote loads the previous options stay in
   place, dimmed. "Back to route" keeps everything (the booking store holds the
   draft). Every booking starts with the cheapest class; a row changes the
@@ -340,8 +341,8 @@ async function submit(): Promise<void> {
         </button>
       </section>
 
-      <!-- Fare -->
-      <section class="confirm-fare" :class="{ 'is-stale': stale && option !== null }">
+      <!-- Fare: parcel and other only; a taxi costs the chosen class's price -->
+      <section v-if="booking.fareEditable" class="confirm-fare" :class="{ 'is-stale': stale && option !== null }">
         <h2 class="confirm-fare__title">{{ t('confirm.fare') }}</h2>
         <JTextField v-if="option && booking.manualDestination" v-model="manualFare" type="number" inputmode="numeric" :label="t('confirm.fare')" :hint="t('manual.fare_hint')" :error="fieldError('fare')" />
         <FarePicker v-else-if="option" v-model="booking.fare" :fare="option.fare" :locale="lang" :error="fieldError('fare')" />

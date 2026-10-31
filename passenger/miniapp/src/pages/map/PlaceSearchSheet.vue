@@ -1,7 +1,11 @@
 <!--
   Place search for one stop: type-ahead /geo/search (300 ms debounce, at
   least 2 characters, superseded requests aborted), recent places from the
-  order history, "use my location" for the pickup and "choose on map".
+  order history, "use my location" for the pickup and "choose on map". When
+  the search does not know the place, the passenger writes it in their own
+  words: a stop after A is then a manual stop without coordinates (if the
+  administrator allows them), while pickup A only takes the text and keeps
+  its point on the map (the pin, else the device position) for dispatch.
 -->
 <script setup lang="ts">
 import { ChevronRight, Clock, LocateFixed, MapPin, MapPinned, SquarePen } from '@lucide/vue'
@@ -12,7 +16,7 @@ import { GEO_SEARCH_MIN_CHARS, searchPlaces } from '../../api/geo'
 import type { GeoPlace } from '../../api/types'
 import { JButton, JSheet, JSkeleton, JSpinner, JTextField, toast } from '../../components/ui'
 import { createLatest } from '../../domain/latest'
-import type { PlaceValue } from '../../domain/route'
+import { isTypedPlace, MAX_ADDRESS_LENGTH, type PlaceValue } from '../../domain/route'
 import { useAddressText, useErrorText } from '../../i18n/core'
 import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { formatDistance } from '../../utils/format'
@@ -107,14 +111,29 @@ const recent = computed(() => orders.places.filter(p=>!isPickup.value || hasCoor
 const manualMode = ref(false)
 const manualText = ref('')
 const manualField = ref<InstanceType<typeof JTextField> | null>(null)
-const canManual = computed(()=>!isPickup.value && session.config.orders?.manual_destination_enabled === true && session.config.orders.manual_destination_pricing === 'passenger_tariff_bounds')
-const manualValid = computed(()=>codePointLength(cleanText(manualText.value))>0 && codePointLength(cleanText(manualText.value))<=200)
+/** Typed text for A needs a point to stay at: the pickup's own, else the device position. */
+const pickupHasPoint = computed(() => {
+  const place = booking.stops[0]?.place
+  return (!!place && hasCoordinates(place)) || location.current !== null
+})
+const canManual = computed(()=>isPickup.value ? pickupHasPoint.value : session.config.orders?.manual_destination_enabled === true && session.config.orders.manual_destination_pricing === 'passenger_tariff_bounds')
+const manualValid = computed(()=>codePointLength(cleanText(manualText.value))>0 && codePointLength(cleanText(manualText.value))<=MAX_ADDRESS_LENGTH)
 function openManual(): void {
-  manualText.value = query.value
+  // Editing a place already written by hand starts from its text.
+  const current = booking.stops[index.value]?.place
+  const editing = !query.value.trim() && isTypedPlace(current)
+  manualText.value = editing ? current!.address : query.value
   manualMode.value = true
   void nextTick(() => manualField.value?.focus())
 }
-function saveManual(): void { if(!canManual.value || !manualValid.value)return; choose({lat:null,lon:null,address:cleanText(manualText.value),subtitle:null,source:'manual',inServiceArea:null}) }
+function saveManual(): void {
+  if(!canManual.value || !manualValid.value)return
+  if (isPickup.value) {
+    if (booking.setPickupText(manualText.value, location.current)) done()
+    return
+  }
+  choose({lat:null,lon:null,address:cleanText(manualText.value),subtitle:null,source:'manual',inServiceArea:null})
+}
 
 /** Distance from where the search was made, so far-away matches are obvious. */
 const resultsNear = ref<LatLon | null>(null)
@@ -189,7 +208,7 @@ onBeforeUnmount(() => runner.cancel())
     </template>
 
     <div v-if="manualMode && canManual" class="search-actions search-actions--manual">
-      <JTextField ref="manualField" v-model="manualText" :label="t('manual.label')" :hint="t('manual.helper')" :max="200" />
+      <JTextField ref="manualField" v-model="manualText" :label="t('manual.label')" :hint="isPickup ? t('manual.pickup_helper') : t('manual.helper')" :max="MAX_ADDRESS_LENGTH" />
       <JButton block :disabled="!manualValid" @click="saveManual">{{ t('manual.save') }}</JButton>
       <JButton block variant="secondary" @click="manualMode=false">{{ t('manual.use_search') }}</JButton>
     </div>

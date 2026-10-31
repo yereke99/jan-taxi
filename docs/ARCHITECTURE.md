@@ -107,6 +107,16 @@ fails if the copies drift.
 * **Dispatch never depends on a city.** A passenger anywhere in Kazakhstan (e.g. Almaty) creates an
   order and it is offered to free drivers whose fresh GPS location is within the order's search radius
   of pickup point A (§7), wherever those drivers are registered.
+* **Pickup A always has coordinates** — the passenger's GPS position or the map point under the black
+  centre pin — and only they decide the Kazakhstan check, the tariff region, the locality and dispatch.
+  When the map search does not know the place (folk names, micro-districts, a yard inside a village),
+  the passenger may describe A in their own words with the same «Мекенжай табылмады ма? Қолмен
+  енгізіңіз» button as the other stops (e.g. «Мешіттің жанында, көк қақпа»). The text replaces only A's
+  address (same cleaning and 200-code-point limit as every stop address); A stays an ordinary stop at
+  its coordinates (`mode` `geocoded`; a `manual` pickup is refused with `pickup_coordinates_required`),
+  and the driver bot offer, the driver Mini App and the admin panel show the text as the pickup. Moving
+  the pin or choosing another place for A replaces the text. Without a pin or GPS position the app does
+  not offer the typed pickup. Stops after A may instead be `manual`, without coordinates (§5).
 
 ## 4. Identity and authentication
 
@@ -169,6 +179,22 @@ Categories selected in UI → normalised fields:
 | `taxi` | `passenger` | `none` | — (comment optional) |
 | `parcel` | `delivery` | `parcel` | `cargo_description` (≤120), `recipient_phone`, `prohibited_items_ack=true` |
 | `other` | `delivery` | `other` | `cargo_description` (≤120), `prohibited_items_ack=true` |
+
+Route points: pickup A first (always with coordinates; its address may be the passenger's own text,
+§3), up to three intermediate stops, the destination last. A stop after A may be `manual` — the
+passenger's words with `NULL` coordinates — while `orders.manual_destination_enabled` is on and
+`orders.manual_destination_pricing` is `passenger_tariff_bounds`; such a route gets no OSRM route or
+metrics, and each class's quote offers the administrator's tariff range (`fare.recommended: null`,
+`pricing_mode: passenger_tariff_bounds`).
+
+Fare: `POST /orders` accepts any of the quote's `fare.options` (`min_fare..max_fare` on the
+`fare_step` grid; otherwise `422 fare_not_allowed`). The passenger app (customer decision, 2026-10-31):
+* **taxi** — no fare input: the order goes at the price of the class the passenger ticked, the price
+  on its row and on the confirm button («Тапсырыс беру · Седан · 400 ₸»): the option's
+  `fare.recommended`, or for a route with a manual stop, which has no recommendation, the first allowed
+  fare (the tariff's `min_fare`);
+* **parcel / other** — the fare input stays: a stepper over `fare.options`, or for a route with a
+  manual stop an amount the passenger types within the tariff's min/max/step.
 
 Statuses and allowed transitions (anything else → `409 invalid_transition`):
 
@@ -1082,5 +1108,6 @@ offers) where they conflict.
 - A class row is selected only by a real tap (pointer down and up on the row, < 8 px movement, no
   scroll in between); scrolling or dragging the sheet never changes the selection.
 - The confirm button names the class and price («Тапсырыс беру · Микроавтобус · 2 150 ₸»). A class
-  with 7+ seats for a party of ≤ 4 asks first with an iOS action sheet.
+  with 7+ seats for a party of ≤ 4 asks first with an iOS action sheet. A taxi is ordered at exactly
+  that price, with no fare field to fill in (§5).
 - Tariff region and locality: see §3 (KAZ default region, `orders.locality`, driver code prefix).
