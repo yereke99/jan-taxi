@@ -8,8 +8,8 @@ import { JListGroup, JListRow } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
 import { pickLocalized } from '../services/config'
 import { useSessionStore } from '../stores/session'
-import { openTelegram } from '../telegram'
-import { formatKzPhone, telHref } from '../utils/phone'
+import { callPhone, openTelegram } from '../telegram'
+import { formatKzPhone } from '../utils/phone'
 
 const { t } = useI18n()
 const { locale } = useFormat()
@@ -26,7 +26,7 @@ function openSupportChat(): void {
 }
 
 function call(phone: string): void {
-  window.location.href = telHref(phone)
+  callPhone(phone)
 }
 
 function openBot(): void {

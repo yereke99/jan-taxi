@@ -1070,6 +1070,11 @@ offers) where they conflict.
 - Before the first order the passenger Mini App asks to share the phone through Telegram
   (`requestContact`); the passenger bot verifies `contact.user_id == from.id` and stores it.
   Skippable — then the driver only gets the Telegram link.
+- Driver trip screen (owner, 2026-10-31): with a shared phone the passenger row shows the number
+  (tap copies it), a WhatsApp button (`https://wa.me/<digits>` via `openLink`, no message text) and
+  the call button; without one, the Telegram chat button takes the WhatsApp place. Call buttons in
+  both apps are `tel:` links opened in a new window — Telegram for iOS ignores same-window `tel:`
+  links (docs/TESTING.md §6).
 
 ### 22.6 Passenger push when a driver takes the order (implement together with 22.4)
 - The moment an accept succeeds (Mini App or the bot «Тапсырысты алу»), the passenger receives a Telegram

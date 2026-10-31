@@ -191,13 +191,73 @@ client's auth frame, backoff and re-sync, Telegram fullscreen and location
 handling with a mocked SDK, start-parameter routing, map fitting; and in the
 admin panel the CSRF header, login redirects and permission-based navigation.
 
+Contact actions (§6): `driver/miniapp/src/components/driver/TripContacts.test.ts`,
+`passenger/miniapp/src/components/order/TripDriverCard.test.ts` and the shared
+`telegram/links.test.ts`, `utils/phone.test.ts`, `utils/clipboard.test.ts` and
+`components/ui/components.test.ts` prove that call buttons are real
+`tel:+77…` links opened in a new window whose tap is never prevented and never
+reaches the trip controls; that WhatsApp opens exactly `https://wa.me/<digits>`
+(no message text) through `openLink`, with a new browser window outside
+Telegram; that without a shared (verified, complete) phone there is no
+WhatsApp, call or number, and the driver keeps the passenger's Telegram chat
+in the same place; that the visible number copies and a failed copy or link
+shows an error; and that a tap on a contact control that moves a few pixels
+never becomes a sheet drag, in the sheet header or its content.
+
 ## 5. What is not covered automatically
 
 - Behaviour inside real Telegram clients (iOS, Android, Desktop, Web): fullscreen,
-  safe areas, haptics, location and contact permissions, `t.me` links. Test on
-  devices with staging bots ([TELEGRAM_SETUP.md](TELEGRAM_SETUP.md)).
+  safe areas, haptics, location and contact permissions, `t.me` links, calls and
+  WhatsApp (§6). Test on devices with staging bots ([TELEGRAM_SETUP.md](TELEGRAM_SETUP.md)).
 - Real Kaspi Pay payments (verification is manual by design).
 - The OSRM dataset build and the self-hosted Photon import (`make osrm-prepare`,
   `make geocoder-import`): run once on staging and check a few routes and searches.
 - Backup restore: run the monthly restore drill
   ([OPERATIONS.md](OPERATIONS.md#restore-and-restore-drill)).
+
+## 6. Contact actions on real devices (calls, WhatsApp, Telegram chat)
+
+Calls and WhatsApp leave the Mini App, so only a real Telegram client shows that
+they work. How the clients treat the links (checked in the client sources,
+October 2026):
+
+| Client | Same-window `tel:` link | New-window `tel:` link (used by the apps) | `openLink('https://wa.me/…')` (WhatsApp) |
+|---|---|---|---|
+| Telegram iOS | does nothing: Telegram lets its WKWebView load it, and WKWebView cannot open `tel:` | handed to iOS: the system "Call +7 …" prompt (Telegram may ask to confirm the link first) | WhatsApp chat (universal link); Safari with the wa.me page without WhatsApp |
+| Telegram Android | dialer | dialer; Telegram's in-app browser may flash for a moment. Versions before 11.0.1 dialled a wrong number: update Telegram | WhatsApp chat (app link); the browser without WhatsApp |
+| Telegram Desktop | not checked (the apps never use it) | passed to the operating system: Phone Link or Skype on Windows, FaceTime "Call using iPhone" on macOS, nothing without a `tel:` handler | default browser, then WhatsApp Desktop or WhatsApp Web |
+
+So a call is always a user-tapped `<a href="tel:+77…" target="_blank">` (or
+`callPhone()` from `telegram/links.ts`, which follows such a link); never a
+same-window link or `location.href = 'tel:…'`. `Telegram.WebApp.openLink`
+accepts only http(s) and cannot dial. Contact controls carry
+`data-sheet-no-drag`: inside a bottom sheet a tap that moved 6 px otherwise
+became a drag whose click was swallowed. No https page that redirects to
+`tel:` is used: every current client handles the new-window link, and such a
+page would put the phone number in a URL and leave a browser tab behind. The
+number shown next to the buttons copies on tap and is the fallback where no
+call can start (desktop without a call handler).
+
+Checklist with staging bots, a driver and a passenger who shared the phone, one
+accepted order. Repeat on Telegram iOS, Telegram Android and Telegram Desktop:
+
+1. Driver trip screen, passenger row: name, number with a copy icon, a round
+   WhatsApp button and the black call button, the same size and spacing as
+   before; no Telegram chat button.
+2. Call, with the sheet at peek, half and full, also with a slightly moving
+   finger: iOS shows the call prompt, Android opens the dialer with the number,
+   Desktop opens the system call handler (or nothing). The sheet does not move
+   and the Mini App stays open; going back shows the trip.
+3. WhatsApp: the chat with that number opens in WhatsApp (on Android possibly
+   the chooser with WhatsApp Business); nothing is sent. Without WhatsApp the
+   wa.me page opens in the browser.
+4. Tap the number: the "Copied" toast; it pastes into the dialer.
+5. A passenger who did not share the phone: only the Telegram chat button, in
+   the place of the WhatsApp button; it opens their chat.
+6. Passenger trip sheet with the driver assigned: the number under the plate
+   copies; "Call" behaves as in step 2 with the sheet collapsed and expanded.
+7. Parcel order: the recipient's call and copy buttons for the driver, the
+   recipient's number link for the passenger.
+8. Support screens of both apps (phone row) and the passenger safety sheet
+   "Call 112": only check that the prompt or the dialer opens, then cancel —
+   do not place the call to 112.

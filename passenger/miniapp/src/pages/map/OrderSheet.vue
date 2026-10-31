@@ -343,7 +343,7 @@ function toHome(): void {
         <p v-if="delivery && order.cargo_description" class="trip-order__comment">{{ order.cargo_description }}</p>
         <p v-if="order.recipient_phone" class="trip-order__comment">
           <span class="trip-card__label">{{ t('order.recipient') }}</span>
-          <a class="jt-tabular" :href="telHref(order.recipient_phone)">{{ formatKzPhone(order.recipient_phone) }}</a>
+          <a class="jt-tabular" :href="telHref(order.recipient_phone)" target="_blank" rel="noopener noreferrer" data-sheet-no-drag>{{ formatKzPhone(order.recipient_phone) }}</a>
         </p>
       </section>
     </div>

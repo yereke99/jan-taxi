@@ -7,8 +7,8 @@ import ScrollPage from '../components/ScrollPage.vue'
 import { JEmptyState, JListGroup, JListRow } from '../components/ui'
 import { pickLocalized } from '../services/config'
 import { useSessionStore } from '../stores/session'
-import { openTelegram } from '../telegram'
-import { formatKzPhone, telHref } from '../utils/phone'
+import { callPhone, openTelegram } from '../telegram'
+import { formatKzPhone } from '../utils/phone'
 
 const { t } = useI18n()
 const session = useSessionStore()
@@ -19,7 +19,7 @@ const hasContacts = computed(() => Boolean(support.value.telegram_link || suppor
 
 function call(): void {
   const phone = support.value.phone
-  if (phone) window.location.href = telHref(phone)
+  if (phone) callPhone(phone)
 }
 
 onMounted(() => void session.ensureConfig())

@@ -174,6 +174,8 @@ export const en: PassengerMessages = {
     cancel: 'Cancel order',
     cancelled_toast: 'Order cancelled',
     call_driver: 'Call',
+    copy_driver_phone: "Copy driver's number",
+    copy_failed: 'Could not copy the number. Copy it manually.',
     arrives_in: 'Driver arrives in {n} min',
     searching_sent: 'Sent to nearby drivers · {time}',
     safety: 'Safety',

@@ -123,4 +123,45 @@ describe('JSheet', () => {
       vi.useRealTimers()
     }
   })
+
+  // A call button in the header (passenger trip card) or the content (driver
+  // contacts) must open on a tap whose finger moves a few pixels.
+  it('never starts a drag from a control marked data-sheet-no-drag, in the header or the content', () => {
+    const tapped = vi.fn()
+    const wrapper = mount(JSheet, {
+      props: { snap: 'half', snapPoints: ['half', 'full'] },
+      slots: {
+        header: () => [
+          h('p', { class: 'title' }, 'title'),
+          h('a', { class: 'call', 'data-sheet-no-drag': '', onClick: tapped }, 'call'),
+        ],
+        default: () => h('button', { class: 'contact', 'data-sheet-no-drag': '', onClick: tapped }, 'contact'),
+      },
+      global,
+      attachTo: document.body,
+    })
+    const pointer = (target: EventTarget, type: string, y: number): void => {
+      target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 4, pointerType: 'touch', isPrimary: true, clientX: 100, clientY: y }))
+    }
+    for (const selector of ['.call', '.contact']) {
+      const el = wrapper.find(selector).element
+      pointer(el, 'pointerdown', 500)
+      pointer(window, 'pointermove', 490)
+      pointer(window, 'pointerup', 490)
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })
+      el.dispatchEvent(click)
+      expect(click.defaultPrevented).toBe(false)
+    }
+    expect(tapped).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('update:snap')).toBeUndefined()
+
+    // The rest of the header still drags the sheet.
+    const title = wrapper.find('.title').element
+    pointer(title, 'pointerdown', 500)
+    pointer(window, 'pointermove', 490)
+    pointer(window, 'pointermove', 190)
+    pointer(window, 'pointerup', 190)
+    expect(wrapper.emitted('update:snap')?.[0]).toEqual(['full'])
+    wrapper.unmount()
+  })
 })

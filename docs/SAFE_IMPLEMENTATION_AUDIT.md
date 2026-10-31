@@ -319,3 +319,14 @@ receipt claims and once-only welcome bonus remain covered by the full suite.
 No CI/build cleanup or recurring data removal was added. Server deployment was
 requested, but this session's Terminal control was denied and independent SSH
 authentication failed. No production commands were run by this session.
+
+Calls, 31 October: the Telegram client sources explain the dialer failure.
+Telegram for iOS lets its WKWebView load a same-window `tel:` link, which
+WKWebView cannot open, so plain `tel:` anchors (baseline driver contacts, the
+passenger trip card, support pages, `callPhone`) did nothing on iPhones; a
+new-window link reaches the system call prompt, and Android sends both forms to
+the dialer. Every call button now uses a new-window link, and the passenger's
+call button in the sheet header no longer starts a sheet drag. At the owner's
+request the driver's contact row shows WhatsApp in place of the Telegram chat
+when the passenger shared a phone; passengers without one keep the chat button.
+Device checks: [TESTING.md §6](TESTING.md#6-contact-actions-on-real-devices-calls-whatsapp-telegram-chat).

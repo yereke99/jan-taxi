@@ -3,7 +3,7 @@
 import { Check, Copy } from '@lucide/vue'
 import { onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { copyText } from '../../composables/clipboard'
+import { copyText } from '../../utils/clipboard'
 import { haptics } from '../../telegram'
 import { toast } from '../ui'
 

@@ -52,7 +52,7 @@ function openSupport(): void {
           <button type="button" class="consent__link" @click="openSupport">@{{ support.telegram_username }}</button>
         </p>
         <p v-if="support.phone" class="consent__text">
-          <a class="consent__link" :href="telHref(support.phone)">{{ formatKzPhone(support.phone) }}</a>
+          <a class="consent__link" :href="telHref(support.phone)" target="_blank" rel="noopener noreferrer">{{ formatKzPhone(support.phone) }}</a>
         </p>
         <p v-if="hours" class="consent__text">{{ hours }}</p>
       </section>

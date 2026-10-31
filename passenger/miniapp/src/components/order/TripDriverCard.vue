@@ -1,15 +1,21 @@
 <!--
   Live trip, top of the sheet: driver name with rating, car colour and model,
-  the plate badge, and the driver's avatar over a simple car silhouette
+  the plate badge, the driver's phone (tap to copy it: the fallback where a
+  call cannot start) and the driver's avatar over a simple car silhouette
   (initials when there is no photo). Below it the three round actions:
-  safety, share trip details and call (the only filled one).
+  safety, share trip details and call (the only filled one). The call is a
+  tel: link opened in a new window, the form every Telegram client hands to
+  the phone app (see callPhone); the phone controls never start a sheet drag.
 -->
 <script setup lang="ts">
-import { Phone, Share2, ShieldCheck, Star } from '@lucide/vue'
+import { Copy, Phone, Share2, ShieldCheck, Star } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { OrderDriver, Vehicle } from '../../api/types'
-import { telHref } from '../../utils/phone'
+import { haptics } from '../../telegram'
+import { copyText } from '../../utils/clipboard'
+import { formatKzPhone, normalizeContactPhone } from '../../utils/phone'
+import { toast } from '../ui'
 import KzPlate from './KzPlate.vue'
 
 const props = defineProps<{
@@ -38,6 +44,22 @@ const car = computed(() => {
   if (!v) return ''
   return [v.color, v.make, v.model].filter(Boolean).join(' ')
 })
+/** The phone the API shares while the order is active, when it is a complete number. */
+const phone = computed(() => (props.driver.phone ? normalizeContactPhone(props.driver.phone) : null))
+
+/** The tel: link starts the call itself (never prevented); this is only the tap feedback. */
+function onCall(): void {
+  haptics.impact('light')
+}
+
+async function copyPhone(): Promise<void> {
+  const p = phone.value
+  if (!p) return
+  if (await copyText(p)) {
+    haptics.selection()
+    toast.show(t('common.copied'))
+  } else toast.error(t('order.copy_failed'))
+}
 </script>
 
 <template>
@@ -53,6 +75,10 @@ const car = computed(() => {
       </p>
       <p v-if="car" class="ride-driver__car">{{ car }}</p>
       <KzPlate v-if="vehicle?.plate" :plate="vehicle.plate" size="small" class="ride-driver__plate" />
+      <button v-if="phone" type="button" class="ride-driver__phone" data-sheet-no-drag :aria-label="t('order.copy_driver_phone')" @click.stop="copyPhone">
+        <span class="jt-tabular">{{ formatKzPhone(phone) }}</span>
+        <Copy :size="13" :stroke-width="2" aria-hidden="true" />
+      </button>
     </div>
     <div class="ride-driver__visual" aria-hidden="true">
       <svg class="ride-driver__car-art" viewBox="0 0 132 56">
@@ -82,7 +108,7 @@ const car = computed(() => {
       <span class="ride-action__circle"><Share2 :size="24" :stroke-width="1.8" aria-hidden="true" /></span>
       <span class="ride-action__label">{{ t('order.share') }}</span>
     </button>
-    <a v-if="driver.phone" class="ride-action" :href="telHref(driver.phone)">
+    <a v-if="phone" class="ride-action" :href="`tel:${phone}`" target="_blank" rel="noopener noreferrer" data-sheet-no-drag @click.stop="onCall">
       <span class="ride-action__circle is-primary"><Phone :size="24" :stroke-width="2" aria-hidden="true" /></span>
       <span class="ride-action__label">{{ t('order.call_driver') }}</span>
     </a>
@@ -125,6 +151,27 @@ const car = computed(() => {
 
 .ride-driver__plate {
   margin-top: 6px;
+}
+
+.ride-driver__phone {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jt-space-1);
+  min-height: 24px;
+  margin-top: 4px;
+  font: var(--jt-font-subheadline);
+  color: var(--jt-color-label-secondary);
+  text-align: left;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.ride-driver__phone svg {
+  flex: none;
+}
+
+.ride-driver__phone:active {
+  opacity: var(--jt-opacity-pressed);
 }
 
 .ride-driver__visual {

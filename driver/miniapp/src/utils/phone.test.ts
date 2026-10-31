@@ -1,7 +1,7 @@
 // Shared with the other Mini App — keep both copies identical (make verify-shared).
 
 import { describe, expect, it } from 'vitest'
-import { formatKzPhone, formatKzPhoneInput, kzNationalDigits, normalizeContactPhone, normalizeKzPhone, telHref, whatsAppHref } from './phone'
+import { contactTelHref, formatKzPhone, formatKzPhoneInput, kzNationalDigits, normalizeContactPhone, normalizeKzPhone, telHref, whatsAppHref } from './phone'
 
 describe('KZ phone mask', () => {
   it.each([
@@ -53,11 +53,22 @@ describe('contact links', () => {
     ['+44 7700 900123', '+447700900123'],
   ])('uses the complete number for %j', (input, normalized) => {
     expect(normalizeContactPhone(input)).toBe(normalized)
+    expect(contactTelHref(input)).toBe(`tel:${normalized}`)
     expect(whatsAppHref(input)).toBe(`https://wa.me/${normalized.slice(1)}`)
   })
 
-  it.each(['', '+', '++77012345678', '+77012345678;123', '+77012345678 ext 9', '+77012345678@evil.example', '+077012345678', '70123', '770123456789', '+770123456789', '+7701234567', '+1234567890123456'])('rejects malformed or incomplete %j', (input) => {
+  it('opens a WhatsApp chat with the international digits only, never with a message', () => {
+    const href = whatsAppHref('+7 707 123 45 67')
+    expect(href).toBe('https://wa.me/77071234567')
+    const url = new URL(href!)
+    expect(url.pathname).toMatch(/^\/\d+$/)
+    expect(url.search).toBe('')
+    expect(url.hash).toBe('')
+  })
+
+  it.each(['', '+', '++77012345678', '+77012345678;123', '+77012345678 ext 9', '+77012345678@evil.example', '+077012345678', '70123', '770123456789', '+770123456789', '+7701234567', '+1234567890123456', 'tel:+77012345678', '+77012345678?body=hi'])('rejects malformed or incomplete %j', (input) => {
     expect(normalizeContactPhone(input)).toBeNull()
+    expect(contactTelHref(input)).toBeNull()
     expect(whatsAppHref(input)).toBeNull()
   })
 })

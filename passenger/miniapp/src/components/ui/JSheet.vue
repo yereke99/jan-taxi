@@ -12,8 +12,10 @@
     <number>   absolute occupied height in px
   Drag the grabber/header (or the content when not at the top snap) and
   release with velocity to move between snaps; at the top snap the content
-  scrolls natively. The footer slot stays pinned to the visible bottom edge,
-  above the keyboard, so a primary button is never hidden.
+  scrolls natively. Elements marked data-sheet-no-drag (contact buttons,
+  reorder handles) never start a drag, in the header or the content, so a
+  tap on them is never swallowed. The footer slot stays pinned to the
+  visible bottom edge, above the keyboard, so a primary button is never hidden.
 
   v-model:snap  current snap point
   @height       settled height in px measured from the viewport bottom
@@ -235,8 +237,10 @@ function onPointerDown(e: PointerEvent, fromContent: boolean): void {
   if (drag || (e.pointerType === 'mouse' && e.button !== 0)) return
   // At the top snap the content owns vertical gestures (native scrolling).
   if (fromContent && atTop.value) return
-  // Form controls keep their own gestures (text selection, sliders).
-  if (fromContent && (e.target as Element | null)?.closest('input, textarea, select, [data-sheet-no-drag]')) return
+  // Marked controls never start a drag: a tap that moves a few pixels would
+  // otherwise end as a drag whose click is swallowed (suppressNextClick).
+  // Form controls in the content keep their own gestures (text selection, sliders).
+  if ((e.target as Element | null)?.closest(fromContent ? 'input, textarea, select, [data-sheet-no-drag]' : '[data-sheet-no-drag]')) return
   drag = {
     pointerId: e.pointerId,
     startX: e.clientX,

@@ -90,14 +90,15 @@ describe('TripContacts', () => {
   const order = (passenger: unknown) =>
     normalizeDetail({ id: 'o1', number: 5, status: 'accepted', is_mine: true, category: 'taxi', recipient_phone: null, passenger })
 
-  it('calls the passenger when the phone was shared and links their Telegram chat', () => {
+  it('calls the passenger or opens WhatsApp when the phone was shared', () => {
     const w = mount(TripContacts, {
       props: { order: order({ first_name: 'Айгерім', phone: '+77017654321', phone_verified: true, telegram_username: 'aigerim_k', telegram_url: 'https://t.me/aigerim_k' }) },
       ...mountOpts(),
     })
     expect(w.text()).toContain('Айгерім')
     expect(w.find('a[href^="tel:"]').attributes('href')).toBe('tel:+77017654321')
-    expect(w.find('a[href="https://t.me/aigerim_k"]').exists()).toBe(true)
+    expect(w.find('a[href="https://wa.me/77017654321"]').attributes('aria-label')).toBe('Жолаушыға WhatsApp-та жазу')
+    expect(w.find('a[href="https://t.me/aigerim_k"]').exists()).toBe(false)
   })
 
   it('without a shared phone offers only the Telegram chat', () => {

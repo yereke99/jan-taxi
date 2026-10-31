@@ -1,16 +1,19 @@
 <!--
   Contacts on the driver's own active order (§22.4/§22.5): the passenger's
-  name, a call button with the phone when they shared it through Telegram,
-  and buttons that open WhatsApp or their Telegram chat; for parcels also the
-  recipient's phone. The API sends them only while the order is active.
+  name and phone (tap to copy it), and when they shared the phone through
+  Telegram a WhatsApp button and a call button, otherwise a button that opens
+  their Telegram chat in the same place; for parcels also the recipient's
+  phone. The API sends them only while the order is active. Call links open
+  in a new window, the form every Telegram client hands to the phone app
+  (see callPhone); the copyable number is the fallback where no call can start.
 -->
 <script setup lang="ts">
 import { Copy, MessageCircle, Phone } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DriverOrderDetail } from '../../api/types'
-import { copyText } from '../../composables/clipboard'
 import { haptics, openExternal, openTelegram } from '../../telegram'
+import { copyText } from '../../utils/clipboard'
 import { formatKzPhone, normalizeContactPhone, whatsAppHref } from '../../utils/phone'
 import { JListGroup, JListRow, toast } from '../ui'
 
@@ -44,6 +47,11 @@ async function copy(phone: string | null | undefined): Promise<void> {
   } else toast.error(t('trip.copy_failed'))
 }
 
+/** The tel: link starts the call itself (never prevented); this is only the tap feedback. */
+function onCall(): void {
+  haptics.impact('light')
+}
+
 function openWhatsApp(e: MouseEvent): void {
   const url = whatsapp.value
   if (!url) return
@@ -73,7 +81,23 @@ function openChat(e: MouseEvent): void {
       <template #accessory>
         <span class="contacts__actions" data-sheet-no-drag>
           <a
-            v-if="tgUrl"
+            v-if="whatsapp"
+            class="contacts__btn"
+            :href="whatsapp"
+            target="_blank"
+            rel="noopener noreferrer"
+            :aria-label="t('trip.whatsapp_passenger')"
+            :title="t('trip.whatsapp_passenger')"
+            @click.stop="openWhatsApp"
+          >
+            <svg class="contacts__whatsapp" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+              <path
+                d="M17.47 14.38c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.16-.17.2-.35.22-.64.07-.3-.15-1.26-.46-2.39-1.47-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.6.13-.14.3-.35.44-.52.15-.18.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.61-.92-2.2-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.21 3.07c.15.2 2.1 3.2 5.08 4.49.71.31 1.26.49 1.7.63.71.22 1.36.19 1.87.12.57-.09 1.76-.72 2-1.41.25-.7.25-1.29.18-1.41-.08-.13-.27-.2-.57-.35zM12.05 21.79h-.01a9.87 9.87 0 0 1-5.03-1.38l-.36-.21-3.74.98 1-3.65-.24-.37a9.86 9.86 0 0 1-1.51-5.26c0-5.45 4.44-9.89 9.89-9.89a9.82 9.82 0 0 1 6.99 2.9 9.82 9.82 0 0 1 2.89 6.99c0 5.45-4.44 9.89-9.88 9.89zm8.41-18.3A11.81 11.81 0 0 0 12.05 0C5.5 0 .16 5.34.16 11.89c0 2.1.55 4.14 1.59 5.95L.06 24l6.3-1.65a11.88 11.88 0 0 0 5.68 1.45h.01c6.55 0 11.89-5.34 11.89-11.89a11.82 11.82 0 0 0-3.48-8.41z"
+              />
+            </svg>
+          </a>
+          <a
+            v-else-if="tgUrl"
             class="contacts__btn"
             :href="tgUrl"
             target="_blank"
@@ -83,13 +107,7 @@ function openChat(e: MouseEvent): void {
           >
             <MessageCircle :size="20" :stroke-width="2.25" aria-hidden="true" />
           </a>
-          <a v-if="whatsapp" class="contacts__btn" :href="whatsapp" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.whatsapp_passenger')" :title="t('trip.whatsapp_passenger')" @click.stop="openWhatsApp">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 11.5a9 9 0 0 1-13.3 7.9L3 21l1.6-4.7A9 9 0 1 1 21 11.5Z" />
-              <path d="m9 7 1.5 3-1 1a10 10 0 0 0 3.5 3.5l1-1L17 15c-1 3-7 0-9-4-1-2-1-3 1-4Z" />
-            </svg>
-          </a>
-          <a v-if="passengerPhone" class="contacts__btn is-primary" :href="`tel:${passengerPhone}`" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.call_passenger')" @click.stop>
+          <a v-if="passengerPhone" class="contacts__btn is-primary" :href="`tel:${passengerPhone}`" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.call_passenger')" @click.stop="onCall">
             <Phone :size="20" :stroke-width="2.25" aria-hidden="true" />
           </a>
         </span>
@@ -101,7 +119,7 @@ function openChat(e: MouseEvent): void {
           <button type="button" class="contacts__btn" :aria-label="t('common.copy')" @click.stop="copy(recipientPhone)">
             <Copy :size="18" :stroke-width="2.25" aria-hidden="true" />
           </button>
-          <a class="contacts__btn is-primary" :href="`tel:${recipientPhone}`" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.call_recipient')" @click.stop>
+          <a class="contacts__btn is-primary" :href="`tel:${recipientPhone}`" target="_blank" rel="noopener noreferrer" :aria-label="t('trip.call_recipient')" @click.stop="onCall">
             <Phone :size="20" :stroke-width="2.25" aria-hidden="true" />
           </a>
         </span>

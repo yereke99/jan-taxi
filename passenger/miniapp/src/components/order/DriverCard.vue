@@ -8,7 +8,7 @@ import { Phone, Star } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { OrderDriver, Vehicle } from '../../api/types'
-import { telHref } from '../../utils/phone'
+import { contactTelHref } from '../../utils/phone'
 
 const props = defineProps<{
   driver: OrderDriver
@@ -29,6 +29,8 @@ const car = computed(() => {
   return v.color ? `${model}, ${v.color}` : model
 })
 const ratingText = computed(() => (props.driver.rating !== null ? props.driver.rating.toFixed(1) : null))
+/** Call link while the order is active, opened in a new window (see callPhone). */
+const callHref = computed(() => (props.contact && props.driver.phone ? contactTelHref(props.driver.phone) : null))
 </script>
 
 <template>
@@ -57,8 +59,8 @@ const ratingText = computed(() => (props.driver.rating !== null ? props.driver.r
     </div>
     <p v-if="car" class="driver__car">{{ car }}</p>
 
-    <div v-if="contact && driver.phone" class="driver__actions">
-      <a class="driver__action" :href="telHref(driver.phone)">
+    <div v-if="callHref" class="driver__actions">
+      <a class="driver__action" :href="callHref" target="_blank" rel="noopener noreferrer">
         <Phone :size="18" :stroke-width="2" aria-hidden="true" />
         <span>{{ t('order.call_driver') }}</span>
       </a>

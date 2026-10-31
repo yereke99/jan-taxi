@@ -45,15 +45,22 @@ export function openTelegram(url: string): boolean {
 }
 
 /**
- * Starts a phone call (tel: link, e.g. "112" or "+77011234567"). openLink
- * accepts only http(s), so this follows a tel: anchor, which Telegram's
- * WebViews hand to the phone app. Must be called from a user gesture.
+ * Starts a phone call (tel: link, e.g. "112" or "+77011234567"). Must be
+ * called from a user gesture. openLink accepts only http(s), so this follows
+ * a tel: anchor, and in a new window: Telegram for iOS lets its WebView load
+ * a same-window tel: link, which WKWebView cannot open, so the tap silently
+ * does nothing, while a new-window link goes to the system call prompt.
+ * Android hands tel: links to the dialer either way; Telegram Desktop passes
+ * new-window links to the operating system. Call buttons in templates use the
+ * same attributes (docs/TESTING.md §6).
  */
 export function callPhone(number: string): boolean {
   const digits = number.replace(/[^\d+]/g, '')
   if (!/^\+?\d{2,15}$/.test(digits)) return false
   const a = document.createElement('a')
   a.href = `tel:${digits}`
+  a.target = '_blank'
+  a.rel = 'noopener noreferrer'
   a.style.display = 'none'
   document.body.appendChild(a)
   a.click()

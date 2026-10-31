@@ -1,3 +1,5 @@
+// Shared with the other Mini App — keep both copies identical (make verify-shared).
+//
 // Copy text to the clipboard from a tap. The async Clipboard API is tried
 // first; older WebViews fall back to a temporary selection + execCommand.
 
@@ -10,8 +12,8 @@ export async function copyText(text: string): Promise<boolean> {
   } catch {
     // Permission denied or insecure context: use the fallback below.
   }
+  const el = document.createElement('textarea')
   try {
-    const el = document.createElement('textarea')
     el.value = text
     el.setAttribute('readonly', '')
     el.style.position = 'fixed'
@@ -20,10 +22,10 @@ export async function copyText(text: string): Promise<boolean> {
     document.body.appendChild(el)
     el.select()
     el.setSelectionRange(0, text.length)
-    const ok = document.execCommand('copy')
-    document.body.removeChild(el)
-    return ok
+    return document.execCommand('copy')
   } catch {
     return false
+  } finally {
+    el.remove()
   }
 }

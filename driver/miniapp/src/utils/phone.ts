@@ -58,7 +58,19 @@ export function normalizeContactPhone(input: string): string | null {
   return null
 }
 
-/** A private recipient-specific chat; this only opens the composer. */
+/**
+ * tel: link for a complete contact number, else null. Contact buttons open it
+ * in a new window (target="_blank"): see callPhone for why.
+ */
+export function contactTelHref(phone: string): string | null {
+  const normalized = normalizeContactPhone(phone)
+  return normalized ? `tel:${normalized}` : null
+}
+
+/**
+ * WhatsApp chat with the number: https://wa.me/<international digits>. It
+ * only opens the composer (no text parameter), so nothing is ever sent.
+ */
 export function whatsAppHref(phone: string): string | null {
   const normalized = normalizeContactPhone(phone)
   return normalized ? `https://wa.me/${normalized.slice(1)}` : null

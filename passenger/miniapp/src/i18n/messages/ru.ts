@@ -174,6 +174,8 @@ export const ru: PassengerMessages = {
     cancel: 'Отменить заказ',
     cancelled_toast: 'Заказ отменён',
     call_driver: 'Позвонить',
+    copy_driver_phone: 'Скопировать номер водителя',
+    copy_failed: 'Не удалось скопировать номер. Скопируйте его вручную.',
     arrives_in: 'Водитель приедет через {n} мин',
     searching_sent: 'Отправлено ближайшим водителям · {time}',
     safety: 'Безопасность',
