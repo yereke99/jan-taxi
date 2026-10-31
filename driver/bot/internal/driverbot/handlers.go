@@ -206,7 +206,7 @@ func (b *Bot) availabilityError(ctx context.Context, s *session, err error) erro
 }
 
 // orders lists up to five orders the driver can accept now, each with
-// «✅ Алу» and a button that opens it in the Mini App.
+// «✅ №N алу» and a button that opens it in the Mini App.
 func (b *Bot) orders(ctx context.Context, s *session) error {
 	if ok, err := b.requireApproved(ctx, s); !ok {
 		return err
@@ -485,7 +485,7 @@ func (b *Bot) languagePicker(ctx context.Context, s *session) error {
 	return b.send(ctx, s, s.t("pick_language"), runtime.Inline(languageRow()))
 }
 
-// onCallback handles inline button presses: «✅ Алу» on offers and the
+// onCallback handles inline button presses: «✅ Тапсырысты алу» on offers and the
 // language picker.
 func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) error {
 	if orderID, ok := strings.CutPrefix(q.Data, takePrefix); ok {

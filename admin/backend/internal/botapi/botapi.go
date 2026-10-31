@@ -51,7 +51,7 @@ type Options struct {
 	Receipts ReceiptIntake
 	// MaxReceiptBytes bounds one receipt (default DefaultMaxReceiptBytes).
 	MaxReceiptBytes int64
-	// ArrivalETA refines the arrival estimate after «Алу» (§22.6); nil
+	// ArrivalETA refines the arrival estimate after «Тапсырысты алу» (§22.6); nil
 	// keeps the straight-line estimate.
 	ArrivalETA *dispatch.ArrivalETA
 }

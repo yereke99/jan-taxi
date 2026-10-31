@@ -147,7 +147,7 @@ type Button struct {
 }
 
 // CallbackButton is an inline button that sends callback data to the bot
-// (e.g. «✅ Алу» → "take:<order_id>"). Data may use {{param}} placeholders;
+// (e.g. «✅ Тапсырысты алу» → "take:<order_id>"). Data may use {{param}} placeholders;
 // the result must match callbackDataRe (at most 64 bytes).
 type CallbackButton struct {
 	Label map[string]string `json:"label"`
@@ -375,9 +375,9 @@ var registry = buildRegistry([]*Template{
 		// they used (§22.4); the only message that carries the passenger's
 		// contact, revalidated against the assignment when it is sent.
 		Bodies: labels(
-			"✅ <b>Тапсырыс №{{order_number}} сізге бекітілді</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n📌 Нақтылау: {{pickup_details}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Алушының телефоны: {{recipient_phone}}",
-			"✅ <b>Заказ №{{order_number}} закреплён за вами</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n📌 Уточнение: {{pickup_details}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Телефон получателя: {{recipient_phone}}",
-			"✅ <b>Order #{{order_number}} is yours</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n📌 Details: {{pickup_details}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}\n🙋 Customer: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Phone: {{passenger_phone}}\n📦 Recipient's phone: {{recipient_phone}}"),
+			"✅ <b>Тапсырыс №{{order_number}} сізге бекітілді</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n📌 {{pickup_details}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Алушының телефоны: {{recipient_phone}}",
+			"✅ <b>Заказ №{{order_number}} закреплён за вами</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n📌 {{pickup_details}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Телефон получателя: {{recipient_phone}}",
+			"✅ <b>Order #{{order_number}} is yours</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n📌 {{pickup_details}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}\n🙋 Customer: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Phone: {{passenger_phone}}\n📦 Recipient's phone: {{recipient_phone}}"),
 		Button: btnOrder,
 	},
 	{

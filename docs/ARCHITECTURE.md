@@ -795,7 +795,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | POST | /internal/v1/driver/{tg_id}/availability | botapi | `{online}` same rules as the Mini App |
 | GET | /internal/v1/driver/{tg_id}/orders?limit= | botapi | available orders |
 | POST | /internal/v1/driver/{tg_id}/contact | botapi | `{phone, contact_user_id}`; verifies `contact_user_id == tg_id` |
-| POST | /internal/v1/driver/{tg_id}/orders/{id}/accept | botapi+dispatch | «✅ Алу» (§22.4): the same atomic accept as the Mini App → `{order, replayed, charged, wallet}`; 402/404/409/422 as the Mini App |
+| POST | /internal/v1/driver/{tg_id}/orders/{id}/accept | botapi+dispatch | «✅ Тапсырысты алу» (§22.4): the same atomic accept as the Mini App (`dispatch.AcceptOrder`) → `{order, replayed, charged, wallet}`; 402/404/409/422 as the Mini App |
 | POST | /internal/v1/passenger/{tg_id}/contact | botapi | `{phone, contact_user_id}` shared with the passenger bot (§22.5); verifies `contact_user_id == tg_id` |
 | POST | /internal/v1/driver/{tg_id}/location | botapi | `{lat, lon, accuracy_m?, live}` |
 | POST | /internal/v1/driver/{tg_id}/topup-receipt | botapi+payments | multipart `file` (Kaspi PDF) → `{outcome: credited\|pending_verification\|duplicate_rejected, reasons[], topup, balance}`; 409 `no_open_topup` / `receipt_already_used`, 413, 422, 429 (§6.1) |
@@ -1046,7 +1046,7 @@ offers) where they conflict.
   Skippable — then the driver only gets the Telegram link.
 
 ### 22.6 Passenger push when a driver takes the order (implement together with 22.4)
-- The moment an accept succeeds (Mini App or the bot «Алу»), the passenger receives a Telegram
+- The moment an accept succeeds (Mini App or the bot «Тапсырысты алу»), the passenger receives a Telegram
   message from the passenger bot (a push on the phone): the driver's **photo** (driver avatar sent with
   `sendPhoto`; upload the private file once per bot and cache the returned Telegram `file_id` in a new
   column), caption: driver name + rating, vehicle make/model/colour, **plate**, driver **phone**, and

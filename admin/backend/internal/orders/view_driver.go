@@ -112,7 +112,7 @@ func nextStopID(status string, list []stops.Stop) *uuid.UUID {
 }
 
 // DriverView is the driver view of orderID for driverID (GET
-// /driver/orders/{id}); the driver bot gets it after «Алу».
+// /driver/orders/{id}); the driver bot gets it after «Тапсырысты алу».
 func DriverView(ctx context.Context, q db.Querier, orderID, driverID uuid.UUID) (DriverOrderDetail, error) {
 	return driverOrder(ctx, q, orderID, driverID)
 }
