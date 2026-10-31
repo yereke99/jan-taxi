@@ -15,7 +15,7 @@ this file records what was found, why it happened and what changed.
 | IIN storage | Plain text column with a unique partial index; masked in the admin panel; never in passenger payloads, bot offers, snapshots or logs. |
 | Card button | Full-width green «Тапсырысты алу» at the bottom of every available-order card (customer's reference picture). |
 | Passenger phone | Only the driver who took the order receives it (existing privacy rule); offers carry the route, fare and comment. |
-| Kaspi | Server-side «Kaspi Платежи» intake keyed by the driver code, disabled until Kaspi grants access; PDF receipts keep working. |
+| Kaspi | No Kaspi bank integration (owner, 31.10.2026, final): top-ups stay as they were — Kaspi Pay link plus the Kaspi PDF receipt sent to the bot or the Mini App. |
 | Delivery | Commit and push to `origin/main`. |
 
 ## 2. Architecture touched
@@ -75,16 +75,64 @@ Registration, calls, passenger booking and Kaspi findings are in §5.
   the Mini App path is unaffected); `order.unavailable` fans out to every approved driver's
   socket (tiny payload, fine at the current scale).
 
-## 5. Parallel work items
+## 5. Other items of the customer's assignment
 
-The registration overhaul, the Kaspi Платежи intake, the call/WhatsApp fix and the passenger
-booking fixes were implemented and tested separately and merged afterwards; their findings,
-migrations and results are recorded in §6 and §7.
+| Item | Found (baseline) | Root cause | Change |
+|---|---|---|---|
+| Registration (customer 1) | Eight steps (personal data, phone, ID scans, class with seats and cargo, car, car photos, consent, review); every driver waited for a moderator or the document OCR worker. | Designed for manual document review. | Two pages: (1) profile photo, first name, surname, optional patronymic, IIN with its check digit, phone shared through Telegram → «Келесі»; (2) body type preset to Sedan, make and model, colour, plate, consent → «Тіркелуді аяқтау». Submission runs the automatic checks (IIN check digit, verified phone, IIN, phone and plate not held by another live driver) and approves in the same transaction; the app then takes a GPS fix, goes online and opens Orders. OCR worker, ID scans and car photos removed; drivers registered earlier add their IIN once from the profile. |
+| Calls (customer 5) | Driver → passenger and passenger → driver call buttons did nothing on iPhones. | Telegram for iOS lets its WebView load a same-window `tel:` link, which the WebView cannot open; the passenger buttons used same-window links, and a call button in a sheet header could start a sheet drag that swallowed the tap. | Every call button is a `tel:` link opened in a new window (handed to the phone app by every Telegram client); contact controls never start a sheet drag; the numbers are shown and copy on tap as the fallback. Device checklist: docs/TESTING.md §6. |
+| WhatsApp (owner) | The driver's passenger row had a chat-bubble button. | — | A WhatsApp button (`https://wa.me/<digits>`, opens the chat, sends nothing) when the passenger shared a phone; otherwise the Telegram chat button stays in that place. |
+| Manual pickup A (customer 2) | Only stops after A could be typed. | A must keep coordinates for dispatch by radius. | A typed address for A keeps the pin/GPS coordinates; drivers see the typed text. No schema change. |
+| Taxi price (customer 6) | After choosing the class the passenger still had to type the price on routes with a manual stop. | The fare was cleared for manual routes and a required input was shown. | Taxi orders always go at the chosen class price; the price input stays only for parcels and other deliveries. |
+| Kaspi (customer 7) | — | — | Not changed by the owner's final decision: PDF receipts as before. |
 
 ## 6. Database migrations
 
-To be completed with the merged registration and Kaspi changes.
+One new migration, `00013_simplified_registration.sql` (no Kaspi migration: the integration was
+cancelled):
 
-## 7. Verification
+* `driver_profiles.iin text` (NULL, twelve digits by a check constraint) and
+  `driver_profiles.patronymic text NOT NULL DEFAULT ''` (at most 60 characters);
+* unique partial index `driver_profiles_iin_unique` over the live statuses (pending, approved,
+  changes_requested, suspended), so a draft or a rejected profile never blocks an IIN.
 
-To be completed with the final test run.
+It only adds: no table rewrite (both columns are metadata-only on PostgreSQL 11+), no backfill, and
+the index is built over a column that is still empty. The `migrate` service applies it during
+`make up`, before the API starts. The down migration refuses to drop the columns once an IIN or a
+patronymic is stored. The tables of migration 00011 (the retired document OCR) stay with their rows;
+nothing writes to them any more. The previous release (`3e12d4d`) reads named columns only, so
+going back to its images after 00013 needs no down migration.
+
+## 7. Verification (31.10.2026)
+
+| Check | Result |
+|---|---|
+| `gofmt -l`, `go vet ./...` | clean |
+| `go test -race -count=1 ./...` (PostGIS 17 / 3.5) | 43 packages ok, 0 failures |
+| `JT_CHECK_OPENAPI=1 … TestRoutesDocumented\|TestSpecOperationsParser` | pass |
+| Driver Mini App: `vue-tsc`, vitest, lint, `vite build` | 516 tests passed, build ok |
+| Passenger Mini App: the same | 374 tests passed, build ok |
+| Admin panel: the same | 115 tests passed, build ok |
+| `verify-shared` | 85 shared files identical |
+| Upgrade through the Makefile, local Docker | see below |
+
+Upgrade check, run the way the server is updated: the previous release (`3e12d4d`) started with
+`make build` and `make up`, using an env file made from its `.env.example` with `VERIFICATION_*` /
+`OCR_*` lines and `COMPOSE_PROFILES=ocr` left in. Drivers were added in every status, and an
+`ocr-worker` container was created by the old compose file. Then the new tree was updated with
+`make preflight`, `make config`, `make build`, `make up` and `make health`:
+
+* The `migrate` service moved the schema from 12 to 13. The drivers kept their statuses, with an
+  empty IIN and patronymic. The 00011 tables are still there.
+* `/readyz` reported ready at schema 13, and both bots were healthy.
+* The old `ocr-worker` container was removed by `--remove-orphans`.
+* Against a stand-in Telegram API, `/start` worked as expected:
+  * an approved driver without an IIN got the work menu;
+  * a new user got the two-page registration text;
+  * a driver with requested corrections got the new correction text;
+  * the passenger bot sent its welcome.
+* The driver and passenger Mini Apps and the API were served through Caddy.
+* The bots reconnected on their own after the stand-in API was restarted.
+
+Not covered here: real Telegram clients (iOS, Android, Desktop). For calls, see the device checklist
+in docs/TESTING.md §6; registration checks on a phone are listed in the completion report.

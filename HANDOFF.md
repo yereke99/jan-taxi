@@ -1,11 +1,31 @@
-# Jan Taxi — Handoff (status as of 2026-10-19, night Asia/Aqtobe)
+# Jan Taxi — Handoff (status as of 2026-10-31, Asia/Aqtobe)
 
 This file tells the next engineer exactly what is done, what is verified,
 and what is left. Read `docs/ARCHITECTURE.md` first — it is the binding design contract
 (module boundaries, order state machine, money model, auth, realtime, endpoint catalogue §19,
 cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 
-## 0. Latest status (2026-10-19 night)
+## 0. Latest status (2026-10-31)
+
+Driver system overhaul after the customer's assignment of 30.10.2026; findings, root causes and
+changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
+
+- One atomic `dispatch.AcceptOrder` for the bot and the Mini App (order row locked first, replays
+  idempotent, commission charged once); a green «Тапсырысты алу» button on every available-order
+  card; bot offers with «✅ Тапсырысты алу» and «📱 Қосымшаны ашу».
+- Realtime: `drivers` WebSocket scope with `order.unavailable`, so a taken, cancelled or expired
+  order leaves every open list within about a second; `dispatch.OfferNearby` when a driver goes
+  online or gets a fresh fix; polling only as a fallback.
+- Commission hidden from drivers (offers, cards, order and trip screens, completion «Сапар сәтті
+  аяқталды», history); accounting unchanged.
+- Two-page registration with IIN (ЖСН) and automatic approval (migration **00013**); document OCR,
+  ID scans and car photos removed. Drivers registered earlier add the IIN once from the profile.
+- Calls open the phone app from Telegram on iOS too; WhatsApp button in the driver's passenger row;
+  typed pickup A; taxi orders always at the class price (price input only for deliveries).
+- Kaspi: no bank integration (owner, 31.10.2026); top-ups by Kaspi PDF receipt as before.
+- Deploy as before: `make build` and `make up` (the migrate service applies 00013; no `.env` change).
+
+## 0.0 Previous status (2026-10-19 night)
 
 - Done (owner bug reports, ARCHITECTURE §3 and §22.8):
   - Passenger class choice: every new booking starts on the first (cheapest fitting) class; an old
@@ -56,7 +76,7 @@ cross-package Go APIs §20, iOS 26 design system §15/§15.1).
   Photon reverse lookups sometimes time out (pickup then reads «Картадағы нүкте» and the locality
   may be `null`) — production needs a self-hosted Photon.
 
-## 0.0 Previous status (2026-10-19 evening)
+## 0.1 Previous status (2026-10-19 evening)
 
 - Done: ARCHITECTURE §21 vehicle classes and §22 business rules v2 (500 ₸ welcome bonus once per
   phone and plate, fixed 50 ₸ commission charged at acceptance and kept on passenger cancel,
@@ -79,7 +99,7 @@ cross-package Go APIs §20, iOS 26 design system §15/§15.1).
   get one low-balance message per day); a driver whose status changes while the app is open
   learns it from the realtime `driver.status_changed` event only.
 
-## 0.1 Previous status (2026-10-17 night)
+## 0.2 Previous status (2026-10-17 night)
 
 - Done since the previous pause: Kaspi PDF receipts end to end (parser verified against a real receipt: number, amount, seller BIN, date; reused receipts rejected; edited PDFs flagged; automatic crediting when every check passes; driver bot accepts PDFs); bot polling recovers after network drops and menu buttons refresh on start; driver app onboarding/GPS/top-up fixes; passenger trip flow fixes; admin moderation, receipt review with inline PDF, dispatch and payee settings.
 - Interrupted: the integration run (full test suites, live redeploy, end-to-end smoke, adversarial review). Re-run before release: `gofmt -l`, `go vet ./...`, `go test -race ./...`, `pnpm -r typecheck lint test build`, `node passenger/miniapp/scripts/verify-shared.mjs`.
@@ -97,7 +117,7 @@ cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 | `admin/backend/cmd/api` | Central Go API binary: `api serve`, `api migrate up\|status`, `api admin create`, `api healthcheck` |
 | `admin/backend/cmd/devlink` | Dev tool: prints locally signed Telegram Mini App URLs (no real Telegram needed) |
 | `admin/backend/internal/*` | Domain packages: auth, users, cities, settings, audit, realtime, notifications, wallets, routing, pricing, orders(+lifecycle), dispatch, stops, drivers, vehicles, moderation, payments, reports, botapi, app (wiring), platform/* |
-| `admin/backend/migrations` | goose SQL migrations 00001–00009 (schema, Kazakhstan boundary, seed for Embi, driver consent, retention indexes, Kaspi receipts + payee seed, vehicle classes, business rules, nationwide region KAZ + locality) |
+| `admin/backend/migrations` | goose SQL migrations 00001–00013 (schema, Kazakhstan boundary, seed for Embi, driver consent, retention indexes, Kaspi receipts + payee seed, vehicle classes, business rules, nationwide region KAZ + locality; 00010 manual destinations (a typed last stop without coordinates), 00011 driver verification (document-check tables and ID PDFs; the check was retired on 2026-10-31, rows kept), 00012 manual intermediate stops, 00013 simplified registration (`driver_profiles.iin` with a partial unique index over live statuses, `patronymic`)) |
 | `admin/backend/api/openapi.yaml` | OpenAPI 3.1 contract (served at `/api/v1/openapi.yaml`) |
 | `admin/backend/pkg/telegram` | Bot API client (used by API notification worker and both bots) |
 | `admin/backend/pkg/botapi` (+`/runtime`) | Internal-API client + shared long-polling bot runtime |
@@ -109,13 +129,14 @@ cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 
 ## 2. Verified state (commands actually run, all green)
 
-- Go: `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` → **37 packages ok, 0 failures**
+- Go (2026-10-31): `gofmt -l`, `go vet ./...`, `go test -race -count=1 ./...` → **43 packages ok, 0 failures**
   (needs a PostGIS on `localhost:55432`; see §5). Includes:
   - 50 drivers accepting one order concurrently over real HTTP → exactly one winner, 49 × `409 order_already_taken`,
     one reservation, one ledger reserve row (`admin/backend/internal/orders/concurrency_test.go`).
   - Commission charged exactly once under concurrent completes; wallet ledger reconciliation; idempotent top-up credit;
     duplicate Kaspi transaction id rejected; phone/plate uniqueness; geofence (Kazakhstan in, Orenburg/Tashkent/Bishkek out).
-- Frontend: `pnpm -r typecheck` clean; `pnpm -r test` → passenger 206, driver 249, admin 61 tests passing.
+- Frontend (2026-10-31): `vue-tsc` clean, lint and `vite build` ok; vitest → driver 516, passenger 374, admin 115
+  tests passing; `verify-shared` → 85 identical shared files.
 - Migrations apply cleanly on PostGIS 3.5 / PostgreSQL 17.
 
 ## 3. In progress when this file was written
@@ -140,8 +161,8 @@ If these did not finish, redo them (see §4.1 and §4.2).
    `JT_CHECK_OPENAPI=1 go test -count=1 -run TestRoutesDocumented ./admin/backend/internal/app` and
    `npx @redocly/cli@1 lint admin/backend/api/openapi.yaml`. First check the YAML is still valid.
 4. **Cross-system end-to-end suite** in `admin/backend/tests/` (not written yet; package-level e2e tests exist,
-   e.g. `orders/app_e2e_test.go`). Scenarios to cover: full golden path (passenger order → driver registration with
-   uploads → contact verification via internal API → corrections → approval → Kaspi top-up confirmed by admin →
+   e.g. `orders/app_e2e_test.go`). Scenarios to cover: full golden path (passenger order → two-page driver
+   registration → contact verification via internal API → automatic approval → Kaspi top-up confirmed by admin →
    online → accept → arriving → start → stops in order → complete → 10% commission charged once), notifications
    delivered to a fake Bot API with `web_app` buttons, WebSocket events, bots in-process against a fake Telegram.
 5. **Real Telegram testing** (cannot be done without real bots): fullscreen/expand on iOS, Android, Desktop;
@@ -157,7 +178,8 @@ If these did not finish, redo them (see §4.1 and §4.2).
    and access to Kaspi Pay sales history for manual reconciliation; OSRM Kazakhstan data prep
    (`make osrm-prepare`, ~4 GB RAM); self-hosted Photon geocoder (public instances are dev-only);
    strong `SESSION_SECRET` / `INTERNAL_BOT_SERVICE_SECRET`; first admin via `api admin create`.
-9. **Data retention**: purge policy/job for driver ID-document images after verification (Law 94-V) — business decision needed.
+9. **Data retention**: purge policy/job for the driver ID-document images and vehicle photos kept from before
+   2026-10-31 (no new ones are collected) and for the IIN of drivers who left (Law 94-V) — business decision needed.
 
 ## 5. How to run locally
 
