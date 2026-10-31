@@ -61,13 +61,22 @@ func Cancel(ctx context.Context, tx pgx.Tx, in CancelInput) (CancelResult, error
 	if res.OfferedDrivers, err = CloseOpenOffers(ctx, tx, in.OrderID, offerStatus, uuid.Nil); err != nil {
 		return CancelResult{}, err
 	}
-	if err := CloseOfferMessages(ctx, tx, in.OrderID, res.OfferedDrivers, OfferMessageCancelled); err != nil {
+	message := OfferMessageCancelled
+	if offerStatus == OfferExpired {
+		message = OfferMessageExpired
+	}
+	if err := CloseOfferMessages(ctx, tx, in.OrderID, res.OfferedDrivers, message); err != nil {
 		return CancelResult{}, err
 	}
 	data := EventData(after, map[string]any{"cancelled_by": in.Actor.Type})
 	scopes := append(PartyScopes(after), DriverScopes(res.OfferedDrivers)...)
 	if err := Publish(ctx, tx, realtime.OrderCancelled, data, scopes...); err != nil {
 		return CancelResult{}, err
+	}
+	if before.Status == StatusSearching {
+		if err := PublishUnavailable(ctx, tx, after); err != nil {
+			return CancelResult{}, err
+		}
 	}
 	if after.DriverID != nil && res.Released > 0 {
 		if err := PublishWallet(ctx, tx, *after.DriverID, after.ID, "commission_release"); err != nil {

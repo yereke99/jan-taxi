@@ -191,6 +191,32 @@ type outboxRow struct {
 	createdAt   time.Time
 }
 
+// offerStillOpen reports whether an order offer (order_available_driver) may
+// still be sent: its order is searching and the driver's offer, if recorded,
+// is still open. A row claimed just before the order was taken, cancelled or
+// expired (or retried later) is dropped instead of reaching the driver as a
+// fresh offer. Other rows, and a failed check, are always sent: the accept
+// button is re-checked by the server anyway.
+func (w *Worker) offerStillOpen(ctx context.Context, m outboxRow) bool {
+	if m.kind != "send" || m.template != TplOrderAvailableDriver || m.userID == nil {
+		return true
+	}
+	orderID, err := uuid.Parse(fmt.Sprint(m.params["order_id"]))
+	if err != nil {
+		return true
+	}
+	var open bool
+	err = w.pool.QueryRow(ctx, `
+		SELECT o.status = 'searching' AND COALESCE((
+		         SELECT f.status = 'sent' FROM order_offers f JOIN driver_profiles d ON d.id = f.driver_id
+		         WHERE f.order_id = o.id AND d.user_id = $2), true)
+		FROM orders o WHERE o.id = $1`, orderID, *m.userID).Scan(&open)
+	if err != nil {
+		return true // no such order (or a failed check): send as before
+	}
+	return open
+}
+
 // editTarget is the original message of an edit row.
 type editTarget struct {
 	status    string
@@ -463,6 +489,11 @@ func (w *Worker) deliver(ctx context.Context, m outboxRow, msg Message, target *
 		w.reschedule(ctx, m, 0)
 		return
 	}
+	if !w.offerStillOpen(ctx, m) {
+		w.finish(ctx, m, now, outcome{kind: "fatal", status: StatusCancelled, errText: "offer superseded: the order is no longer searching"})
+		return
+	}
+
 	sctx, cancel := context.WithTimeout(ctx, w.opt.SendTimeout)
 	recipientTx, authErr := w.lockContactOrder(sctx, m)
 	if authErr == nil && recipientTx == nil {

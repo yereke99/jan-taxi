@@ -61,3 +61,15 @@ func TestErrors(t *testing.T) {
 		t.Error("accept errors")
 	}
 }
+
+// TestViaTextKeepsOrderAndHidesCoordinates: intermediate stops are joined in
+// route order; a stop with no address or bare coordinates is the placeholder.
+func TestViaTextKeepsOrderAndHidesCoordinates(t *testing.T) {
+	r := Route{Via: []string{"Базар", "", "48.826400, 58.144200", "Мектеп №3"}}
+	if got := r.ViaText("…"); got != "Базар → … → … → Мектеп №3" {
+		t.Fatalf("via = %q", got)
+	}
+	if got := (Route{}).ViaText("…"); got != "" {
+		t.Fatalf("no stops = %q", got)
+	}
+}

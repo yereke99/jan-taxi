@@ -3,6 +3,7 @@ package drivers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"sync"
@@ -13,10 +14,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
+	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 )
 
 // Location sources (driver_locations.source).
@@ -72,7 +75,9 @@ func (in LocationInput) validate(now time.Time) error {
 // order, the trip track. It publishes driver.location_updated to the order's
 // passenger and the admin panel at most every 3 seconds per driver. The point
 // must be inside Kazakhstan (422 outside_service_area); only approved drivers
-// report locations (403 driver_not_approved).
+// report locations (403 driver_not_approved). A free online driver whose
+// previous fix was missing or too old to dispatch on is offered the orders
+// already waiting nearby right after the commit (dispatch.OfferNearby).
 func RecordLocation(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID, in LocationInput, source string) error {
 	switch source {
 	case SourceMiniApp, SourceBotLive, SourceBotStatic:
@@ -90,10 +95,12 @@ func RecordLocation(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID,
 	if err := geo.RequireInServiceArea(ctx, pool, "location", pt); err != nil {
 		return err
 	}
-	return db.WithTx(ctx, pool, func(tx pgx.Tx) error {
+	becameFresh := false
+	err := db.WithTx(ctx, pool, func(tx pgx.Tx) error {
 		var (
 			status string
 			online bool
+			prevAt *time.Time
 		)
 		err := tx.QueryRow(ctx, `
 			UPDATE driver_profiles SET last_heartbeat_at = now() WHERE id = $1 RETURNING status, is_online`, driverID).
@@ -107,6 +114,10 @@ func RecordLocation(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID,
 		if status != StatusApproved {
 			return httpx.NewError(http.StatusForbidden, "driver_not_approved", "driver is not approved").
 				WithDetails(map[string]any{"status": status})
+		}
+		if err := tx.QueryRow(ctx, `SELECT recorded_at FROM driver_locations WHERE driver_id = $1`, driverID).
+			Scan(&prevAt); err != nil && !db.IsNoRows(err) {
+			return fmt.Errorf("drivers: previous location: %w", err)
 		}
 		var stored bool
 		err = tx.QueryRow(ctx, `
@@ -128,6 +139,8 @@ func RecordLocation(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID,
 		if err != nil {
 			return err
 		}
+		maxAge := time.Duration(settings.Dispatch(ctx, tx).LocationMaxAgeS) * time.Second
+		becameFresh = online && !active && (prevAt == nil || now.Sub(*prevAt) > maxAge)
 		if active {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO driver_location_history (driver_id, order_id, lat, lon, accuracy_m, source, recorded_at)
@@ -155,6 +168,19 @@ func RecordLocation(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID,
 		}
 		return realtime.Publish(ctx, tx, realtime.Event{Type: realtime.DriverLocationUpdated, Scopes: scopes, Data: data})
 	})
+	if err == nil && becameFresh {
+		offerNearby(ctx, pool, driverID)
+	}
+	return err
+}
+
+// offerNearby offers the orders waiting around a driver who just became
+// dispatchable; a failure only delays the offers to the next dispatch_expand
+// run, so it is logged, not returned.
+func offerNearby(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID) {
+	if _, err := dispatch.OfferNearby(ctx, pool, driverID); err != nil {
+		httpx.Logger(ctx).Warn("offering nearby orders failed", slog.String("driver_id", driverID.String()), slog.Any("err", err))
+	}
 }
 
 // eventThrottle limits location events per driver within this process.

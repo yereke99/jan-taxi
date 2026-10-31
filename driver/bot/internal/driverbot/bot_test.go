@@ -83,6 +83,27 @@ func (e *env) text(t *testing.T, text string) []map[string]any {
 }
 
 // msgText returns a message text with no-break spaces (money, distances) as
+// TestOrdersListManualRoute: an order with a manually typed stop has no
+// route length; the list leaves the line out instead of printing "0 м".
+func TestOrdersListManualRoute(t *testing.T) {
+	e := newEnv(t)
+	e.approved(true)
+	e.api.Handle("GET "+tgPath+"/orders", func(map[string]any, string) (int, any) {
+		return 200, map[string]any{"eligibility": map[string]any{"eligible": true, "reason": nil}, "items": []any{
+			map[string]any{"id": orderID, "number": 1043, "category": "taxi", "fare": 400, "currency": "KZT", "commission_amount": 50,
+				"distance_m": nil, "duration_s": nil, "distance_to_pickup_m": 20, "stop_count": 2,
+				"stops": []any{
+					map[string]any{"seq": 0, "kind": "pickup", "lat": 45.5, "lon": 64.1, "address": "Әйтеке би көшесі, 14"},
+					map[string]any{"seq": 1, "kind": "destination", "lat": nil, "lon": nil, "address": "үйге"},
+				}},
+		}}
+	})
+	text := msgText(e.text(t, "📋 Тапсырыстар")[0])
+	if strings.Contains(text, "Маршрут") || !strings.Contains(text, "Қайда: үйге") {
+		t.Fatalf("manual route card: %q", text)
+	}
+}
+
 // plain spaces.
 func msgText(m map[string]any) string { return strings.ReplaceAll(bottest.Text(m), "\u00a0", " ") }
 
@@ -449,16 +470,20 @@ func TestOrdersList(t *testing.T) {
 	msgs := e.text(t, "📋 Тапсырыстар")
 	text := msgText(msgs[0])
 	for _, want := range []string{"<b>№1042</b> · Сәлемдеме · <b>1 500 ₸</b>", "Қайдан: Ембі &amp; вокзал", "Қайда: Картадағы нүкте",
-		"Аралық аялдамалар: 1", "Алу нүктесіне дейін: 650 м", "Маршрут: 1,8 км · Комиссия: 150 ₸", "Жүк: Құжаттар &lt;конверт&gt;"} {
+		"Аралық аялдамалар: 1", "Алу нүктесіне дейін: 650 м", "Маршрут: 1,8 км", "Жүк: Құжаттар &lt;конверт&gt;"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("orders text %q lacks %q", text, want)
 		}
+	}
+	// Drivers see the fare only, never the commission.
+	if strings.Contains(text, "Комиссия") || strings.Contains(text, "150 ₸") {
+		t.Fatalf("orders text shows the commission: %q", text)
 	}
 	if strings.Contains(text, "recipient") {
 		t.Fatal("contact data in an order card")
 	}
 	b := bottest.InlineButtons(msgs[0])
-	if len(b) != 3 || b[0]["callback_data"] != "take:"+orderID || b[0]["text"] != "✅ №1042 алу" ||
+	if len(b) != 3 || b[0]["callback_data"] != "take:"+orderID || b[0]["text"] != "✅ №1042 алу" || b[1]["text"] != "📱 Ашу" ||
 		bottest.WebAppURL(b[1]) != appURL+"?startapp=order_"+orderID || bottest.WebAppURL(b[2]) != appURL+"?startapp=orders" {
 		t.Fatalf("order buttons: %v", b)
 	}

@@ -20,6 +20,8 @@ var architectureKeys = []string{
 	// Business rules v2 (§22): the welcome bonus and the offer edits, which
 	// replace the separate order_taken_driver message.
 	"driver_welcome_bonus", "order_offer_won", "order_offer_taken", "order_offer_cancelled",
+	// Owner, 2026-10-31: an expired search is not called a cancellation.
+	"order_offer_expired",
 	// Admin controls (§22.7): a bonus credited by an operator.
 	"driver_bonus_granted",
 }
@@ -183,9 +185,12 @@ func TestRenderEscapesParams(t *testing.T) {
 	for _, want := range []string{
 		"&lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt; &amp; co",
 		"Ембі базар &lt;b&gt;",
-		"<b>Жаңа тапсырыс №1042</b>\nСәлемдеме · Седан",
-		"<b>1" + nbsp + "500" + nbsp + "₸</b> · Қолма-қол",
-		"Маршрут: 5,4" + nbsp + "км · ~12" + nbsp + "мин",
+		"🚕 <b>Жаңа тапсырыс №1042</b> · Сәлемдеме",
+		"💰 Бағасы: <b>1" + nbsp + "500" + nbsp + "₸</b> · Қолма-қол",
+		"📍 Қайдан (A): ",
+		"🏁 Қайда (B): ",
+		"🗺 Маршрут: 5,4" + nbsp + "км · ~12" + nbsp + "мин",
+		"🚗 Көлік: Седан",
 	} {
 		if !strings.Contains(msg.Text, want) {
 			t.Errorf("text %q does not contain %q", msg.Text, want)
@@ -197,14 +202,17 @@ func TestRenderEscapesParams(t *testing.T) {
 	if strings.Contains(msg.Text, "Аялдамалар") || strings.Contains(msg.Text, "Жолаушылар") || strings.Contains(msg.Text, "A нүктесіне") {
 		t.Fatalf("lines of absent optional params kept: %s", msg.Text)
 	}
+	if strings.Contains(strings.ToLower(msg.Text), "комиссия") {
+		t.Fatalf("offer shows the commission: %s", msg.Text)
+	}
 	if msg.Markup == nil || len(msg.Markup.InlineKeyboard) != 2 || len(msg.Markup.InlineKeyboard[0]) != 1 {
 		t.Fatalf("markup = %+v", msg.Markup)
 	}
-	if take := msg.Markup.InlineKeyboard[0][0]; take.Text != "✅ Алу" || take.CallbackData != "take:"+orderID.String() {
+	if take := msg.Markup.InlineKeyboard[0][0]; take.Text != "✅ Тапсырысты алу" || take.CallbackData != "take:"+orderID.String() {
 		t.Fatalf("take button = %+v", take)
 	}
 	btn := msg.Markup.InlineKeyboard[1][0]
-	if btn.Text != "🗺 Картада ашу" || btn.WebApp == nil {
+	if btn.Text != "📱 Қосымшаны ашу" || btn.WebApp == nil {
 		t.Fatalf("button = %+v", btn)
 	}
 	if want := "https://app.example.kz/driver/?startapp=order_" + orderID.String(); btn.WebApp.URL != want {
@@ -215,10 +223,24 @@ func TestRenderEscapesParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Without a Mini App URL only «Взять» remains.
-	if !strings.Contains(ru.Text, "Новый заказ №1042</b>\nПосылка · Седан") || ru.Markup == nil ||
-		len(ru.Markup.InlineKeyboard) != 1 || ru.Markup.InlineKeyboard[0][0].Text != "✅ Взять" {
+	// Without a Mini App URL only «Забрать заказ» remains.
+	if !strings.Contains(ru.Text, "Новый заказ №1042</b> · Посылка") || ru.Markup == nil ||
+		len(ru.Markup.InlineKeyboard) != 1 || ru.Markup.InlineKeyboard[0][0].Text != "✅ Забрать заказ" {
 		t.Fatalf("ru render = %q markup=%v", ru.Text, ru.Markup)
+	}
+	en, err := tpl.Render(LangEN, tpl.DefaultBody(LangEN), params, "https://app.example.kz/driver/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kb := en.Markup.InlineKeyboard; kb[0][0].Text != "✅ Accept order" || kb[1][0].Text != "📱 Open Mini App" {
+		t.Fatalf("en buttons = %+v", kb)
+	}
+	ru, err = tpl.Render(LangRU, tpl.DefaultBody(LangRU), params, "https://app.example.kz/driver/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kb := ru.Markup.InlineKeyboard; kb[1][0].Text != "📱 Открыть мини-приложение" {
+		t.Fatalf("ru open button = %+v", kb)
 	}
 }
 
@@ -226,23 +248,33 @@ func TestRenderOfferOptionalLinesAndPlaces(t *testing.T) {
 	tpl, _ := Lookup(TplOrderAvailableDriver)
 	p := offerParams(uuid.New())
 	p["category"], p["pickup"], p["destination"] = "taxi", "", "48.826400, 58.144200"
-	p["via"], p["pickup_distance"], p["passengers"], p["comment"], p["commission"] = "Базар → Мектеп", 850, 3, "2-подъезд", 50
+	p["via"], p["pickup_distance"], p["passengers"], p["comment"] = "Базар → Мектеп", 850, 3, "2-подъезд"
 	en, err := tpl.Render(LangEN, tpl.DefaultBody(LangEN), p, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"From: Point on the map", "To: Point on the map", "Stops: Базар → Мектеп", "To pickup: 850" + nbsp + "m",
-		"Route: 5.4" + nbsp + "km · ~12" + nbsp + "min", "Passengers: 3", "Comment: 2-подъезд",
-		"Commission: 50" + nbsp + "₸ (charged when you take it)", "Taxi · Sedan",
+		"📍 Pickup (A): Point on the map", "🏁 Destination (B): Point on the map", "🛣 Stops: Базар → Мектеп",
+		"🧭 To pickup: 850" + nbsp + "m", "🗺 Route: 5.4" + nbsp + "km · ~12" + nbsp + "min", "👤 Passengers: 3",
+		"📝 Comment: 2-подъезд", "🚗 Vehicle: Sedan", "🚕 <b>New order #1042</b> · Taxi",
 	} {
 		if !strings.Contains(en.Text, want) {
 			t.Errorf("text %q does not contain %q", en.Text, want)
 		}
 	}
-	if strings.Contains(en.Text, "48.82") || strings.Contains(en.Text, "Cargo") {
-		t.Fatalf("coordinates or cargo lines shown: %s", en.Text)
+	if strings.Contains(en.Text, "48.82") || strings.Contains(en.Text, "Cargo") || strings.Contains(en.Text, "Commission") {
+		t.Fatalf("coordinates, cargo or commission lines shown: %s", en.Text)
 	}
+	// The stops keep their route order: A, then every intermediate stop, then B.
+	if a, via, b := strings.Index(en.Text, "Pickup (A)"), strings.Index(en.Text, "Stops:"), strings.Index(en.Text, "Destination (B)"); !(a < via && via < b) {
+		t.Fatalf("route order: %s", en.Text)
+	}
+	// The commission is no offer param any more: nobody can pass it in.
+	p["commission"] = 50
+	if err := tpl.ValidateParams(p); err == nil {
+		t.Fatal("commission accepted as an offer param")
+	}
+	delete(p, "commission")
 	p["vehicle_class"] = "Sedan"
 	if err := tpl.ValidateParams(p); err == nil {
 		t.Fatal("a plain string accepted as a localized class name")
@@ -276,7 +308,7 @@ func TestRenderTripCardLink(t *testing.T) {
 	orderID := uuid.New()
 	p := map[string]any{"order_id": orderID.String(), "order_number": 7, "pickup": "Абай 1", "destination": "",
 		"fare": 1200, "payment_method": "bank_transfer", "passenger_name": "Айгүл <3",
-		"passenger_link": "tg://user?id=42", "commission": 50}
+		"passenger_link": "tg://user?id=42"}
 	msg, err := tpl.Render(LangKK, tpl.DefaultBody(LangKK), p, "https://app.example.kz/driver/")
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +355,7 @@ func TestRenderDropsLinesOfEmptyOptionalParams(t *testing.T) {
 	}
 	base["refunded"] = 50
 	msg, err = tpl.Render(LangKK, tpl.DefaultBody(LangKK), base, "")
-	if err != nil || !strings.HasSuffix(msg.Text, "\nКомиссия қайтарылды: 50"+nbsp+"₸") {
+	if err != nil || !strings.HasSuffix(msg.Text, "\nБалансқа қайтарылды: 50"+nbsp+"₸") {
 		t.Fatalf("refund line: %q %v", msg.Text, err)
 	}
 }
@@ -532,9 +564,9 @@ func TestRenderLocalityLine(t *testing.T) {
 	p := offerParams(uuid.New())
 	p["locality"] = "Алматы"
 	for lang, want := range map[string]string{
-		LangKK: "Сәлемдеме · Седан\n📍 Алматы\nҚайдан:",
-		LangRU: "Посылка · Седан\n📍 Алматы\nОткуда:",
-		LangEN: "Parcel · Sedan\n📍 Алматы\nFrom:",
+		LangKK: "</b> · Қолма-қол\n🏙 Алматы\n📍 Қайдан (A):",
+		LangRU: "</b> · Наличные\n🏙 Алматы\n📍 Откуда (A):",
+		LangEN: "</b> · Cash\n🏙 Алматы\n📍 Pickup (A):",
 	} {
 		msg, err := offer.Render(lang, offer.DefaultBody(lang), p, "")
 		if err != nil {
@@ -546,19 +578,49 @@ func TestRenderLocalityLine(t *testing.T) {
 	}
 	delete(p, "locality")
 	msg, err := offer.Render(LangKK, offer.DefaultBody(LangKK), p, "")
-	if err != nil || strings.Contains(msg.Text, "📍") {
+	if err != nil || strings.Contains(msg.Text, "🏙") {
 		t.Fatalf("offer without locality: %q %v", msg.Text, err)
 	}
 
 	trip, _ := Lookup(TplOrderAcceptedDriver)
 	tp := map[string]any{"order_id": uuid.NewString(), "order_number": 7, "pickup": "Абай 1", "destination": "Базар",
 		"fare": 1200, "payment_method": "cash", "passenger_name": "Айгүл", "passenger_link": "tg://user?id=42",
-		"commission": 50, "locality": "Ақтөбе <қ>"}
+		"locality": "Ақтөбе <қ>"}
 	msg, err = trip.Render(LangKK, trip.DefaultBody(LangKK), tp, "")
-	if err != nil || !strings.Contains(msg.Text, "</b>\n📍 Ақтөбе &lt;қ&gt;\nҚайдан: Абай 1") {
+	if err != nil || !strings.Contains(msg.Text, "\n🏙 Ақтөбе &lt;қ&gt;\n📍 Қайдан (A): Абай 1") {
 		t.Fatalf("trip card: %q %v", msg.Text, err)
 	}
 	if err := ValidateHTML(msg.Text); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRenderFullTripCard: the trip card of the driver who took the order
+// lists the whole route in order, the class, the load and the comment,
+// then how to reach the passenger — and never a commission.
+func TestRenderFullTripCard(t *testing.T) {
+	trip, _ := Lookup(TplOrderAcceptedDriver)
+	tp := map[string]any{
+		"order_id": uuid.NewString(), "order_number": 7, "category": "taxi",
+		"vehicle_class":  map[string]any{"kk": "Седан", "ru": "Седан", "en": "Sedan"},
+		"pickup":         "Абай 1",
+		"pickup_details": "2-кіреберіс",
+		"via":            "Мектеп → Базар", "destination": "үйге", "fare": 400, "payment_method": "cash",
+		"passengers": 2, "comment": "қақпа көк", "passenger_name": "Айгүл", "passenger_link": "tg://user?id=42",
+		"passenger_phone": "+7 701 123 45 67",
+	}
+	msg, err := trip.Render(LangKK, trip.DefaultBody(LangKK), tp, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "✅ <b>Тапсырыс №7 сізге бекітілді</b>\n🚗 Такси · Седан\n💰 Бағасы: <b>400" + nbsp + "₸</b> · Қолма-қол\n" +
+		"📍 Қайдан (A): Абай 1\n📌 Нақтылау: 2-кіреберіс\n🛣 Аялдамалар: Мектеп → Базар\n🏁 Қайда (B): үйге\n👤 Жолаушылар: 2\n📝 Пікір: қақпа көк\n" +
+		`🙋 Клиент: <a href="tg://user?id=42">Айгүл</a>` + "\n📞 Телефон: +7 701 123 45 67"
+	if msg.Text != want {
+		t.Fatalf("trip card:\n%q\nwant\n%q", msg.Text, want)
+	}
+	tp["commission"] = 50
+	if err := trip.ValidateParams(tp); err == nil {
+		t.Fatal("commission accepted as a trip card param")
 	}
 }

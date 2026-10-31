@@ -10,6 +10,7 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 )
@@ -199,9 +200,6 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 	if locality != nil && *locality != "" {
 		params["locality"] = *locality
 	}
-	if o.CommissionAmount > 0 {
-		params["commission"] = o.CommissionAmount
-	}
 	if passengers != nil {
 		params["passengers"] = *passengers
 	}
@@ -215,6 +213,19 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 		params["comment"] = *comment
 	}
 	return params, nil
+}
+
+// HoldsOpenOffer reports whether driverID was offered orderID and the offer
+// is still open (neither taken, lost, cancelled nor expired).
+func HoldsOpenOffer(ctx context.Context, q db.Querier, orderID, driverID uuid.UUID) (bool, error) {
+	var held bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM order_offers WHERE order_id = $1 AND driver_id = $2 AND status = 'sent')`,
+		orderID, driverID).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("dispatch: open offer: %w", err)
+	}
+	return held, nil
 }
 
 // closeOffersOnAccept marks the winner's offer accepted (creating it when the

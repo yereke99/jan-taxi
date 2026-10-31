@@ -17,9 +17,9 @@ func almatyCard(locality any) map[string]any {
 		}}
 }
 
-// TestLocalityInOrderTexts: the offer list, the current trip and the card
-// after «Алу» name the settlement of the pickup («📍 Алматы»), never the
-// tariff region and never coordinates.
+// TestLocalityInOrderTexts: the offer list and the current trip name the
+// settlement of the pickup («📍 Алматы»), never the tariff region and never
+// coordinates (the trip card after acceptance comes from the API's outbox).
 func TestLocalityInOrderTexts(t *testing.T) {
 	e := newEnv(t)
 	e.approved(true)
@@ -52,14 +52,5 @@ func TestLocalityInOrderTexts(t *testing.T) {
 	e.api.Handle("GET "+tgPath+"/summary", func(map[string]any, string) (int, any) { return 200, summary })
 	if text := msgText(e.text(t, "/trip")[0]); !strings.Contains(text, "📍 Алматы\nҚайдан: Абай даңғылы, 10") {
 		t.Fatalf("trip %q", text)
-	}
-
-	result := acceptResult(false, map[string]any{"first_name": "Айгүл", "telegram_url": "https://t.me/aigul_kz"})
-	order := result["order"].(map[string]any)
-	order["locality"], order["tariff_region"] = "Алматы", kazRegion
-	e.api.Handle(acceptPath, func(map[string]any, string) (int, any) { return 200, result })
-	msgs := e.tapTake(t, "take:"+orderID)
-	if len(msgs) != 1 || !strings.Contains(msgText(msgs[0]), "Такси · Седан\n📍 Алматы\nҚайдан: Абай 1") {
-		t.Fatalf("trip card %v", msgs)
 	}
 }

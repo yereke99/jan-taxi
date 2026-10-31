@@ -212,3 +212,26 @@ func TestClientOwnTransportIsBounded(t *testing.T) {
 		t.Fatal("ResetConnections must replace the own client")
 	}
 }
+
+// TestRequestIDHeader: a request id put on the context reaches the API as
+// X-Request-ID (for joining bot and API logs); none is sent without one.
+func TestRequestIDHeader(t *testing.T) {
+	var got []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("X-Request-ID"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ctx := context.Background()
+	if err := c.ReportLocation(WithRequestID(ctx, "tg-cb-4242"), 77, LocationReport{Lat: 48.8, Lon: 58.1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ReportLocation(ctx, 77, LocationReport{Lat: 48.8, Lon: 58.1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ReportLocation(WithRequestID(ctx, strings.Repeat("x", 65)), 77, LocationReport{Lat: 48.8, Lon: 58.1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != "tg-cb-4242" || got[1] != "" || got[2] != "" {
+		t.Fatalf("request ids = %q", got)
+	}
+}

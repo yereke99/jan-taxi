@@ -14,14 +14,15 @@ import (
 // order_available_driver notification with the dedupe key OfferMessageKey;
 // when the order leaves the driver's hands the message is edited through the
 // outbox: «✅ Сіз алдыңыз» for the driver who got it, "taken" for the others,
-// "cancelled" when nobody will get it. An offer not sent yet is simply never
-// sent.
+// "cancelled" when the order was cancelled, "expired" when its search timed
+// out. An offer not sent yet is simply never sent.
 
 // Offer message outcomes.
 const (
 	OfferMessageWon       = "won"
 	OfferMessageTaken     = "taken"
 	OfferMessageCancelled = "cancelled"
+	OfferMessageExpired   = "expired"
 )
 
 // OfferMessageKey is the outbox dedupe key of driverID's offer of orderID.
@@ -30,7 +31,8 @@ func OfferMessageKey(orderID, driverID uuid.UUID) string {
 }
 
 // CloseOfferMessage queues the edit of driverID's offer message of orderID
-// for outcome (OfferMessageWon, OfferMessageTaken or OfferMessageCancelled).
+// for outcome (OfferMessageWon, OfferMessageTaken, OfferMessageCancelled or
+// OfferMessageExpired).
 // Drivers who never got an offer message are skipped.
 func CloseOfferMessage(ctx context.Context, q db.Querier, orderID, driverID uuid.UUID, outcome string) error {
 	e := notifications.Edit{
@@ -45,6 +47,8 @@ func CloseOfferMessage(ctx context.Context, q db.Querier, orderID, driverID uuid
 		e.Template = notifications.TplOrderOfferTaken
 	case OfferMessageCancelled:
 		e.Template = notifications.TplOrderOfferCancelled
+	case OfferMessageExpired:
+		e.Template = notifications.TplOrderOfferExpired
 	default:
 		return fmt.Errorf("orders: unknown offer outcome %q", outcome)
 	}

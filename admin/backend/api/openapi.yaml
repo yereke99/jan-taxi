@@ -1419,7 +1419,10 @@ paths:
       summary: Order detail for the driver
       description: |
         The driver's own order (any status), or a `searching` order the driver may accept right
-        now (`is_mine: false`, contact data and address details withheld). Anything else is `404`.
+        now (`is_mine: false`, contact data and address details withheld). A `searching` order the
+        driver was offered and whose offer is still open also opens while the driver cannot take
+        it at this moment (offline, stale location, low balance) — the bot's «📱 Қосымшаны ашу»
+        button leads here; accepting then returns the reason. Anything else is `404`.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       responses:
@@ -1452,12 +1455,16 @@ paths:
         driver's vehicle cannot take (its class does not serve `order.vehicle_class`, fewer seats
         than `passenger_count` or less cargo space than `cargo_volume_l`, ARCHITECTURE §21.4) and
         the driver's own passenger orders are `404`. Accepting an order the driver already
-        holds returns `200` unchanged. On success the order's commission (`commission_amount`,
+        holds returns `200` unchanged — also when the repeat arrives through the driver bot, and
+        concurrent repeats of the winner are serialised on the order row, so they never read as
+        `409 order_already_taken` or `402`. On success the order's commission (`commission_amount`,
         snapshotted at creation: `commission.fixed_amount` in `fixed` mode) is **charged** in the
         same transaction (ledger `commission_charge`, key `charge:<order_id>`; no reservation;
         never refunded when the passenger cancels, §22.2); the winner's offer is accepted and the
-        others lost, the other offered drivers get `order.taken` and their bot offer messages are
-        edited to "taken"; the passenger gets the "driver found" push with the driver's photo and
+        others lost, the other offered drivers get `order.taken`, every approved driver's app gets
+        `order.unavailable` (its card disappears from every open list), the offer messages are
+        edited to "taken" and the winner's trip card with the passenger's contact is queued in the
+        outbox (both channels); the passenger gets the "driver found" push with the driver's photo and
         arrival estimate (`driver_eta_s`, refined from OSRM right after the commit, §22.6). When
         the charge leaves the available balance below the next commission the driver gets one
         `wallet_low_balance` message per day (with a top-up button); drivers in range whose
@@ -4352,9 +4359,9 @@ paths:
     post:
       operationId: botAcceptOrder
       tags: [internal]
-      summary: Take an order from a bot offer («✅ Алу»)
+      summary: Take an order from a bot offer («✅ Тапсырысты алу»)
       description: |
-        The driver tapped «✅ Алу» (callback `take:<order_id>`) on an offer in the driver bot
+        The driver tapped «✅ Тапсырысты алу» (callback `take:<order_id>`) on an offer in the driver bot
         (ARCHITECTURE §22.4). Runs the same atomic acceptance as `POST /driver/orders/{id}/accept`
         (first tap wins; the commission is charged in the same transaction) with the same errors:
         `409 order_already_taken`, `402 insufficient_balance` (`details {required, available,
@@ -4362,9 +4369,12 @@ paths:
         (`details.reason = location_required | location_stale`), `409 driver_has_active_order`,
         `403 driver_not_approved`, `404` (not registered, outside the radius, vehicle does not fit,
         own order) and `409 invalid_transition` (cancelled or expired). A repeated tap by the
-        winner is `200` with `replayed: true`. The bot itself edits the tapped message to
-        «✅ Сіз алдыңыз» and sends the trip card with the passenger's contact, so the outbox sends
-        neither; the other drivers' offers are edited to "taken" through the outbox (kind `edit`).
+        winner is `200` with `replayed: true` (also when the repeat came from the Mini App).
+        The bot itself edits the tapped message to «✅ Сіз алдыңыз»; the trip card with the
+        passenger's contact is queued in the outbox for either channel (sent once, withheld if the
+        order was cancelled or reassigned before sending); the other drivers' offers are edited to
+        "taken" through the outbox (kind `edit`). An `X-Request-ID` sent by the bot is logged with
+        the acceptance.
         Requires `X-Jantaxi-Bot: driver`.
       security: [{serviceSecret: []}]
       responses:
@@ -5732,7 +5742,7 @@ components:
         default_language: {$ref: '#/components/schemas/Language'}
     BotAcceptResult:
       type: object
-      description: The order the driver took with «✅ Алу», as `GET /driver/orders/{id}` shows it (with the passenger's contact).
+      description: The order the driver took with «✅ Тапсырысты алу», as `GET /driver/orders/{id}` shows it (with the passenger's contact).
       required: [order, replayed, charged, wallet]
       properties:
         order: {$ref: '#/components/schemas/DriverOrderDetail'}
@@ -7933,6 +7943,8 @@ components:
             Small ids and statuses only (e.g. `order_id`, `order_number`, `status`, `driver_id`,
             `topup_id`). `order.accepted` and `driver.location_updated` carry `driver_eta_s`
             (seconds to pickup A, or `null`) while the order is `accepted` (§22.6).
+            `order.unavailable` goes to every approved driver's app (scope `drivers`) the moment a
+            searching order is taken, cancelled or expires: `{order_id, status}` only.
           additionalProperties: true
       example:
         type: order.accepted
@@ -7945,6 +7957,7 @@ components:
         - order.created
         - order.available
         - order.taken
+        - order.unavailable
         - order.accepted
         - order.cancelled
         - order.driver_arriving

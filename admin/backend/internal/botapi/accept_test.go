@@ -2,6 +2,7 @@ package botapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/plate"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
 )
@@ -74,17 +77,29 @@ func TestDriverAcceptFromBot(t *testing.T) {
 		AND params->>'plate' = $2`, pid, plate.Format(d.Plate)); n != 1 || !strings.Contains(plate.Format(d.Plate), " ") {
 		t.Fatalf("plate in the passenger push: %s", plate.Format(d.Plate))
 	}
-	if n := e.count(t, `SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template IN ('order_accepted_driver', 'order_offer_won')`, d.UserID); n != 0 {
-		t.Fatalf("outbox duplicates the bot's messages: %d", n)
+	// The trip card with the passenger's contact comes from the outbox for
+	// either channel (retried, sent once, fenced against a later
+	// cancellation); the bot only marks the tapped offer itself.
+	if n := e.count(t, `SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = 'order_accepted_driver'
+		AND params->>'order_id' = $2 AND params->>'passenger_phone' = '+7 701 123 45 67' AND NOT params ? 'commission'`, d.UserID, oid.String()); n != 1 {
+		t.Fatalf("trip cards queued: %d", n)
+	}
+	// No offer message was sent to this driver in this test, so there is
+	// nothing to mark "won" (an edit is queued only for a sent offer).
+	if n := e.count(t, `SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = 'order_offer_won'`, d.UserID); n != 0 {
+		t.Fatalf("won edit without an offer message: %d", n)
 	}
 	if n := e.count(t, `SELECT count(*) FROM order_status_events WHERE order_id = $1 AND to_status = 'accepted' AND meta->>'channel' = 'bot'`, oid); n != 1 {
 		t.Fatal("bot acceptance not journaled")
 	}
 
-	// A second tap is a replay: nothing is charged again.
+	// A second tap is a replay: nothing is charged or queued again.
 	st, b = e.call(t, "driver", http.MethodPost, acceptPath(d.TelegramID, oid), nil)
 	if st != http.StatusOK || b["replayed"] != true || b["charged"] != float64(0) {
 		t.Fatalf("replay: %d %v", st, b)
+	}
+	if n := e.count(t, `SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = 'order_accepted_driver'`, d.UserID); n != 1 {
+		t.Fatalf("trip cards after a replay: %d", n)
 	}
 	if w := b["wallet"].(map[string]any); w["balance"] != float64(420) {
 		t.Fatalf("replay wallet: %v", w)
@@ -194,5 +209,145 @@ func TestPassengerContact(t *testing.T) {
 	if st, _ := e.call(t, "passenger", http.MethodPost, "/passenger/999999999999/contact",
 		map[string]any{"phone": "77011234567", "contact_user_id": 999999999999}); st != http.StatusNotFound {
 		t.Fatalf("unknown user: %d", st)
+	}
+}
+
+// miniAppAccept takes the order exactly as POST /driver/orders/{id}/accept
+// does: the shared dispatch.AcceptOrder without the bot option.
+func miniAppAccept(t *testing.T, e *testEnv, orderID, driverID uuid.UUID) (int, string, bool) {
+	t.Helper()
+	res, err := dispatch.AcceptOrder(context.Background(), e.pool, orderID, driverID, dispatch.AcceptOptions{})
+	if err == nil {
+		return http.StatusOK, "", res.Replayed
+	}
+	var he *httpx.Error
+	if !errors.As(err, &he) {
+		t.Errorf("mini app accept: %v", err)
+		return 0, "", false
+	}
+	return he.Status, he.Code, false
+}
+
+// TestAcceptAcrossChannels: drivers taking one order at the same moment, half
+// from the Mini App and half from the bot's accept button, get exactly one
+// winner, one charge and one assignment; every other attempt is 409
+// order_already_taken whichever channel it came from.
+func TestAcceptAcrossChannels(t *testing.T) {
+	e := newTestEnv(t)
+	pid, _ := testutil.CreateUser(t, e.pool)
+	oid := insertOrder(t, e.pool, pid, nil, "searching", 800, time.Now())
+	const n = 20
+	drivers := make([]testutil.DriverFixture, n)
+	for i := range drivers {
+		drivers[i] = testutil.CreateDriver(t, e.pool, testutil.DriverOptions{Online: true, Balance: 500})
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	statuses := make([]int, n)
+	codes := make([]string, n)
+	for i := range drivers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				st, b := e.call(t, "driver", http.MethodPost, acceptPath(drivers[i].TelegramID, oid), nil)
+				statuses[i], codes[i] = st, errCode(b)
+				return
+			}
+			statuses[i], codes[i], _ = miniAppAccept(t, e, oid, drivers[i].DriverID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	winner := -1
+	for i := range drivers {
+		switch {
+		case statuses[i] == http.StatusOK:
+			if winner >= 0 {
+				t.Fatalf("second winner %d (first %d)", i, winner)
+			}
+			winner = i
+		case statuses[i] == http.StatusConflict && codes[i] == "order_already_taken":
+		default:
+			t.Fatalf("driver %d: %d %s", i, statuses[i], codes[i])
+		}
+	}
+	if winner < 0 {
+		t.Fatal("no winner")
+	}
+	if c := e.count(t, `SELECT count(*) FROM orders WHERE id = $1 AND status = 'accepted' AND driver_id = $2`, oid, drivers[winner].DriverID); c != 1 {
+		t.Fatal("order not assigned to the winner")
+	}
+	if c := e.count(t, `SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_charge'`, oid); c != 1 {
+		t.Fatalf("charges = %d", c)
+	}
+	if c := e.count(t, `SELECT count(*) FROM order_status_events WHERE order_id = $1 AND to_status = 'accepted'`, oid); c != 1 {
+		t.Fatalf("accept events = %d", c)
+	}
+	for i, d := range drivers {
+		want := 500
+		if i == winner {
+			want = 420
+		}
+		if bal := e.count(t, `SELECT balance FROM wallets WHERE driver_id = $1`, d.DriverID); bal != want {
+			t.Fatalf("driver %d balance %d, want %d", i, bal, want)
+		}
+	}
+}
+
+// TestSameDriverDoubleAccept: one driver's repeated taps arriving together
+// from both channels (a double tap, a redelivered callback, an HTTP retry)
+// all succeed; exactly one of them takes the order and charges the
+// commission, the others are replays, and no channel reports the order as
+// taken by someone else or the balance as too low.
+func TestSameDriverDoubleAccept(t *testing.T) {
+	e := newTestEnv(t)
+	pid, _ := testutil.CreateUser(t, e.pool)
+	oid := insertOrder(t, e.pool, pid, nil, "searching", 800, time.Now())
+	// Enough for exactly one commission: a second charge would also fail with 402.
+	d := testutil.CreateDriver(t, e.pool, testutil.DriverOptions{Online: true, Balance: 100})
+	const n = 12
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	statuses := make([]int, n)
+	codes := make([]string, n)
+	replayed := make([]bool, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				st, b := e.call(t, "driver", http.MethodPost, acceptPath(d.TelegramID, oid), nil)
+				statuses[i], codes[i] = st, errCode(b)
+				replayed[i] = b["replayed"] == true
+				return
+			}
+			statuses[i], codes[i], replayed[i] = miniAppAccept(t, e, oid, d.DriverID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	first := 0
+	for i := 0; i < n; i++ {
+		if statuses[i] != http.StatusOK {
+			t.Fatalf("tap %d: %d %s", i, statuses[i], codes[i])
+		}
+		if !replayed[i] {
+			first++
+		}
+	}
+	if first != 1 {
+		t.Fatalf("non-replayed acceptances = %d, want 1", first)
+	}
+	if c := e.count(t, `SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_charge'`, oid); c != 1 {
+		t.Fatalf("charges = %d", c)
+	}
+	if bal := e.count(t, `SELECT balance FROM wallets WHERE driver_id = $1`, d.DriverID); bal != 20 {
+		t.Fatalf("balance %d, want 20", bal)
+	}
+	if c := e.count(t, `SELECT count(*) FROM order_status_events WHERE order_id = $1 AND to_status = 'accepted'`, oid); c != 1 {
+		t.Fatalf("accept events = %d", c)
 	}
 }

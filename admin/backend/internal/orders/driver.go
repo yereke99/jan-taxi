@@ -96,12 +96,8 @@ func (s *Service) acceptOrder(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
-	var res dispatch.AcceptResult
-	if err := s.tx(ctx, func(tx pgx.Tx) error {
-		var err error
-		res, err = dispatch.Accept(ctx, tx, id, d.ID)
-		return err
-	}); err != nil {
+	res, err := dispatch.AcceptOrder(ctx, s.pool, id, d.ID, dispatch.AcceptOptions{})
+	if err != nil {
 		return err
 	}
 	if !res.Replayed {
@@ -319,7 +315,7 @@ func finishCompleted(ctx context.Context, tx pgx.Tx, after lifecycle.Core, notif
 			return 0, err
 		}
 		if err := lifecycle.Notify(ctx, tx, notifications.DriverBot, info.UserID, notifications.TplOrderCompletedDriver,
-			map[string]any{"order_number": after.Number, "fare": after.Fare, "commission": charged, "balance": wal.Balance},
+			map[string]any{"order_number": after.Number, "fare": after.Fare, "balance": wal.Balance},
 			"order_completed_driver:"+after.ID.String()); err != nil {
 			return 0, err
 		}

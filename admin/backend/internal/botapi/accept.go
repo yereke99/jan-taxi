@@ -3,12 +3,8 @@ package botapi
 import (
 	"net/http"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders"
-	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
-	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 )
 
@@ -23,14 +19,16 @@ type acceptResponse struct {
 }
 
 // driverAccept handles POST /internal/v1/driver/{tg_id}/orders/{id}/accept:
-// the driver tapped «Алу» on an offer in the driver bot (§22.4). It runs the
-// same atomic acceptance as the Mini App (dispatch.Accept: first tap wins,
-// commission charged in the same transaction) and returns the same errors:
+// the driver tapped «Тапсырысты алу» on an offer in the driver bot (§22.4).
+// It runs the same atomic acceptance as the Mini App (dispatch.AcceptOrder:
+// first tap wins, commission charged in the same transaction) and returns the
+// same errors:
 // 409 order_already_taken, 402 insufficient_balance, 409 driver_offline,
 // 422 location_required, 409 driver_has_active_order, 403
 // driver_not_approved, 404 when the order is not in the driver's reach, 409
-// invalid_transition when it is no longer searching. The bot edits the offer
-// message and sends the trip card itself, so the outbox sends neither.
+// invalid_transition when it is no longer searching. The bot edits the tapped
+// message itself at once; the offer edit and the trip card with the
+// passenger's contact come from the outbox, as for a Mini App acceptance.
 func (h *Handler) driverAccept(w http.ResponseWriter, r *http.Request) error {
 	tgID, err := tgIDParam(r)
 	if err != nil {
@@ -45,12 +43,7 @@ func (h *Handler) driverAccept(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	var res dispatch.AcceptResult
-	err = lifecycle.DBError(db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		var err error
-		res, err = dispatch.AcceptWith(ctx, tx, orderID, p.ID, dispatch.AcceptOptions{ViaBot: true})
-		return err
-	}))
+	res, err := dispatch.AcceptOrder(ctx, h.pool, orderID, p.ID, dispatch.AcceptOptions{ViaBot: true})
 	if err != nil {
 		return err
 	}

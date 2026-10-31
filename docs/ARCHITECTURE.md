@@ -193,7 +193,15 @@ searching ──accept(driver/admin assign)──▶ accepted ──arriving(dri
   insert `order_status_events`, enqueue notifications, publish realtime event — one transaction.
 
 ### 5.1 Atomic acceptance (exactly-one winner)
-In one transaction:
+One operation, `dispatch.AcceptOrder(order, driver, options)`, serves both entry points — the driver
+Mini App (`POST /driver/orders/{id}/accept`, the card's «Тапсырысты алу» and the order screen) and the
+driver bot's «✅ Тапсырысты алу» (`POST /internal/v1/driver/{tg_id}/orders/{id}/accept`); it logs every
+attempt (order, driver, channel, outcome code, duration, request id). In one transaction:
+0. Lock the order row `FOR UPDATE`, then the driver profile (`FOR SHARE`), then the wallet: the lock
+   order of every order transition, so concurrent acceptances of one order run one after another.
+   A repeat of the winner (double tap, HTTP retry, redelivered callback, or the other channel) sees
+   its own acceptance and is answered as a replay (`200`, `replayed`, nothing charged); a late tap
+   on the driver's own finished order is `409 invalid_transition`, never "taken by another driver".
 1. Load driver; require `status='approved'`, `is_online`, not blocked, no active order, and a fresh
    location (`driver_locations.recorded_at` within `dispatch.location_max_age_s`, else
    `422 location_required` with `details.reason` `location_required|location_stale` and `max_age_s`)
@@ -376,6 +384,10 @@ With the defaults an order is offered within 5 km, after 1 min within 7.5 km, af
 * **On creation** (same transaction) every eligible driver inside the base radius gets an
   `order_offers` row (with `distance_to_pickup_m`), an `order_available_driver` notification
   (outbox) and an `order.available` WS event.
+* **Driver became available** (went online, or sent a fresh location after none or a stale one —
+  `drivers.SetAvailability` / `drivers.RecordLocation`, Mini App and bot alike): right after that
+  commit `dispatch.OfferNearby` runs the same per-order offer step as the job below for the searching
+  orders around the driver, so the bot offer and `order.available` arrive at once.
 * **Job `dispatch_expand`** (every 15 s, advisory lock): for each searching order whose search window
   is open, locks the order row (`FOR UPDATE SKIP LOCKED`, so an acceptance in progress is skipped
   until the next run) and offers it to drivers who are eligible inside the *current* effective radius
@@ -414,7 +426,8 @@ Templates (keys): `order_created_passenger`, `order_available_driver`, `order_ac
 `order_cancelled_driver`, `order_taken_driver`, `order_no_driver`, `moderation_submitted`,
 `moderation_approved`, `moderation_changes_requested`, `moderation_rejected`,
 `driver_suspended`, `driver_restored`, `topup_created`, `topup_confirmed`, `topup_rejected`,
-`wallet_low_balance`, `dispute_opened`, `dispute_resolved`, `phone_verified`.
+`wallet_low_balance`, `dispute_opened`, `dispute_resolved`, `phone_verified`; offer edits
+`order_offer_won`, `order_offer_taken`, `order_offer_cancelled`, `order_offer_expired` (§22.4).
 Each message carries an inline **`web_app`** button (signed initData is guaranteed for inline
 web_app buttons) whose URL is the Mini App URL plus `?startapp=<param>` (see §18); bot menus may
 additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode=fullscreen`.
@@ -427,12 +440,18 @@ additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode
   local WebSocket clients.
 * Event JSON: `{"type":"order.accepted","id":"<uuid>","ts":"RFC3339","scopes":["user:<uuid>","driver:<uuid>","admin"],"data":{...small ids/status...}}`.
   Clients treat events as hints and re-fetch authoritative REST state.
-* Scopes: `user:<user_id>` (passenger), `driver:<driver_id>`, `admin` (all admin sessions).
+* Scopes: `user:<user_id>` (passenger), `driver:<driver_id>`, `admin` (all admin sessions), and
+  `drivers` (every approved driver's app; carries only `order.unavailable {order_id, status}`, sent
+  when a searching order is taken, cancelled or expires, so its card leaves every open list — also
+  lists of drivers who never held an offer for it). The driver app refreshes its list ~100–300 ms
+  after `order.available` (jittered), drops cards on `order.taken` / `order.unavailable`, re-reads
+  state on the first connection and every resync, and polls only as a fallback (20 s while the
+  socket is down, 60 s while it is up).
 * WS endpoint `GET /api/v1/ws`. First client frame within 5s: `{"type":"auth","token":"<app token>"}`
   (admins are authenticated by cookie and skip this). Server pings every 25s; client
   reconnects with backoff 1s→30s and re-syncs via REST on reconnect / `visibilitychange` /
   Telegram `activated`.
-* Event types: `order.created`, `order.available`, `order.taken`, `order.accepted`, `order.cancelled`,
+* Event types: `order.created`, `order.available`, `order.taken`, `order.unavailable`, `order.accepted`, `order.cancelled`,
   `order.driver_arriving`, `order.started`, `order.stop_completed`, `order.completed`,
   `order.disputed`, `driver.location_updated`, `driver.status_changed`, `wallet.updated`,
   `topup.updated`, `topup.confirmed`, `moderation.submitted`, `moderation.changes_requested`,
@@ -694,7 +713,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /driver/orders | D | dispatch | available orders within the effective radius, nearest first (cards with `distance_to_pickup_m`) + `eligibility` |
 | GET | /driver/orders/active | D | orders | current order or 204 |
 | GET | /driver/orders/history?limit=&before= | D | orders | |
-| GET | /driver/orders/{id} | D | orders | available order detail (if eligible) or own order |
+| GET | /driver/orders/{id} | D | orders | available order detail (if eligible, or offered to the driver and still open — the accept then says what to fix) or own order |
 | POST | /driver/orders/{id}/accept | D | dispatch | atomic; 409 `order_already_taken`, 402 `insufficient_balance`, 422 `location_required`, 404 outside the radius |
 | POST | /driver/orders/{id}/arriving | D | orders | |
 | POST | /driver/orders/{id}/start | D | orders | |
@@ -968,6 +987,13 @@ offers) where they conflict.
   ledger `commission_refund`, audited). Do not add grace-period or automatic refunds.
 - A driver whose available balance is below the commission stops receiving offers automatically
   and gets one `wallet_low_balance` notification with a top-up button.
+- **Drivers do not see the commission on order surfaces** (owner, 2026-10-31): not on the order
+  cards, the order screen, the trip screen, the trip history, the completion screen (only «Сапар
+  сәтті аяқталды»), the bot offers, the bot `/orders` list, the trip card or the completion message;
+  shortfall messages say how much the balance needs, not "commission". Accounting is unchanged: the
+  amount is snapshotted, charged at acceptance, kept in the ledger (the wallet history still lists
+  `commission_charge` entries) and shown to admins. The driver DTOs keep `commission_amount` /
+  `commission_charged` for compatibility; the apps do not render them.
 
 ### 22.3 Only passengers cancel
 - Drivers cannot cancel (no endpoint, no UI); they contact support; admins can cancel or reassign.
@@ -989,22 +1015,30 @@ offers) where they conflict.
   driver-accepted orders within 24 hours, `POST /orders` answers `409 conflict
   {reason: too_many_cancellations, limit}`. Cancelling a search costs nobody and is not counted.
 - The driver is told that the passenger cancelled, never why: driver order views return
-  `cancel_reason: null` when `cancelled_by = passenger`. Driver order views and history carry
-  `commission_charged` (charges minus refunds for that order), so a cancelled trip shows the
-  commission that was kept.
+  `cancel_reason: null` when `cancelled_by = passenger`. Driver order views and history still carry
+  `commission_charged` (charges minus refunds for that order) for compatibility, but the driver apps
+  no longer show it (§22.2): the kept commission appears only in the wallet history.
 
 ### 22.4 Offers in the driver bot (first tap wins)
-- Each eligible driver receives a bot message: category + vehicle class, A → intermediate → final
-  addresses, distance to pickup, route distance/ETA, price, payment method, passenger count or
-  cargo size, comment; inline buttons **«✅ Алу»** (callback `take:<order_id>`) and
-  **«🗺 Картада ашу»** (web_app → Mini App order detail, fullscreen).
-- «Алу» calls the internal API accept for that driver — the same atomic transaction as the Mini App.
-  Success → the bot edits the message to «✅ Сіз алдыңыз» and sends the trip card with the passenger
-  contact: name, phone (if shared), Telegram link (`https://t.me/<username>` or a `tg://user?id=` mention)
-  and a web_app button «Тапсырысты ашу». Failure → callback alert (taken / insufficient balance with
-  top-up button / offline / location required) and the keyboard is removed.
+- Each eligible driver receives a bot message (owner layout, 2026-10-31): «🚕 Жаңа тапсырыс №N · category»,
+  💰 fare · payment method, 🏙 locality, 📍 pickup (A), 🛣 intermediate stops in route order, 🏁 destination
+  (B) — a manually typed landmark is shown as typed —, 🧭 distance to pickup, 🗺 route distance/ETA when
+  known, 🚗 vehicle class, 👤 passengers or 📦 cargo size/description, 📝 comment. No commission and no
+  passenger phone. Inline buttons **«✅ Тапсырысты алу» / «✅ Забрать заказ» / «✅ Accept order»** (callback
+  `take:<order_id>`) and **«📱 Қосымшаны ашу» / «📱 Открыть мини-приложение» / «📱 Open Mini App»**
+  (web_app → the Mini App's order screen, fullscreen; opening never accepts).
+- The accept button calls the internal API accept for that driver — `dispatch.AcceptOrder`, the same
+  atomic operation as the Mini App. Success → the bot answers the callback at once and edits the
+  message to «✅ Сіз алдыңыз»; the **trip card** with the passenger's contact (name with Telegram link,
+  phone when shared, recipient phone for parcels, the whole route, class, load and comment) comes from
+  the outbox for both channels — sent once (dedupe key per order, driver and version), retried, and
+  withheld when the order was cancelled or reassigned before sending. In an `/orders` list message only
+  the taken order's row is removed. Failure → callback alert; when the order is gone for good (taken,
+  closed, out of reach) its button goes, when the driver can fix the problem (balance, going online,
+  location, a running trip) the offer keeps its buttons.
 - When an order is taken or cancelled, the other drivers' offer messages lose their keyboard and are
-  marked taken/cancelled (edited via the stored `telegram_message_id`).
+  marked taken/cancelled (edited via the stored `telegram_message_id`); old buttons stay safe because
+  the server re-checks every tap.
 
 ### 22.5 Passenger phone
 - Before the first order the passenger Mini App asks to share the phone through Telegram

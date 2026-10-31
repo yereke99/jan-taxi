@@ -192,6 +192,12 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	if n, err := dispatch.ExpireSearches(ctx, e.pool); err != nil || n != 1 {
 		t.Fatalf("search expiry: %d %v", n, err)
 	}
+	// A search the passenger cancels closes the offers as cancelled (an
+	// expired one above says the search ended).
+	o4b := e.createOrder(p2, 2, 500)
+	e.offersSent(o4b)
+	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/orders/"+o4b+"/cancel",
+		map[string]any{"reason_code": "changed_plans"}, p2.auth), "passenger cancels a search")
 
 	// Operator paths: re-assign an accepted order from B to A with a refund
 	// for B (A is offline, which an operator may override, and pays the
@@ -262,6 +268,7 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		{notifications.TplOrderOfferWon, a.userID, notifications.DriverBot},
 		{notifications.TplOrderOfferTaken, b.userID, notifications.DriverBot},
 		{notifications.TplOrderOfferCancelled, b.userID, notifications.DriverBot},
+		{notifications.TplOrderOfferExpired, b.userID, notifications.DriverBot},
 		{notifications.TplOrderDriverArriving, p1.userID, notifications.PassengerBot},
 		{notifications.TplOrderStarted, p1.userID, notifications.PassengerBot},
 		{notifications.TplOrderStopCompleted, p1.userID, notifications.PassengerBot},

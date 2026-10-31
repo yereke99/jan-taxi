@@ -83,7 +83,8 @@ describe('i18n keys', () => {
       expect(kk(key)).toMatch(/[әғқңөұүһі]|[А-Яа-я]/)
     }
     expect(kk('trip.open_2gis')).toBe('2GIS арқылы ашу')
-    expect(kk('order.accept')).toBe('Тапсырысты қабылдау')
+    expect(kk('order.accept')).toBe('Тапсырысты алу')
+    expect(kk('orders.accept')).toBe('Тапсырысты алу')
     expect(kk('order.taken')).toBe('Тапсырысты басқа жүргізуші қабылдады')
     expect(i18n.global.t('trip.open_2gis', {}, { locale: 'ru' })).toBe('Открыть в 2GIS')
     expect(i18n.global.t('trip.open_2gis', {}, { locale: 'en' })).toBe('Open in 2GIS')

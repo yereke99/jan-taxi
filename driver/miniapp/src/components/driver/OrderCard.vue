@@ -2,8 +2,13 @@
   Available order card: category with how long ago it was placed and the
   distance from the driver, the fare, then the settlement of pickup A and
   A → final destination with +N stops, trip distance and duration, the
-  requested vehicle class with the passenger count or cargo size (§21), and
-  the comment or cargo preview. No passenger data (the API withholds it).
+  requested vehicle class with the passenger count or cargo size (§21), the
+  comment or cargo preview, and a full-width «Тапсырысты алу» button that
+  takes the order in one tap (the same atomic acceptance as the order screen
+  and the driver bot). The rest of the card opens the order. No passenger
+  data (the API withholds it). The card is an <article> holding two sibling
+  buttons (the body keeps its earlier markup), so a tap on «Тапсырысты алу»
+  never opens the order.
 -->
 <script setup lang="ts">
 import { MapPin, MessageSquareText, Package } from '@lucide/vue'
@@ -15,12 +20,23 @@ import { sortedStops } from '../../features/trip/sequence'
 import { findClass } from '../../features/vehicle/classes'
 import { useVehicleText } from '../../features/vehicle/useVehicleText'
 import { useSessionStore } from '../../stores/session'
+import { JSpinner } from '../ui'
 import CategoryIcon from './CategoryIcon.vue'
 import VehicleClassIcon from './VehicleClassIcon.vue'
 import { useAddressText } from '../../i18n/core'
 
-const props = defineProps<{ order: DriverOrderCard; now: number }>()
-const emit = defineEmits<{ open: [id: string] }>()
+const props = withDefaults(
+  defineProps<{
+    order: DriverOrderCard
+    now: number
+    /** This order is being accepted right now. */
+    accepting?: boolean
+    /** Another acceptance is running: the button waits. */
+    disabled?: boolean
+  }>(),
+  { accepting: false, disabled: false },
+)
+const emit = defineEmits<{ open: [id: string]; accept: [id: string] }>()
 
 const { t } = useI18n()
 const addr = useAddressText()
@@ -46,50 +62,73 @@ const need = computed(() => {
   return parts.join(' · ')
 })
 const needIcon = computed(() => findClass(session.extras.vehicleClasses, props.order.vehicle_class)?.icon ?? null)
+// Unknown metrics (a route with a manually typed stop) are left out instead
+// of being shown as dashes; the line disappears when nothing is known.
 const summary = computed(() => {
-  const parts = [fmt.distance(props.order.distance_m), fmt.duration(props.order.duration_s)]
-  if (extraStops.value > 0) parts.unshift(t('orders.more_stops', { n: extraStops.value }))
+  const o = props.order
+  const parts: string[] = []
+  if (extraStops.value > 0) parts.push(t('orders.more_stops', { n: extraStops.value }))
+  if (o.distance_m !== null) parts.push(fmt.distance(o.distance_m))
+  if (o.duration_s !== null) parts.push(fmt.duration(o.duration_s))
   return parts.join(' · ')
 })
+
+function accept(): void {
+  if (!props.accepting && !props.disabled) emit('accept', props.order.id)
+}
 </script>
 
 <template>
-  <button type="button" class="ocard" @click="emit('open', order.id)">
-    <div class="ocard__top">
-      <span class="ocard__icon"><CategoryIcon :category="order.category" :size="22" /></span>
-      <span class="ocard__head">
-        <span class="ocard__cat">{{ t(`category.${order.category}`) }}</span>
-        <span class="ocard__meta jt-tabular">{{ meta }}</span>
-      </span>
-      <span class="ocard__amount jt-tabular">{{ fmt.money(order.fare) }}</span>
-    </div>
+  <article class="ocard">
+    <button type="button" class="ocard__open" @click="emit('open', order.id)">
+      <div class="ocard__top">
+        <span class="ocard__icon"><CategoryIcon :category="order.category" :size="22" /></span>
+        <span class="ocard__head">
+          <span class="ocard__cat">{{ t(`category.${order.category}`) }}</span>
+          <span class="ocard__meta jt-tabular">{{ meta }}</span>
+        </span>
+        <span class="ocard__amount jt-tabular">{{ fmt.money(order.fare) }}</span>
+      </div>
 
-    <div class="ocard__body">
-      <p v-if="order.locality" class="ocard__locality">
-        <MapPin :size="15" :stroke-width="2.2" aria-hidden="true" />
-        <span class="jt-visually-hidden">{{ t('order.locality') }}:</span>
-        <span class="ocard__locality-name">{{ order.locality }}</span>
-      </p>
-      <p class="ocard__route">
-        <span>{{ addr(pickup?.address) }}</span>
-        <template v-if="destination">
-          <span class="ocard__arrow" aria-hidden="true"> → </span>
-          <span>{{ addr(destination.address) }}</span>
-        </template>
-      </p>
-      <p class="ocard__summary jt-tabular">{{ summary }}</p>
-      <p v-if="need" class="ocard__need">
-        <VehicleClassIcon v-if="needIcon" :icon="needIcon" :width="30" />
-        <span>{{ need }}</span>
-      </p>
-    </div>
+      <div class="ocard__body">
+        <p v-if="order.locality" class="ocard__locality">
+          <MapPin :size="15" :stroke-width="2.2" aria-hidden="true" />
+          <span class="jt-visually-hidden">{{ t('order.locality') }}:</span>
+          <span class="ocard__locality-name">{{ order.locality }}</span>
+        </p>
+        <p class="ocard__route">
+          <span>{{ addr(pickup?.address) }}</span>
+          <template v-if="destination">
+            <span class="ocard__arrow" aria-hidden="true"> → </span>
+            <span>{{ addr(destination.address) }}</span>
+          </template>
+        </p>
+        <p v-if="summary" class="ocard__summary jt-tabular">{{ summary }}</p>
+        <p v-if="need" class="ocard__need">
+          <VehicleClassIcon v-if="needIcon" :icon="needIcon" :width="30" />
+          <span>{{ need }}</span>
+        </p>
+      </div>
 
-    <p v-if="preview" class="ocard__comment">
-      <Package v-if="order.cargo_description" :size="18" :stroke-width="1.8" aria-hidden="true" />
-      <MessageSquareText v-else :size="18" :stroke-width="1.8" aria-hidden="true" />
-      <span>{{ preview }}</span>
-    </p>
-  </button>
+      <p v-if="preview" class="ocard__comment">
+        <Package v-if="order.cargo_description" :size="18" :stroke-width="1.8" aria-hidden="true" />
+        <MessageSquareText v-else :size="18" :stroke-width="1.8" aria-hidden="true" />
+        <span>{{ preview }}</span>
+      </p>
+    </button>
+
+    <button
+      type="button"
+      class="ocard__accept"
+      :disabled="disabled && !accepting"
+      :aria-busy="accepting || undefined"
+      :aria-label="`${t('orders.accept')} · ${fmt.money(order.fare)}`"
+      @click="accept"
+    >
+      <JSpinner v-if="accepting" color="light" />
+      <span v-else>{{ t('orders.accept') }}</span>
+    </button>
+  </article>
 </template>
 
 <style scoped>
@@ -105,8 +144,17 @@ const summary = computed(() => {
   transition: transform var(--jt-duration-spring) var(--jt-ease-spring);
 }
 
-.ocard:active {
+/* Pressing the card body shrinks the card as before; «Тапсырысты алу» only dims itself. */
+.ocard:has(.ocard__open:active) {
   transform: scale(0.98);
+}
+
+.ocard__open {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  color: inherit;
+  text-align: left;
 }
 
 .ocard__top {
@@ -227,5 +275,29 @@ const summary = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Green means "go" (§15: colour only for meaning), as in the customer's reference. */
+.ocard__accept {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: var(--jt-button-height-medium);
+  margin-top: var(--jt-space-3);
+  border-radius: var(--jt-radius-button);
+  background: var(--jt-color-green);
+  color: #fff;
+  font: var(--jt-font-headline);
+  white-space: nowrap;
+  transition: opacity 120ms linear;
+}
+
+.ocard__accept:active {
+  opacity: var(--jt-opacity-pressed);
+}
+
+.ocard__accept:disabled {
+  opacity: 0.3;
 }
 </style>

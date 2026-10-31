@@ -88,3 +88,47 @@ func expandOne(ctx context.Context, pool *pgxpool.Pool, orderID uuid.UUID, p set
 	}
 	return n, nil
 }
+
+// offerNearbyTimeout bounds OfferNearby, which runs after the caller's own
+// transaction committed and must not hold the driver's request for long.
+const offerNearbyTimeout = 5 * time.Second
+
+// OfferNearby offers the searching orders already waiting around a driver who
+// just became available — went online, or sent a fresh location after having
+// none or a stale one — so the bot message and the order.available event
+// arrive at once instead of on the next dispatch_expand run. Every candidate
+// order goes through expandOne: the same eligibility rules, the same order
+// row lock (an acceptance in progress is skipped) and the same
+// UNIQUE(order_id, driver_id) deduplication, so nobody is offered an order
+// twice. It returns the number of new offers; failures are left to the
+// periodic job.
+func OfferNearby(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID) (int, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), offerNearbyTimeout)
+	defer cancel()
+	p := settings.Dispatch(ctx, pool)
+	rows, err := pool.Query(ctx, `
+		SELECT o.id FROM orders o
+		JOIN driver_locations dl ON dl.driver_id = @driver_id
+		WHERE o.status = 'searching' AND (o.search_expires_at IS NULL OR o.search_expires_at > now())
+		  AND `+withinRadius+`
+		  AND NOT EXISTS (SELECT 1 FROM order_offers f WHERE f.order_id = o.id AND f.driver_id = @driver_id)
+		ORDER BY o.created_at LIMIT @batch`, policyArgs(p, pgx.NamedArgs{"driver_id": driverID, "batch": expandBatch}))
+	if err != nil {
+		return 0, fmt.Errorf("dispatch: orders near driver: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return 0, fmt.Errorf("dispatch: orders near driver: %w", err)
+	}
+	total := 0
+	var errs []error
+	for _, id := range ids {
+		n, err := expandOne(ctx, pool, id, p)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		total += n
+	}
+	return total, errors.Join(errs...)
+}

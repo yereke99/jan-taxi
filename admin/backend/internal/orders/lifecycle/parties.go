@@ -119,16 +119,23 @@ func PlateDisplay(normalized, raw *string) string {
 type Route struct {
 	HasManualStops bool
 	Pickup         string
-	Via            []string // intermediate stops in order
-	Destination    string
+	// PickupDetails is the passenger's note for pickup A (entrance, floor…).
+	PickupDetails string
+	Via           []string // intermediate stops in order
+	Destination   string
 }
 
-// ViaText joins the intermediate stops with arrows ("" when there are none);
-// a stop without an address is called placeholder.
+// coordinatesRe matches an "address" that is only a coordinate pair, which
+// is never shown to people (as the notification place kind does).
+var coordinatesRe = regexp.MustCompile(`^\s*-?\d{1,3}(\.\d+)?\s*,\s*-?\d{1,3}(\.\d+)?\s*$`)
+
+// ViaText joins the intermediate stops with arrows in route order ("" when
+// there are none); a stop without an address, or with bare coordinates, is
+// called placeholder.
 func (r Route) ViaText(placeholder string) string {
 	parts := make([]string, 0, len(r.Via))
 	for _, v := range r.Via {
-		if v == "" {
+		if v == "" || coordinatesRe.MatchString(v) {
 			v = placeholder
 		}
 		parts = append(parts, v)
@@ -149,6 +156,9 @@ func LoadRoute(ctx context.Context, q db.Querier, orderID uuid.UUID) (Route, err
 		switch s.Kind {
 		case stops.KindPickup:
 			r.Pickup = addr
+			if s.AddressDetails != nil {
+				r.PickupDetails = textutil.Clean(*s.AddressDetails)
+			}
 		case stops.KindDestination:
 			r.Destination = addr
 		default:

@@ -34,7 +34,8 @@ func (a ServiceAuthenticator) FromRequest(r *http.Request) (Identity, bool) {
 }
 
 // FromToken authenticates a Mini App token: user:<uid>, plus driver:<id> for
-// the driver app once the user has a driver profile.
+// the driver app once the user has a driver profile, and the shared drivers
+// scope while that profile is approved (re-checked every minute).
 func (a ServiceAuthenticator) FromToken(ctx context.Context, token string) (Identity, error) {
 	p, exp, err := a.Auth.AuthenticateAppToken(ctx, token)
 	if err != nil {
@@ -51,6 +52,9 @@ func (a ServiceAuthenticator) FromToken(ctx context.Context, token string) (Iden
 		}
 		if ok {
 			out = append(out, DriverScope(d.ID))
+			if d.Status == "approved" {
+				out = append(out, DriversScope)
+			}
 		}
 		return out, nil
 	}

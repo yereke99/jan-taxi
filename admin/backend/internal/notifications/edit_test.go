@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
 )
@@ -17,7 +18,7 @@ func offerNotification(user, orderID uuid.UUID, key string) Notification {
 		"order_id": orderID.String(), "order_number": json.Number("1042"), "category": "taxi",
 		"vehicle_class": map[string]string{"kk": "Седан", "ru": "Седан", "en": "Sedan"},
 		"pickup":        "Абай 1", "destination": "Достық 5", "route_distance": 3200, "route_duration": 420,
-		"fare": 900, "payment_method": "cash", "commission": 50,
+		"fare": 900, "payment_method": "cash",
 	}
 	return Notification{Bot: DriverBot, UserID: user, Template: TplOrderAvailableDriver, Params: p, DedupeKey: key}
 }
@@ -56,8 +57,8 @@ func TestEditSentOffer(t *testing.T) {
 	if len(got) != 2 || got[1].editOf != 1001 || got[1].markup != nil {
 		t.Fatalf("edit = %+v", got)
 	}
-	if !strings.HasPrefix(got[1].text, "<b>❌ Тапсырысты басқа жүргізуші алды</b>\n\n<b>Жаңа тапсырыс №1042</b>") ||
-		!strings.Contains(got[1].text, "Қайдан: Абай 1") {
+	if !strings.HasPrefix(got[1].text, "<b>❌ Тапсырысты басқа жүргізуші алды</b>\n\n🚕 <b>Жаңа тапсырыс №1042</b>") ||
+		!strings.Contains(got[1].text, "Қайдан (A): Абай 1") {
 		t.Fatalf("edited text = %q", got[1].text)
 	}
 	var status string
@@ -220,5 +221,75 @@ func TestDelayedNotificationAndRelease(t *testing.T) {
 	}
 	if n, err := w.RunOnce(ctx); err != nil || n != 1 || len(fs.sentTo(tg)) != 1 {
 		t.Fatalf("released message not sent: %d %v", n, err)
+	}
+}
+
+// insertSearchingOrder stores a minimal searching Embi taxi order.
+func insertSearchingOrder(t *testing.T, pool *pgxpool.Pool, passengerID uuid.UUID) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO orders (passenger_id, city_id, category, service_type, cargo_type, status, fare,
+		                    commission_bps, commission_amount, payment_method, tariff_id, distance_m, duration_s,
+		                    stop_count, pickup_lat, pickup_lon, idempotency_key, search_expires_at, vehicle_class, passenger_count)
+		SELECT $1, t.city_id, 'taxi', 'passenger', 'none', 'searching', 900, 1000, 90, 'cash', t.id, 1800, 300,
+		       2, 48.8264, 58.1442, $2, now() + interval '10 minutes', 'sedan', 1
+		FROM tariffs t JOIN cities c ON c.id = t.city_id
+		WHERE c.code = 'EMB' AND t.category = 'taxi' AND t.vehicle_class = 'sedan' AND t.is_active
+		RETURNING id`, passengerID, uuid.NewString()).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert order: %v", err)
+	}
+	return id
+}
+
+// TestOfferNotSentAfterOrderClosed: an offer still waiting in the outbox when
+// its order stops searching (taken, cancelled, expired) is dropped at send
+// time instead of reaching the driver as a fresh offer; offers of searching
+// orders go out as usual.
+func TestOfferNotSentAfterOrderClosed(t *testing.T) {
+	pool := testutil.NewDB(t)
+	ctx := context.Background()
+	d := testutil.CreateDriver(t, pool, testutil.DriverOptions{Online: true})
+	// One active order per passenger: two passengers.
+	p1, _ := testutil.CreateUser(t, pool)
+	p2, _ := testutil.CreateUser(t, pool)
+	closed := insertSearchingOrder(t, pool, p1)
+	open := insertSearchingOrder(t, pool, p2)
+	for _, id := range []uuid.UUID{closed, open} {
+		if _, err := pool.Exec(ctx, `INSERT INTO order_offers (order_id, driver_id) VALUES ($1, $2)`, id, d.DriverID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Enqueue(ctx, pool, offerNotification(d.UserID, closed, "offer:closed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Enqueue(ctx, pool, offerNotification(d.UserID, open, "offer:open")); err != nil {
+		t.Fatal(err)
+	}
+	// Taken by another driver after the offer was queued.
+	if _, err := pool.Exec(ctx, `UPDATE orders SET status = 'cancelled', cancelled_at = now(), cancelled_by = 'passenger',
+		search_expires_at = NULL WHERE id = $1`, closed); err != nil {
+		t.Fatal(err)
+	}
+	fs := newFakeSender()
+	w := testWorker(pool, fs, "w1")
+	for range 2 {
+		if _, err := w.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond) // per-chat interval
+	}
+	sent := fs.sentTo(d.TelegramID)
+	if len(sent) != 1 || !strings.Contains(sent[0].text, "№1042") || sent[0].markup.InlineKeyboard[0][0].CallbackData != "take:"+open.String() {
+		t.Fatalf("sent = %+v", sent)
+	}
+	var status, lastErr string
+	if err := pool.QueryRow(ctx, `SELECT status, COALESCE(last_error, '') FROM notification_outbox WHERE dedupe_key = 'offer:closed'`).
+		Scan(&status, &lastErr); err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusCancelled || !strings.Contains(lastErr, "no longer searching") {
+		t.Fatalf("closed offer row: %s %q", status, lastErr)
 	}
 }

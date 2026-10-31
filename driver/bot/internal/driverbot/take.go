@@ -12,25 +12,32 @@ import (
 )
 
 // Offers in the driver bot (ARCHITECTURE §22.4). Every offer message carries
-// «✅ Алу» (callback "take:<order_id>"); the first driver whose tap reaches
-// the API gets the order through the same atomic acceptance as the Mini App.
-// The winner's message becomes «✅ Сіз алдыңыз» and a trip card with the
-// passenger's contact follows; anyone else gets an alert and loses the
-// button. The API edits the other drivers' offers through its outbox.
+// «✅ Тапсырысты алу» (callback "take:<order_id>"); the first driver whose tap
+// reaches the API gets the order through the same atomic acceptance as the
+// Mini App (dispatch.AcceptOrder). The winner's message becomes
+// «✅ Сіз алдыңыз» and the API's outbox sends the trip card with the
+// passenger's contact; anyone else gets an alert, and their button goes once
+// the order is gone for good. The API edits the other drivers' offers through
+// its outbox.
 
-// takePrefix is the callback data prefix of «Алу».
+// takePrefix is the callback data prefix of the accept button.
 const takePrefix = "take:"
 
 var orderIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// onTake handles a tap on «✅ Алу». The callback is answered as soon as the
-// API decided, before the message edits, so Telegram's spinner stops at once;
-// the runtime's update claim makes a redelivered update a no-op, and a
-// second tap is answered as a replay.
+// onTake handles a tap on «✅ Тапсырысты алу». The callback is answered as
+// soon as the API decided, before the message edits, so Telegram's spinner
+// stops at once; the runtime's update claim makes a redelivered update a
+// no-op, and a second tap is answered as a replay. The trip card is not sent
+// here: the outbox delivers it once (also when this response or the bot
+// itself is lost after the commit) and withholds it if the order was
+// cancelled or reassigned meanwhile.
 func (b *Bot) onTake(ctx context.Context, q *telegram.CallbackQuery, orderID string) error {
 	if !orderIDRe.MatchString(orderID) {
 		return b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
 	}
+	// The API logs the acceptance under this id ("order accepted", channel bot).
+	ctx = botapi.WithRequestID(ctx, "tg-cb-"+q.ID)
 	user, err := b.api.SyncUser(ctx, syncRequest(&q.From))
 	if err != nil {
 		_ = b.alert(ctx, q, texts.T(runtime.DefaultLanguage, "take_error"))
@@ -56,14 +63,48 @@ func (b *Bot) onTake(ctx context.Context, q *telegram.CallbackQuery, orderID str
 	if err := b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: toast}); err != nil {
 		b.log.Warn("answer take callback failed", "err", err.Error())
 	}
-	if q.Message != nil {
-		b.editOffer(ctx, s, q.Message, s.t("take_won"),
-			runtime.Inline(b.appButton(ctx, s, "btn_open_order", "order_"+orderID)))
-	}
-	if res.Replayed {
+	if q.Message == nil {
 		return nil
 	}
-	return b.sendTripCard(ctx, s, res)
+	if rest, many := withoutOrder(q.Message.ReplyMarkup, orderID); many {
+		// One order of an /orders list: only its row goes, the others stay takeable.
+		b.setKeyboard(ctx, s, q.Message, rest)
+		return nil
+	}
+	b.editOffer(ctx, s, q.Message, s.t("take_won"),
+		runtime.Inline(b.appButton(ctx, s, "btn_open_order", "order_"+orderID)))
+	return nil
+}
+
+// withoutOrder returns markup without the rows of orderID's accept button and
+// whether markup offered more than one order (an /orders list); for a single
+// offer the caller rewrites the whole message instead.
+func withoutOrder(markup *telegram.InlineKeyboardMarkup, orderID string) (*telegram.InlineKeyboardMarkup, bool) {
+	if markup == nil {
+		return nil, false
+	}
+	takes := 0
+	rest := &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{}}
+	for _, row := range markup.InlineKeyboard {
+		tapped := false
+		for _, btn := range row {
+			if strings.HasPrefix(btn.CallbackData, takePrefix) {
+				takes++
+				tapped = tapped || btn.CallbackData == takePrefix+orderID
+			}
+		}
+		if !tapped {
+			rest.InlineKeyboard = append(rest.InlineKeyboard, row)
+		}
+	}
+	return rest, takes > 1
+}
+
+// setKeyboard replaces the inline keyboard of m (nil removes it).
+func (b *Bot) setKeyboard(ctx context.Context, s *session, m *telegram.Message, markup *telegram.InlineKeyboardMarkup) {
+	if err := b.tg.EditMessageReplyMarkup(ctx, s.chatID, m.MessageID, markup); err != nil && !telegram.IsMessageNotModified(err) {
+		b.log.Warn("edit offer keyboard failed", "err", err.Error())
+	}
 }
 
 // alert answers a callback with a dialog the driver has to dismiss.
@@ -71,10 +112,11 @@ func (b *Bot) alert(ctx context.Context, q *telegram.CallbackQuery, text string)
 	return b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: text, ShowAlert: true})
 }
 
-// takeFailed explains why the order could not be taken and removes «Алу»
-// from the offer: when the order is gone for good the whole keyboard goes;
-// when the driver can fix the problem (balance, going online, location) the
-// map button stays.
+// takeFailed explains why the order could not be taken. When the order is
+// gone for good (taken, closed, out of reach) its accept button goes — the
+// whole keyboard of a single offer, only its row in an /orders list; when the
+// driver can fix the problem (balance, going online, location, a trip still
+// running) the offer keeps its buttons for a later tap.
 func (b *Bot) takeFailed(ctx context.Context, s *session, q *telegram.CallbackQuery, orderID string, err error) error {
 	e, ok := botapi.AsError(err)
 	if !ok {
@@ -122,16 +164,12 @@ func (b *Bot) takeFailed(ctx context.Context, s *session, q *telegram.CallbackQu
 	if err := b.alert(ctx, q, text); err != nil {
 		b.log.Warn("answer take callback failed", "err", err.Error())
 	}
-	if q.Message != nil {
-		var markup *telegram.InlineKeyboardMarkup
-		if !terminal {
-			markup = runtime.Inline([]telegram.InlineKeyboardButton{
-				runtime.WebAppButton(s.t("btn_map"), b.miniAppURL(ctx, "order_"+orderID))})
+	if q.Message != nil && terminal {
+		rest, many := withoutOrder(q.Message.ReplyMarkup, orderID)
+		if !many {
+			rest = nil
 		}
-		if err := b.tg.EditMessageReplyMarkup(ctx, s.chatID, q.Message.MessageID, markup); err != nil &&
-			!telegram.IsMessageNotModified(err) {
-			b.log.Warn("remove take button failed", "err", err.Error())
-		}
+		b.setKeyboard(ctx, s, q.Message, rest)
 	}
 	if followUp != nil {
 		return followUp()
@@ -152,72 +190,4 @@ func (b *Bot) editOffer(ctx context.Context, s *session, m *telegram.Message, st
 	if err != nil && !telegram.IsMessageNotModified(err) {
 		b.log.Warn("edit offer failed", "err", err.Error())
 	}
-}
-
-// sendTripCard sends the order the driver just took with the passenger's
-// contact: name with a Telegram link, phone when shared, and buttons to open
-// the order and to write in Telegram.
-func (b *Bot) sendTripCard(ctx context.Context, s *session, res botapi.AcceptResult) error {
-	o := res.Order
-	place := func(st botapi.StopSummary) string { return runtime.Esc(stopLabel(s, st)) }
-	lines := []string{s.t("trip_card_title", o.Number), runtime.Esc(s.t("category_"+o.Category)) + " · " +
-		runtime.Esc(o.VehicleClassName.Get(s.lang))}
-	if l := localityLine(o.Locality); l != "" {
-		lines = append(lines, l)
-	}
-	if n := len(o.Stops); n > 0 {
-		lines = append(lines, s.t("order_from", place(o.Stops[0])))
-		if n > 2 {
-			via := make([]string, 0, n-2)
-			for _, st := range o.Stops[1 : n-1] {
-				via = append(via, place(st))
-			}
-			lines = append(lines, s.t("trip_card_via", strings.Join(via, " → ")))
-		}
-		if n > 1 {
-			lines = append(lines, s.t("order_to", place(o.Stops[n-1])))
-		}
-	}
-	lines = append(lines, s.t("trip_card_fare", runtime.Esc(runtime.FormatMoney(o.Fare)),
-		runtime.Esc(s.t("payment_"+o.PaymentMethod))))
-	if o.PassengerCount != nil {
-		lines = append(lines, s.t("trip_card_passengers", *o.PassengerCount))
-	}
-	if o.CargoSize != nil {
-		lines = append(lines, s.t("trip_card_cargo_size", runtime.Esc(s.t("cargo_size_"+*o.CargoSize))))
-	}
-	if o.CargoDescription != nil && *o.CargoDescription != "" {
-		lines = append(lines, s.t("order_cargo", runtime.Esc(*o.CargoDescription)))
-	}
-	if o.Comment != nil && *o.Comment != "" {
-		lines = append(lines, s.t("order_comment", runtime.Esc(*o.Comment)))
-	}
-	if res.Charged > 0 && res.Wallet != nil {
-		lines = append(lines, s.t("trip_card_charged", runtime.Esc(runtime.FormatMoney(res.Charged)),
-			runtime.Esc(runtime.FormatMoney(res.Wallet.Available))))
-	}
-	rows := [][]telegram.InlineKeyboardButton{b.appButton(ctx, s, "btn_open_order", "order_"+o.ID)}
-	if p := o.Passenger; p != nil {
-		name := strings.TrimSpace(p.FirstName)
-		if name == "" {
-			name = "Telegram"
-		}
-		client := runtime.Esc(name)
-		if strings.HasPrefix(p.TelegramURL, "https://t.me/") || strings.HasPrefix(p.TelegramURL, "tg://user?id=") {
-			client = `<a href="` + runtime.Esc(p.TelegramURL) + `">` + client + `</a>`
-		}
-		lines = append(lines, "", s.t("trip_card_client", client))
-		if p.Phone != nil && *p.Phone != "" {
-			lines = append(lines, s.t("trip_card_phone", runtime.Esc(runtime.FormatPhone(*p.Phone))))
-		} else {
-			lines = append(lines, s.t("trip_card_no_phone"))
-		}
-		if strings.HasPrefix(p.TelegramURL, "https://t.me/") {
-			rows = append(rows, []telegram.InlineKeyboardButton{runtime.URLButton(s.t("btn_write_tg"), p.TelegramURL)})
-		}
-	}
-	if o.RecipientPhone != nil && *o.RecipientPhone != "" {
-		lines = append(lines, s.t("trip_card_recipient", runtime.Esc(runtime.FormatPhone(*o.RecipientPhone))))
-	}
-	return b.send(ctx, s, strings.Join(lines, "\n"), runtime.Inline(rows...))
 }

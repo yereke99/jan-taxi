@@ -7,8 +7,12 @@
 import { isApiError } from '../../services/http'
 
 export type AcceptFailure =
-  /** Another driver won, or the order is gone: toast, drop it from the list. */
+  /** Another driver won (409 order_already_taken): toast, drop it from the list. */
   | { kind: 'taken' }
+  /** No longer within the driver's reach or vehicle (404): toast, drop it. */
+  | { kind: 'unavailable' }
+  /** Closed without a driver — cancelled or expired (invalid_transition): toast, drop it. */
+  | { kind: 'closed' }
   /** Not enough available balance: open the top-up screen with this amount. */
   | { kind: 'insufficient_balance'; required: number | null; available: number | null; suggestedTopUp: number | null }
   /** The driver already has an active order: open the trip. */
@@ -42,9 +46,11 @@ export function classifyAcceptError(err: unknown): AcceptFailure {
   const d = err.details
   switch (err.code) {
     case 'order_already_taken':
-    case 'not_found':
-    case 'invalid_transition':
       return { kind: 'taken' }
+    case 'not_found':
+      return { kind: 'unavailable' }
+    case 'invalid_transition':
+      return { kind: 'closed' }
     case 'insufficient_balance': {
       const required = int(d.required)
       const available = int(d.available)

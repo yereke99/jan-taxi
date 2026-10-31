@@ -130,6 +130,7 @@ func (e eligibility) error(ctx context.Context, q db.Querier, reason string) err
 // driver.status_changed to the driver and the admin panel.
 func SetAvailability(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID, online bool) (AvailabilityResult, error) {
 	var res AvailabilityResult
+	wentOnline := false
 	err := db.WithTx(ctx, pool, func(tx pgx.Tx) error {
 		e, p, err := loadEligibility(ctx, tx, driverID, true)
 		if err != nil {
@@ -162,8 +163,14 @@ func SetAvailability(ctx context.Context, pool *pgxpool.Pool, driverID uuid.UUID
 			return fmt.Errorf("drivers: set availability: %w", err)
 		}
 		res = AvailabilityResult{Online: online, OnlineSince: utcPtr(since)}
+		wentOnline = online
 		return PublishStatus(ctx, tx, driverID, p.UserID, p.Status, online)
 	})
+	if err == nil && wentOnline {
+		// Orders already waiting nearby reach the driver at once (bot
+		// message and order.available), not on the next dispatch_expand run.
+		offerNearby(ctx, pool, driverID)
+	}
 	return res, err
 }
 

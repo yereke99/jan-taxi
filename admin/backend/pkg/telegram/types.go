@@ -64,17 +64,20 @@ type File struct {
 
 // Message is the subset of the Bot API Message object the bots use.
 type Message struct {
-	MessageID int64       `json:"message_id"`
-	From      *User       `json:"from,omitempty"`
-	Chat      Chat        `json:"chat"`
-	Date      int64       `json:"date"`
-	Text      string      `json:"text,omitempty"`
-	Caption   string      `json:"caption,omitempty"`
-	Contact   *Contact    `json:"contact,omitempty"`
-	Location  *Location   `json:"location,omitempty"`
-	Document  *Document   `json:"document,omitempty"`
-	Photo     []PhotoSize `json:"photo,omitempty"`
-	EditDate  int64       `json:"edit_date,omitempty"`
+	MessageID int64  `json:"message_id"`
+	From      *User  `json:"from,omitempty"`
+	Chat      Chat   `json:"chat"`
+	Date      int64  `json:"date"`
+	Text      string `json:"text,omitempty"`
+	Caption   string `json:"caption,omitempty"`
+	// ReplyMarkup is the inline keyboard of a message the bot sent (as seen
+	// in a callback query), so one row can be removed and the rest kept.
+	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	Contact     *Contact              `json:"contact,omitempty"`
+	Location    *Location             `json:"location,omitempty"`
+	Document    *Document             `json:"document,omitempty"`
+	Photo       []PhotoSize           `json:"photo,omitempty"`
+	EditDate    int64                 `json:"edit_date,omitempty"`
 	// ForwardOrigin is set when the message was forwarded (MessageOrigin);
 	// only its presence matters here, so it is kept raw.
 	ForwardOrigin json.RawMessage `json:"forward_origin,omitempty"`

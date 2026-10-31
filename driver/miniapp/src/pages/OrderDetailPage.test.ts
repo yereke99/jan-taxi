@@ -1,6 +1,6 @@
-// Order detail before accepting (§22.2): the commission charged on acceptance
-// is stated above the button, and a 402 insufficient_balance keeps the order
-// on screen with what is missing and a top-up button.
+// Order detail before accepting: the fare is shown, the commission never is
+// (it is still charged on acceptance, §22.2), and a 402 insufficient_balance
+// keeps the order on screen with what is missing and a top-up button.
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -88,12 +88,23 @@ describe('OrderDetailPage', () => {
     mocked.getOrder.mockResolvedValue(order())
   })
 
-  it('shows the requested class with the passenger count and the commission before accepting', async () => {
+  it('shows the requested class with the passenger count and the fare, never the commission', async () => {
     const { w } = await mountPage()
     expect(w.text()).toContain('Минивэн')
     expect(w.text()).toContain('6 жолаушы')
-    expect(plain(w.find('footer').text())).toContain('Комиссия 50 ₸ қабылдаған кезде алынады')
-    expect(w.text()).not.toMatch(/10\s?%/)
+    expect(plain(w.text())).toContain('3 000 ₸')
+    expect(w.text()).not.toMatch(/омисси|Таза табыс|10\s?%/)
+    expect(plain(w.text())).not.toContain('50 ₸')
+    expect(w.find('footer').text()).toContain('Тапсырысты алу')
+  })
+
+  it('accepting moves to the trip screen', async () => {
+    mocked.acceptOrder.mockResolvedValue({ ...order(), status: 'accepted', is_mine: true, can_accept: false })
+    const { w, router } = await mountPage()
+    await w.findAll('footer button').at(-1)!.trigger('click')
+    await flushPromises()
+    expect(mocked.acceptOrder).toHaveBeenCalledWith(ID)
+    expect(router.currentRoute.value.name).toBe(ROUTE.trip)
   })
 
   it('shows the locality of pickup A next to the route, not the tariff region', async () => {
@@ -113,7 +124,8 @@ describe('OrderDetailPage', () => {
     await accept.trigger('click')
     await flushPromises()
     const footer = w.find('footer')
-    expect(plain(footer.find('[role="alert"]').text())).toContain('комиссияға 50 ₸ керек, қолжетімдісі — 20 ₸')
+    expect(plain(footer.find('[role="alert"]').text())).toContain('тапсырысты алу үшін 50 ₸ керек, қолжетімдісі — 20 ₸')
+    expect(footer.text()).not.toMatch(/омисси/)
     const topUp = footer.findAll('button')[0]!
     expect(plain(topUp.text())).toContain('Толтыру · 1 000 ₸')
     await topUp.trigger('click')

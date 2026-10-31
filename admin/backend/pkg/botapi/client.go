@@ -195,6 +195,23 @@ type errorEnvelope struct {
 }
 
 // do performs one API call; idempotent calls are retried on transient failures.
+type requestIDKey struct{}
+
+// WithRequestID tags the API calls made with ctx with id (sent as
+// X-Request-ID, at most 64 characters), so the API's log lines of a Telegram
+// update can be found by it, e.g. "tg-cb-<callback query id>".
+func WithRequestID(ctx context.Context, id string) context.Context {
+	if id == "" || len(id) > 64 {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+func requestIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}
+
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, in, out any, idempotent bool) error {
 	attempts := 1
 	if idempotent {
@@ -269,6 +286,9 @@ func (c *Client) once(ctx context.Context, method, path string, query url.Values
 	req.Header.Set("Authorization", "Bearer "+c.Secret)
 	req.Header.Set("X-Jantaxi-Bot", c.Bot)
 	req.Header.Set("Accept", "application/json")
+	if id := requestIDFrom(ctx); id != "" {
+		req.Header.Set("X-Request-ID", id)
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}

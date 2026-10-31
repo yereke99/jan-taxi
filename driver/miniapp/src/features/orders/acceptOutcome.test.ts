@@ -9,10 +9,10 @@ describe('classifyAcceptError', () => {
     expect(classifyAcceptError(new ApiError(409, 'order_already_taken', 'taken'))).toEqual({ kind: 'taken' })
   })
 
-  it('an order that disappeared or closed is treated as taken', () => {
-    expect(classifyAcceptError(new ApiError(404, 'not_found', 'gone'))).toEqual({ kind: 'taken' })
+  it('an order out of reach (404) or closed without a driver (invalid_transition) has its own outcome', () => {
+    expect(classifyAcceptError(new ApiError(404, 'not_found', 'gone'))).toEqual({ kind: 'unavailable' })
     expect(classifyAcceptError(new ApiError(409, 'invalid_transition', 'closed', {}, { from: 'cancelled', action: 'accept' }))).toEqual({
-      kind: 'taken',
+      kind: 'closed',
     })
   })
 

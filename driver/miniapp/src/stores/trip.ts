@@ -25,6 +25,7 @@ export const useTripStore = defineStore('trip', () => {
   const busy = ref(false)
   const error = shallowRef<unknown>(null)
   let inFlight: Promise<void> | null = null
+  let again = false
 
   const hasActive = computed(() => active.value !== null)
 
@@ -37,22 +38,38 @@ export const useTripStore = defineStore('trip', () => {
     active.value = null
   }
 
-  function refresh(): Promise<void> {
-    inFlight ??= (async () => {
-      try {
-        const prev = active.value
-        const o = await getActive()
-        if (!o && prev) {
-          // The order ended elsewhere (e.g. the passenger cancelled): show its real final state.
-          const last = await getOrder(prev.id).catch(() => null)
-          if (last && !isActiveTripStatus(last.status)) finished.value = last
-        }
-        apply(o)
-        error.value = null
-        loaded.value = true
-      } catch (err) {
-        error.value = useSessionStore().handleAccessError(err) ? null : err
+  async function load(): Promise<void> {
+    try {
+      const prev = active.value
+      const o = await getActive()
+      if (!o && prev) {
+        // The order ended elsewhere (e.g. the passenger cancelled): show its real final state.
+        const last = await getOrder(prev.id).catch(() => null)
+        if (last && !isActiveTripStatus(last.status)) finished.value = last
       }
+      apply(o)
+      error.value = null
+      loaded.value = true
+    } catch (err) {
+      error.value = useSessionStore().handleAccessError(err) ? null : err
+    }
+  }
+
+  /**
+   * Re-fetches the active order. A call made while a request is running gets
+   * one follow-up request, so a change committed after that request started
+   * (an event that triggered this call) is never lost.
+   */
+  function refresh(): Promise<void> {
+    if (inFlight) {
+      again = true
+      return inFlight
+    }
+    inFlight = (async () => {
+      do {
+        again = false
+        await load()
+      } while (again)
     })().finally(() => {
       inFlight = null
     })
@@ -71,9 +88,17 @@ export const useTripStore = defineStore('trip', () => {
     }
   }
 
+  /** Orders this app accepted itself (no "order assigned to you" toast for them). */
+  const ownAccepts = new Set<string>()
+
   /** Accepts an available order; on success it becomes the active trip. */
   function accept(orderId: string): Promise<DriverOrderDetail> {
+    ownAccepts.add(orderId)
     return guarded(() => acceptOrder(orderId))
+  }
+
+  function acceptedHere(orderId: string): boolean {
+    return ownAccepts.has(orderId)
   }
 
   /** Runs the primary action computed by features/trip/sequence. */
@@ -96,5 +121,5 @@ export const useTripStore = defineStore('trip', () => {
     finished.value = null
   }
 
-  return { active, finished, loaded, busy, error, hasActive, refresh, accept, perform, clearFinished, apply }
+  return { active, finished, loaded, busy, error, hasActive, refresh, accept, acceptedHere, perform, clearFinished, apply }
 })

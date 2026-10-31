@@ -135,10 +135,25 @@ func driverOrder(ctx context.Context, q db.Querier, id, driverID uuid.UUID) (Dri
 		if err != nil {
 			return DriverOrderDetail{}, err
 		}
-		if !ok {
-			return DriverOrderDetail{}, httpx.NotFound()
+		switch {
+		case ok:
+			dist = card.DistanceToPickupM
+		default:
+			// An offer the driver still holds (opened from the bot's offer
+			// message) shows even while they cannot take it right now —
+			// offline, location too old, balance too low: the accept button
+			// then says what to fix. Anything else stays invisible.
+			held, err := dispatch.HoldsOpenOffer(ctx, q, id, driverID)
+			if err != nil {
+				return DriverOrderDetail{}, err
+			}
+			if !held {
+				return DriverOrderDetail{}, httpx.NotFound()
+			}
+			if dist, err = distanceToPickup(ctx, q, driverID, id); err != nil {
+				return DriverOrderDetail{}, err
+			}
 		}
-		dist = card.DistanceToPickupM
 	} else if dist, err = distanceToPickup(ctx, q, driverID, id); err != nil {
 		return DriverOrderDetail{}, err
 	}

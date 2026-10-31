@@ -64,6 +64,14 @@ func Publish(ctx context.Context, q db.Querier, typ string, data any, scopes ...
 	return nil
 }
 
+// PublishUnavailable tells every approved driver's app that order c left the
+// market (taken, cancelled or expired), so its card disappears from every
+// open list at once. The event holds the order id and status only.
+func PublishUnavailable(ctx context.Context, q db.Querier, c Core) error {
+	return Publish(ctx, q, realtime.OrderUnavailable,
+		map[string]any{"order_id": c.ID.String(), "status": c.Status}, realtime.DriversScope)
+}
+
 // DriverScopes maps driver ids to their realtime scopes.
 func DriverScopes(ids []uuid.UUID) []string {
 	out := make([]string, 0, len(ids))

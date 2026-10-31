@@ -14,6 +14,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/drivers"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
+	"github.com/yereke99/jantaxi/admin/backend/internal/pricing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
 
@@ -276,14 +277,18 @@ func TestExpandOffersNewlyEligibleDrivers(t *testing.T) {
 	if _, err := drivers.SetAvailability(ctx, e.pool, late.DriverID, true); err != nil {
 		t.Fatalf("late driver online: %v", err)
 	}
+	// Going online offers the waiting order at once (dispatch.OfferNearby).
+	if e.offers(o.ID, late.DriverID) != 1 || e.offerNotices(o.ID, late.DriverID) != 1 {
+		t.Fatal("driver going online not offered the waiting order at once")
+	}
 	e.locate(mover.DriverID, lat1km, pickupLon, 0)
 	if err := db.WithTx(ctx, e.pool, func(tx pgx.Tx) error {
 		return wallets.Adjust(ctx, tx, poor.DriverID, 1000, e.adminID, "adjust:"+uuid.NewString(), "test top-up")
 	}); err != nil {
 		t.Fatalf("top up: %v", err)
 	}
-	if n := e.expand(); n != 3 {
-		t.Fatalf("expand = %d, want 3", n)
+	if n := e.expand(); n != 2 {
+		t.Fatalf("expand = %d, want 2", n)
 	}
 	for _, d := range []testDriver{first, late, mover, poor} {
 		if e.offers(o.ID, d.DriverID) != 1 || e.offerNotices(o.ID, d.DriverID) != 1 {
@@ -298,6 +303,44 @@ func TestExpandOffersNewlyEligibleDrivers(t *testing.T) {
 	}
 	if got := e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1`, o.ID); got != 4 {
 		t.Fatalf("offers = %d", got)
+	}
+}
+
+// TestOfferNearbyOnFreshLocation: a free online driver whose fix was too old
+// to dispatch on is offered the orders waiting around them by the next fresh
+// location itself (Mini App or bot), not by the next dispatch_expand run;
+// later fixes, repeated runs and the job never offer the same order twice.
+func TestOfferNearbyOnFreshLocation(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	stale := e.driverAt("EMB", 1000, lat1km, pickupLon)
+	e.locate(stale.DriverID, lat1km, pickupLon, time.Hour) // too old to dispatch on
+	o, _, _ := e.order(embiStops[:2], 800)
+	far, _, _ := e.order([]pricing.QuoteStop{{Lat: lat20km, Lon: pickupLon, Address: "Алыс"}, {Lat: lat20km + 0.01, Lon: pickupLon, Address: "Ары қарай"}}, 800)
+	if e.offers(o.ID, stale.DriverID) != 0 {
+		t.Fatal("a driver with a stale fix was offered the order")
+	}
+	if err := drivers.RecordLocation(ctx, e.pool, stale.DriverID, drivers.LocationInput{Lat: lat1km, Lon: pickupLon}, drivers.SourceMiniApp); err != nil {
+		t.Fatalf("fresh fix: %v", err)
+	}
+	if e.offers(o.ID, stale.DriverID) != 1 || e.offerNotices(o.ID, stale.DriverID) != 1 {
+		t.Fatal("fresh fix did not offer the waiting order at once")
+	}
+	if e.offers(far.ID, stale.DriverID) != 0 {
+		t.Fatal("an order outside the radius was offered")
+	}
+	// The next fixes are fresh already: nothing is offered again.
+	if err := drivers.RecordLocation(ctx, e.pool, stale.DriverID, drivers.LocationInput{Lat: lat1km, Lon: pickupLon}, drivers.SourceBotLive); err != nil {
+		t.Fatalf("second fix: %v", err)
+	}
+	if n, err := dispatch.OfferNearby(ctx, e.pool, stale.DriverID); err != nil || n != 0 {
+		t.Fatalf("repeated nearby offer = %d %v", n, err)
+	}
+	if n := e.expand(); n != 0 {
+		t.Fatalf("expand after the nearby offer = %d", n)
+	}
+	if e.offerNotices(o.ID, stale.DriverID) != 1 {
+		t.Fatal("the driver was notified twice")
 	}
 }
 
@@ -341,4 +384,41 @@ func TestAvailableOrdersPolicy(t *testing.T) {
 	e.expect(e.do(susp.c, http.MethodPost, path("/driver/orders/%s/accept", o2.ID), nil), http.StatusForbidden, "driver_not_approved")
 	// A driver must be online to accept.
 	e.expect(e.do(offline.c, http.MethodPost, path("/driver/orders/%s/accept", o2.ID), nil), http.StatusConflict, "driver_offline")
+}
+
+// TestOfferedOrderOpensWhileIneligible: a driver who opens an order from the
+// bot's offer message after going offline (or with a stale fix) still sees
+// it; the accept then says what to fix. A driver who was never offered the
+// order does not see it.
+func TestOfferedOrderOpensWhileIneligible(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	offered := e.driverAt("EMB", 1000, lat1km, pickupLon)
+	o, _, _ := e.order(embiStops[:2], 800)
+	if e.offers(o.ID, offered.DriverID) != 1 {
+		t.Fatal("driver not offered the order")
+	}
+	stranger := e.driverAt("EMB", 1000, lat20km, pickupLon) // too far, never offered
+	if _, err := drivers.SetAvailability(ctx, e.pool, offered.DriverID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	r := e.do(offered.c, http.MethodGet, path("/driver/orders/%s", o.ID), nil)
+	e.expect(r, http.StatusOK, "")
+	var d struct {
+		ID        string `json:"id"`
+		CanAccept bool   `json:"can_accept"`
+		IsMine    bool   `json:"is_mine"`
+	}
+	r.decode(t, &d)
+	if d.ID != o.ID.String() || !d.CanAccept || d.IsMine {
+		t.Fatalf("offered order while offline: %s", r.Body)
+	}
+	e.expect(e.do(offered.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil), http.StatusConflict, "driver_offline")
+	e.expect(e.do(stranger.c, http.MethodGet, path("/driver/orders/%s", o.ID), nil), http.StatusNotFound, "")
+
+	// Once taken by someone else the offer is closed and the order disappears.
+	winner := e.driverAt("EMB", 1000, pickupLat, pickupLon)
+	e.expect(e.do(winner.c, http.MethodPost, path("/driver/orders/%s/accept", o.ID), nil), http.StatusOK, "")
+	e.expect(e.do(offered.c, http.MethodGet, path("/driver/orders/%s", o.ID), nil), http.StatusNotFound, "")
 }

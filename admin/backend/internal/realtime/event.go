@@ -28,6 +28,13 @@ const MaxPayloadBytes = 7900
 // AdminScope addresses every connected admin session.
 const AdminScope = "admin"
 
+// DriversScope addresses every connected driver app of an approved driver.
+// It carries only order.unavailable (an order id and its new status), so a
+// card disappears from every open list the moment the order is taken,
+// cancelled or expires, including lists of drivers who never had an offer
+// for it.
+const DriversScope = "drivers"
+
 // Event types (ARCHITECTURE §9).
 const (
 	OrderCreated              = "order.created"
@@ -53,6 +60,10 @@ const (
 	// UserPhoneVerified tells the passenger app that the phone shared with
 	// the passenger bot was stored (§22.5).
 	UserPhoneVerified = "user.phone_verified"
+	// OrderUnavailable tells every approved driver's app (DriversScope) that
+	// a searching order left the market — taken, cancelled or expired:
+	// {order_id, status}.
+	OrderUnavailable = "order.unavailable"
 )
 
 // UserScope addresses a user (passenger app, and the driver app's user).
@@ -127,7 +138,7 @@ func encode(ev Event, id uuid.UUID, ts time.Time) ([]byte, error) {
 }
 
 func validScope(s string) bool {
-	if s == AdminScope {
+	if s == AdminScope || s == DriversScope {
 		return true
 	}
 	kind, id, ok := strings.Cut(s, ":")

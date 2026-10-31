@@ -1,12 +1,14 @@
 <!--
   Available orders (GET /driver/orders): orders within the driver's dispatch
   radius around pickup A (5 km, growing to 10 km while an order waits),
-  nearest first, refreshed by realtime order.available / order.taken hints,
-  pull-to-refresh and a polling fallback. The header carries the driver, the
-  online switch and the available balance. When the driver cannot take
-  orders, the reason and the way out (go online, top up, open the trip) come
-  first; a missing or stale location is fixed right away by sending a fresh
-  GPS fix.
+  nearest first, refreshed by realtime hints (order.available adds,
+  order.taken / order.unavailable remove within about a second),
+  pull-to-refresh and a slow polling fallback. Every card takes its order in
+  one tap («Тапсырысты алу», features/orders/useAcceptOrder); the rest of the
+  card opens the order. The header carries the driver, the online switch and
+  the available balance. When the driver cannot take orders, the reason and
+  the way out (go online, top up, open the trip) come first; a missing or
+  stale location is fixed right away by sending a fresh GPS fix.
 -->
 <script setup lang="ts">
 import { Inbox } from '@lucide/vue'
@@ -27,10 +29,14 @@ import { useOrdersStore } from '../stores/orders'
 import { useWalletStore } from '../stores/wallet'
 import { useFormat } from '../composables/useFormat'
 import { useEnsureLocation } from '../features/location/useEnsureLocation'
+import { useAcceptOrder } from '../features/orders/useAcceptOrder'
+import { useRealtimeStatus } from '../services/realtime'
 import { haptics } from '../telegram'
 
-/** Fallback refresh while realtime hints may be missing. */
+/** Fallback refresh while the realtime connection is down. */
 const POLL_MS = 20_000
+/** While the connection is up, hints keep the list current; a rare full refresh is a safety net. */
+const POLL_CONNECTED_MS = 60_000
 /** Dispatch radius defaults (dispatch.radius_base_m / radius_max_m, ARCHITECTURE §7). */
 const RADIUS_BASE_KM = 5
 const RADIUS_MAX_KM = 10
@@ -43,6 +49,8 @@ const duty = useDutyStore()
 const wallet = useWalletStore()
 const fmt = useFormat()
 const gps = useEnsureLocation()
+const acceptor = useAcceptOrder()
+const realtimeStatus = useRealtimeStatus()
 
 const page = ref<InstanceType<typeof DriverPage> | null>(null)
 const scrollEl = computed(() => page.value?.scrollEl ?? null)
@@ -51,7 +59,13 @@ const clock = setInterval(() => (now.value = Date.now()), 30_000)
 onBeforeUnmount(() => clearInterval(clock))
 
 const { pull, armed, refreshing } = usePullToRefresh(scrollEl, () => orders.refresh())
-usePolling(() => orders.refresh(), POLL_MS)
+let lastPoll = Date.now()
+usePolling(() => {
+  const now = Date.now()
+  if (realtimeStatus.value === 'open' && now - lastPoll < POLL_CONNECTED_MS) return
+  lastPoll = now
+  return orders.refresh()
+}, POLL_MS)
 
 const reason = computed(() => {
   const e = orders.eligibility
@@ -61,6 +75,10 @@ const firstLoad = computed(() => !orders.loaded && orders.loading)
 
 function open(id: string): void {
   void router.push({ name: ROUTE.order, params: { id } })
+}
+
+function accept(id: string): void {
+  void acceptor.accept(id)
 }
 
 const needsLocation = computed(() => reason.value === 'location_required' || reason.value === 'location_stale')
@@ -183,7 +201,16 @@ onMounted(() => {
 
     <template v-else>
       <TransitionGroup name="ocard" tag="div" class="orders__list">
-        <OrderCard v-for="o in orders.items" :key="o.id" :order="o" :now="now" @open="open" />
+        <OrderCard
+          v-for="o in orders.items"
+          :key="o.id"
+          :order="o"
+          :now="now"
+          :accepting="acceptor.acceptingId.value === o.id"
+          :disabled="acceptor.busy.value"
+          @open="open"
+          @accept="accept"
+        />
       </TransitionGroup>
       <div v-if="orders.loaded && orders.items.length === 0 && (!reason || reason === 'insufficient_balance')" class="orders__state">
         <JEmptyState :title="t('orders.empty_title')" :description="t('orders.empty_text')">

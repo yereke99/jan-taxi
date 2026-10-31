@@ -60,6 +60,8 @@ export interface RealtimeOptions {
   idleTimeoutMs?: number
   /** Give up on a connection whose auth was not acknowledged in time. */
   readyTimeoutMs?: number
+  /** After a return to the foreground, reconnect when the immediate ping gets no answer this fast. */
+  probeTimeoutMs?: number
   /** Listen to document visibility and online events (default true). */
   watchLifecycle?: boolean
 }
@@ -101,6 +103,7 @@ export class RealtimeClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
   private readyTimer: ReturnType<typeof setTimeout> | undefined
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined
+  private probeTimer: ReturnType<typeof setTimeout> | undefined
   private readonly handlers = new Map<string, Set<EventHandler>>()
   private readonly resyncCallbacks = new Set<() => void>()
   private readonly statusCallbacks = new Set<(s: RealtimeStatus) => void>()
@@ -161,13 +164,16 @@ export class RealtimeClient {
 
   /**
    * The app returned to the foreground (Telegram activation, visibility).
-   * Re-syncs when connected, otherwise reconnects immediately (and re-syncs
-   * once ready).
+   * Re-syncs when connected — and probes the connection, which may read as
+   * open after the OS or a NAT dropped it in the background —, otherwise
+   * reconnects immediately (and re-syncs once ready).
    */
   notifyForeground(): void {
     if (this.stopped) return
-    if (this.statusValue === 'open') this.fireResync()
-    else this.reconnectNow()
+    if (this.statusValue === 'open') {
+      this.fireResync()
+      this.probe()
+    } else this.reconnectNow()
   }
 
   /** Skips the pending backoff and connects now. */
@@ -325,6 +331,22 @@ export class RealtimeClient {
     }, every)
   }
 
+  /** Pings now and reconnects when nothing arrives within probeTimeoutMs. */
+  private probe(): void {
+    const socket = this.socket
+    if (!socket || this.probeTimer) return
+    const sentAt = Date.now()
+    this.sendFrame(socket, { type: 'ping' })
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = undefined
+      if (socket !== this.socket || this.lastInboundAt >= sentAt) return
+      // A dead connection may never finish the close handshake: drop it now.
+      socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null
+      socket.close(CLOSE_CLIENT_TIMEOUT, 'probe timeout')
+      void this.handleClose(socket, { code: CLOSE_CLIENT_TIMEOUT, reason: 'probe timeout' } as CloseEvent)
+    }, this.opts.probeTimeoutMs ?? 5_000)
+  }
+
   private sendFrame(socket: SocketLike, frame: Record<string, unknown>): void {
     if (socket.readyState !== OPEN) return
     try {
@@ -362,7 +384,8 @@ export class RealtimeClient {
     clearTimeout(this.readyTimer)
     clearInterval(this.heartbeatTimer)
     clearTimeout(this.reconnectTimer)
-    this.readyTimer = this.heartbeatTimer = this.reconnectTimer = undefined
+    clearTimeout(this.probeTimer)
+    this.readyTimer = this.heartbeatTimer = this.reconnectTimer = this.probeTimer = undefined
   }
 
   private attachLifecycle(): void {

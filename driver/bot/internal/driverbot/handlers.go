@@ -279,7 +279,9 @@ func orderCard(s *session, o botapi.OrderCard) string {
 	if o.DistanceToPickupM != nil {
 		lines = append(lines, s.t("order_pickup_dist", runtime.Esc(runtime.FormatDistance(*o.DistanceToPickupM, s.lang))))
 	}
-	lines = append(lines, s.t("order_meta", runtime.Esc(runtime.FormatDistance(o.DistanceM, s.lang)), runtime.Esc(runtime.FormatMoney(o.CommissionAmount))))
+	if o.DistanceM != nil {
+		lines = append(lines, s.t("order_meta", runtime.Esc(runtime.FormatDistance(*o.DistanceM, s.lang))))
+	}
 	if o.CargoDescription != nil && *o.CargoDescription != "" {
 		lines = append(lines, s.t("order_cargo", runtime.Esc(*o.CargoDescription)))
 	}

@@ -169,31 +169,32 @@ type StopSummary struct {
 
 // OrderCard is an available order as listed to an eligible driver.
 type OrderCard struct {
-	ID                string        `json:"id"`
-	Number            int64         `json:"number"`
-	Category          string        `json:"category"`
-	ServiceType       string        `json:"service_type"`
-	CargoType         string        `json:"cargo_type"`
-	VehicleClass      string        `json:"vehicle_class"`
-	VehicleClassName  Localized     `json:"vehicle_class_name"`
-	PassengerCount    *int          `json:"passenger_count"`
-	CargoSize         *string       `json:"cargo_size"`
-	CargoVolumeL      int           `json:"cargo_volume_l"`
-	Locality          *string       `json:"locality"`
-	TariffRegion      *TariffRegion `json:"tariff_region"`
-	Stops             []StopSummary `json:"stops"`
-	StopCount         int           `json:"stop_count"`
-	Comment           *string       `json:"comment"`
-	CargoDescription  *string       `json:"cargo_description"`
-	Fare              int64         `json:"fare"`
-	Currency          string        `json:"currency"`
-	CommissionAmount  int64         `json:"commission_amount"`
-	PaymentMethod     string        `json:"payment_method"`
-	DistanceM         int           `json:"distance_m"`
-	DurationS         int           `json:"duration_s"`
-	DistanceToPickupM *int          `json:"distance_to_pickup_m"`
-	CreatedAt         time.Time     `json:"created_at"`
-	SearchExpiresAt   *time.Time    `json:"search_expires_at"`
+	ID               string        `json:"id"`
+	Number           int64         `json:"number"`
+	Category         string        `json:"category"`
+	ServiceType      string        `json:"service_type"`
+	CargoType        string        `json:"cargo_type"`
+	VehicleClass     string        `json:"vehicle_class"`
+	VehicleClassName Localized     `json:"vehicle_class_name"`
+	PassengerCount   *int          `json:"passenger_count"`
+	CargoSize        *string       `json:"cargo_size"`
+	CargoVolumeL     int           `json:"cargo_volume_l"`
+	Locality         *string       `json:"locality"`
+	TariffRegion     *TariffRegion `json:"tariff_region"`
+	Stops            []StopSummary `json:"stops"`
+	StopCount        int           `json:"stop_count"`
+	Comment          *string       `json:"comment"`
+	CargoDescription *string       `json:"cargo_description"`
+	Fare             int64         `json:"fare"`
+	Currency         string        `json:"currency"`
+	CommissionAmount int64         `json:"commission_amount"`
+	PaymentMethod    string        `json:"payment_method"`
+	// DistanceM and DurationS are nil for a route with a manually typed stop.
+	DistanceM         *int       `json:"distance_m"`
+	DurationS         *int       `json:"duration_s"`
+	DistanceToPickupM *int       `json:"distance_to_pickup_m"`
+	CreatedAt         time.Time  `json:"created_at"`
+	SearchExpiresAt   *time.Time `json:"search_expires_at"`
 }
 
 // AvailableOrders is the driver's order list plus eligibility.

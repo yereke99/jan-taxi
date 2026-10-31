@@ -294,6 +294,39 @@ describe('RealtimeClient', () => {
     rt.stop()
   })
 
+  it('probes the connection on foreground and replaces one that does not answer', async () => {
+    const rt = client({ probeTimeoutMs: 2000 })
+    const resync = vi.fn()
+    rt.onResync(resync)
+    rt.start()
+    const s = latest()
+    s.serverOpen()
+    await flush()
+    s.serverSend({ type: 'ready' })
+    rt.notifyForeground()
+    expect(s.frames().at(-1)).toEqual({ type: 'ping' })
+    // A live connection answers: nothing happens.
+    s.serverSend({ type: 'pong' })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(s.closed).toBeNull()
+    expect(rt.status).toBe('open')
+
+    // A connection dropped in the background stays silent: it is replaced.
+    rt.notifyForeground()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(s.closed?.reason).toBe('probe timeout')
+    expect(rt.status).toBe('reconnecting')
+    await vi.advanceTimersByTimeAsync(1000)
+    const next = latest()
+    expect(next).not.toBe(s)
+    next.serverOpen()
+    await flush()
+    next.serverSend({ type: 'ready' })
+    expect(rt.status).toBe('open')
+    expect(resync).toHaveBeenCalledTimes(3) // two foregrounds + the reconnect
+    rt.stop()
+  })
+
   it('stops cleanly and does not reconnect', async () => {
     const rt = client()
     rt.start()

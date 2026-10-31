@@ -34,6 +34,12 @@ func TestSearchExpiry(t *testing.T) {
 	e.expect(e.do(busy.c, http.MethodPost, path("/driver/orders/%s/accept", taken.ID), nil), http.StatusOK, "")
 	e.expireSearch(due.ID)
 	e.expireSearch(taken.ID)
+	// The offers reached the driver bot (an unsent offer is simply never sent).
+	if _, err := e.pool.Exec(ctx, `
+		UPDATE notification_outbox SET status = 'sent', sent_at = now(), telegram_message_id = 5000 + attempts
+		WHERE template = 'order_available_driver' AND status = 'pending'`); err != nil {
+		t.Fatal(err)
+	}
 
 	n, err := dispatch.ExpireSearches(ctx, e.pool)
 	if err != nil || n != 1 {
@@ -53,6 +59,15 @@ func TestSearchExpiry(t *testing.T) {
 	}
 	if got := e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1 AND driver_id = $2 AND status = 'expired'`, due.ID, drv.DriverID); got != 1 {
 		t.Fatalf("expired offers = %d", got)
+	}
+	// The offer message says the search ended, not that someone cancelled.
+	if got := e.count(`SELECT count(*) FROM notification_outbox WHERE kind = 'edit' AND template = 'order_offer_expired'
+		AND dedupe_key = $1`, "offer_expired:"+due.ID.String()+":"+drv.DriverID.String()); got != 1 {
+		t.Fatalf("expired offer edits = %d", got)
+	}
+	if got := e.count(`SELECT count(*) FROM notification_outbox WHERE kind = 'edit' AND template = 'order_offer_cancelled'
+		AND dedupe_key LIKE $1`, "offer_cancelled:"+due.ID.String()+":%"); got != 0 {
+		t.Fatalf("expired search edited as cancelled: %d", got)
 	}
 	if e.outbox("order_no_driver", duePID) != 1 {
 		t.Fatal("passenger not told that no driver was found")

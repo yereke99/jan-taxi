@@ -4,8 +4,9 @@
   complete — 2GIS hand-off, the passenger contact (call when the phone was
   shared, Telegram chat), the requested class and load, all stops. Drivers
   cannot cancel (§22.3): a problem goes to support, which can cancel or
-  reassign. When the order ends (here or elsewhere) its final state is
-  summarised; a passenger's cancellation reason is not shown to the driver.
+  reassign. When the order ends (here or elsewhere) its outcome is shown —
+  a completed trip only as «Сапар сәтті аяқталды», without fare, commission
+  or earnings; a passenger's cancellation reason is not shown to the driver.
 -->
 <script setup lang="ts">
 import { CircleCheck, CircleX, Headset, MapPin } from '@lucide/vue'
@@ -157,7 +158,7 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <FareBreakdown class="tpage__group" :fare="order.fare" :commission="order.commission_amount" :payment-method="order.payment_method" charged />
+        <FareBreakdown class="tpage__group" :fare="order.fare" :payment-method="order.payment_method" />
 
         <JListGroup class="tpage__group" :footer="t('trip.problem_note')">
           <JListRow :title="t('trip.problem')" :to="{ name: ROUTE.support }">
@@ -180,15 +181,8 @@ onBeforeUnmount(() => {
         :class="{ 'is-ok': finished.status === 'completed' }"
         aria-hidden="true"
       />
-      <template v-if="finished.status === 'completed'">
-        <h1 class="tpage__done-title">{{ t('trip.completed_title') }}</h1>
-        <p class="tpage__done-text">
-          {{ t('trip.completed_text', { fare: fmt.money(finished.fare), payment: t(`payment.${finished.payment_method}`) }) }}
-        </p>
-        <div class="tpage__done-fare">
-          <FareBreakdown :fare="finished.fare" :commission="finished.commission_amount" charged />
-        </div>
-      </template>
+      <!-- Only the outcome: no fare, commission or earnings breakdown (customer request). -->
+      <h1 v-if="finished.status === 'completed'" class="tpage__done-title">{{ t('trip.completed_title') }}</h1>
       <template v-else>
         <h1 class="tpage__done-title">{{ t('trip.cancelled_title') }}</h1>
         <p class="tpage__done-text">{{ finished.cancelled_by ? t(`trip.cancelled_by.${finished.cancelled_by}`) : '' }}</p>
@@ -327,11 +321,6 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-.tpage__done-fare {
-  align-self: stretch;
-  margin-top: var(--jt-space-4);
-  text-align: left;
-}
 
 .tpage__done-actions {
   align-self: stretch;

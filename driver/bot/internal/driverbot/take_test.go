@@ -1,6 +1,7 @@
 package driverbot
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -52,8 +53,9 @@ func acceptResult(replayed bool, passenger map[string]any) map[string]any {
 }
 
 // TestTakeWins: the first tap takes the order through the internal API; the
-// offer becomes «✅ Сіз алдыңыз» with an «open order» button and the trip card
-// carries the passenger's name, Telegram link and phone.
+// offer becomes «✅ Сіз алдыңыз» with an «open order» button. The bot sends no
+// trip card of its own: the API's outbox delivers it (once, retried, fenced
+// against a later cancellation), so a lost response cannot lose it.
 func TestTakeWins(t *testing.T) {
 	e := newEnv(t)
 	e.approved(true)
@@ -89,50 +91,55 @@ func TestTakeWins(t *testing.T) {
 	if b := bottest.InlineButtons(edits[0].Body); len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp=order_"+orderID {
 		t.Fatalf("edited offer buttons: %v", b)
 	}
-	if len(msgs) != 1 {
-		t.Fatalf("messages: %v", msgs)
-	}
-	card := msgText(msgs[0])
-	for _, want := range []string{
-		"<b>Тапсырыс №1042 сіздікі</b>", "Такси · Седан", "Қайдан: Абай 1", "Аялдамалар: Мектеп", "Қайда: Картадағы нүкте",
-		"Бағасы: <b>900 ₸</b> · Қолма-қол", "Жолаушылар: 2", "Түсініктеме: 2-кіреберіс &lt;тез&gt;",
-		"Комиссия ұсталды: 50 ₸ · Баланс: 450 ₸",
-		`<b>Клиент:</b> <a href="https://t.me/aigul_kz">Айгүл</a>`, "Телефон: +7 701 123 45 67",
-	} {
-		if !strings.Contains(card, want) {
-			t.Fatalf("trip card %q lacks %q", card, want)
-		}
-	}
-	b := bottest.InlineButtons(msgs[0])
-	if len(b) != 2 || bottest.WebAppURL(b[0]) != appURL+"?startapp=order_"+orderID || b[1]["url"] != "https://t.me/aigul_kz" {
-		t.Fatalf("trip card buttons: %v", b)
+	if len(msgs) != 0 {
+		t.Fatalf("the bot sent its own trip card: %v", msgs)
 	}
 }
 
-// TestTakeWithoutUsernameOrPhone: the Telegram link is a mention by id and the
-// driver is told the passenger shared no phone; a repeated tap is a replay.
-func TestTakeWithoutUsernameOrPhone(t *testing.T) {
+// TestTakeReplay: a repeated tap is answered as a replay and sends nothing.
+func TestTakeReplay(t *testing.T) {
 	e := newEnv(t)
 	e.approved(true)
-	replayed := false
 	e.api.Handle(acceptPath, func(map[string]any, string) (int, any) {
-		return 200, acceptResult(replayed, map[string]any{"first_name": "Дана", "phone": nil, "phone_verified": false,
+		return 200, acceptResult(true, map[string]any{"first_name": "Дана", "phone": nil, "phone_verified": false,
 			"telegram_username": nil, "telegram_url": "tg://user?id=555"})
 	})
-	msgs := e.tapTake(t, "take:"+orderID)
-	card := msgText(msgs[0])
-	if !strings.Contains(card, `<a href="tg://user?id=555">Дана</a>`) || !strings.Contains(card, texts.T("kk", "trip_card_no_phone")) {
-		t.Fatalf("trip card: %s", card)
-	}
-	if b := bottest.InlineButtons(msgs[0]); len(b) != 1 {
-		t.Fatalf("a Telegram button without a username: %v", b)
-	}
-	replayed = true
 	if msgs := e.tapTake(t, "take:"+orderID); len(msgs) != 0 {
-		t.Fatalf("replay sent a second trip card: %v", msgs)
+		t.Fatalf("replay sent a message: %v", msgs)
 	}
 	if a := e.calls("answerCallbackQuery"); len(a) != 1 || a[0].Body["text"] != texts.T("kk", "take_replayed_toast") {
 		t.Fatalf("replay answer: %+v", a)
+	}
+}
+
+// TestTakeFromOrdersList: in an /orders list message only the taken order's
+// row goes; the text and the other orders' buttons stay.
+func TestTakeFromOrdersList(t *testing.T) {
+	e := newEnv(t)
+	e.approved(true)
+	e.api.Handle(acceptPath, func(map[string]any, string) (int, any) {
+		return 200, acceptResult(false, map[string]any{"first_name": "Айгүл", "telegram_url": "tg://user?id=1"})
+	})
+	other := "11111111-2222-4333-8444-555555555555"
+	markup := &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{{Text: "✅ №1042 тапсырысты алу", CallbackData: "take:" + orderID}, {Text: "📱", WebApp: &telegram.WebAppInfo{URL: appURL + "?startapp=order_" + orderID}}},
+		{{Text: "✅ №1043 тапсырысты алу", CallbackData: "take:" + other}, {Text: "📱", WebApp: &telegram.WebAppInfo{URL: appURL + "?startapp=order_" + other}}},
+		{{Text: "Барлық тапсырыстар", WebApp: &telegram.WebAppInfo{URL: appURL + "?startapp=orders"}}},
+	}}
+	e.update(t, telegram.Update{UpdateID: 9, CallbackQuery: &telegram.CallbackQuery{
+		ID: "cb-take", From: telegram.User{ID: userID, FirstName: "Ерлан"}, Data: "take:" + orderID,
+		Message: &telegram.Message{MessageID: 77, Chat: telegram.Chat{ID: userID, Type: "private"}, Text: "Бос тапсырыстар", ReplyMarkup: markup},
+	}})
+	if n := len(e.calls("editMessageText")); n != 0 {
+		t.Fatalf("list text rewritten %d times", n)
+	}
+	rm := e.calls("editMessageReplyMarkup")
+	if len(rm) != 1 {
+		t.Fatalf("keyboard edits: %+v", rm)
+	}
+	rows, _ := rm[0].Body["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
+	if len(rows) != 2 || !strings.Contains(fmt.Sprint(rows[0]), "take:"+other) {
+		t.Fatalf("remaining rows: %v", rows)
 	}
 }
 
@@ -178,15 +185,12 @@ func TestTakeInsufficientBalance(t *testing.T) {
 	msgs := e.tapTake(t, "take:"+orderID)
 	a := e.calls("answerCallbackQuery")
 	if len(a) != 1 || a[0].Body["show_alert"] != true ||
-		strings.ReplaceAll(a[0].Body["text"].(string), " ", " ") != "Балансыңыз жеткіліксіз: комиссия 50 ₸, қолжетімді 30 ₸. Балансты толтырыңыз." {
+		strings.ReplaceAll(a[0].Body["text"].(string), " ", " ") != "Балансыңыз жеткіліксіз: тапсырысты алу үшін кемінде 50 ₸ керек, қолжетімді 30 ₸. Балансты толтырыңыз." {
 		t.Fatalf("answer: %+v", a)
 	}
-	rm := e.calls("editMessageReplyMarkup")
-	if len(rm) != 1 {
-		t.Fatalf("keyboard edits: %+v", rm)
-	}
-	if b := bottest.InlineButtons(rm[0].Body); len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp=order_"+orderID {
-		t.Fatalf("remaining keyboard: %v", b)
+	// The driver can fix this: the offer keeps its accept button for a later tap.
+	if rm := e.calls("editMessageReplyMarkup"); len(rm) != 0 {
+		t.Fatalf("keyboard edited after a recoverable failure: %+v", rm)
 	}
 	if len(msgs) != 1 || !strings.Contains(msgText(msgs[0]), "50 ₸") || !strings.Contains(msgText(msgs[0]), "30 ₸") {
 		t.Fatalf("top-up message: %v", msgs)

@@ -23,12 +23,16 @@ function idOf(ev: RealtimeEvent, key: string): string | null {
   return typeof v === 'string' && v ? v : null
 }
 
-/** Coalesces bursts of hints into one call. */
-function debounce(fn: () => void, ms: number): () => void {
+/**
+ * Coalesces bursts of hints into one call. jitterMs spreads the calls of many
+ * drivers who received the same event, so they do not all hit the API in the
+ * same millisecond.
+ */
+function debounce(fn: () => void, ms: number, jitterMs = 0): () => void {
   let t: ReturnType<typeof setTimeout> | undefined
   return () => {
     clearTimeout(t)
-    t = setTimeout(fn, ms)
+    t = setTimeout(fn, ms + (jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0))
   }
 }
 
@@ -43,9 +47,14 @@ export function installDriverRuntime(realtime: RealtimeClient, router: Router): 
   const location = useLocationStore()
   const t = (key: string): string => i18n.global.t(key)
 
-  const refreshOrders = debounce(() => {
-    if (session.isApproved) void orders.refresh()
-  }, 300)
+  // New orders show up within about 100-300 ms of the server's hint.
+  const refreshOrders = debounce(
+    () => {
+      if (session.isApproved) void orders.refresh()
+    },
+    100,
+    200,
+  )
   const refreshTrip = debounce(() => {
     if (session.isApproved) void trip.refresh()
   }, 200)
@@ -57,6 +66,9 @@ export function installDriverRuntime(realtime: RealtimeClient, router: Router): 
         refreshOrders()
         return
       case 'order.taken':
+      case 'order.unavailable':
+        // Taken (by anyone, through the bot or the app), cancelled or expired:
+        // the card goes at once from every open list.
         if (id) orders.remove(id)
         return
       case 'order.cancelled':
@@ -90,14 +102,28 @@ export function installDriverRuntime(realtime: RealtimeClient, router: Router): 
   const resyncSoon = debounce(resyncAll, 250)
 
   const offs: Array<() => void> = [
-    ...['order.available', 'order.taken', 'order.cancelled', 'order.accepted', 'order.driver_arriving', 'order.started', 'order.stop_completed', 'order.completed', 'order.disputed'].map(
-      (type) => realtime.on(type, onOrderEvent),
-    ),
-    realtime.on('wallet.updated', () => void wallet.resync()),
+    ...[
+      'order.available',
+      'order.taken',
+      'order.unavailable',
+      'order.cancelled',
+      'order.accepted',
+      'order.driver_arriving',
+      'order.started',
+      'order.stop_completed',
+      'order.completed',
+      'order.disputed',
+    ].map((type) => realtime.on(type, onOrderEvent)),
+    realtime.on('wallet.updated', () => {
+      void wallet.resync()
+      // Affordability is part of the list: a top-up can bring orders back.
+      if (duty.isOnline) refreshOrders()
+    }),
     realtime.on('topup.updated', (ev) => void wallet.onTopUpEvent(idOf(ev, 'topup_id'))),
     realtime.on('topup.confirmed', (ev) => {
       toast.success(t('wallet.topup_confirmed_toast'))
       void wallet.onTopUpEvent(idOf(ev, 'topup_id'))
+      if (duty.isOnline) refreshOrders()
     }),
     ...['moderation.submitted', 'moderation.changes_requested', 'moderation.approved', 'moderation.rejected', 'driver.status_changed'].map((type) =>
       realtime.on(type, () => void onModeration()),
@@ -106,6 +132,17 @@ export function installDriverRuntime(realtime: RealtimeClient, router: Router): 
     // Reconnects, the hub's {"type":"resync"} frame and foreground returns.
     realtime.onResync(resyncSoon),
   ]
+
+  // The first connection also re-reads the lists: a hint committed between
+  // the first REST loads and the subscription would otherwise be missed.
+  let opened = realtime.status === 'open'
+  offs.push(
+    realtime.onStatus((status) => {
+      if (status !== 'open' || opened) return
+      opened = true
+      resyncSoon()
+    }),
+  )
 
   // Report the position while online or driving an order.
   offs.push(
@@ -116,13 +153,12 @@ export function installDriverRuntime(realtime: RealtimeClient, router: Router): 
     ),
   )
 
-  // Open orders are computed live, so going online shows the ones already waiting.
+  // Open orders are computed live: going online shows the ones already
+  // waiting, going offline (also from the bot or the idle timeout) clears them.
   offs.push(
     watch(
       () => duty.isOnline,
-      (on) => {
-        if (on) refreshOrders()
-      },
+      () => refreshOrders(),
     ),
   )
 
@@ -147,7 +183,8 @@ export function installDriverRuntime(realtime: RealtimeClient, router: Router): 
       () => trip.active?.id ?? null,
       (id, prev) => {
         const name = router.currentRoute.value.name
-        if (!primed || !id || id === prev || name === ROUTE.trip || name === ROUTE.order) return
+        // Not news when this driver just took it here (the orders list or the order screen).
+        if (!primed || !id || id === prev || name === ROUTE.trip || name === ROUTE.order || trip.acceptedHere(id)) return
         toast.show({
           message: t('order.assigned_toast'),
           tone: 'success',

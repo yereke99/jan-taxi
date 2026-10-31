@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/audit"
@@ -157,6 +160,10 @@ func TestWebSocketPassengerFlow(t *testing.T) {
 	_ = c.Close(websocket.StatusNormalClosure, "")
 }
 
+// TestWebSocketDriverScopes: an approved driver's app listens to its user,
+// its driver profile and the shared drivers scope, which carries
+// order.unavailable to every open order list; a driver who is not approved
+// gets no shared scope.
 func TestWebSocketDriverScopes(t *testing.T) {
 	e := newWSEnv(t, false)
 	d := testutil.CreateDriver(t, e.pool, testutil.DriverOptions{})
@@ -164,16 +171,36 @@ func TestWebSocketDriverScopes(t *testing.T) {
 	c := e.dial(t, nil)
 	send(t, c, map[string]string{"type": "auth", "token": tok})
 	ready := readJSON(t, c)
-	got := strings.Join(scopesOf(ready), ",")
-	want := []string{UserScope(d.UserID), DriverScope(d.DriverID)}
-	if !(got == want[0]+","+want[1] || got == want[1]+","+want[0]) {
-		t.Fatalf("driver scopes = %s", got)
+	got := scopesOf(ready)
+	slices.Sort(got)
+	want := []string{UserScope(d.UserID), DriverScope(d.DriverID), DriversScope}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("driver scopes = %v, want %v", got, want)
 	}
 	if err := Publish(context.Background(), e.pool, Event{Type: OrderAvailable, Scopes: []string{DriverScope(d.DriverID)}}); err != nil {
 		t.Fatal(err)
 	}
 	if ev := readJSON(t, c); ev["type"] != OrderAvailable {
 		t.Fatalf("driver event: %v", ev)
+	}
+	if err := Publish(context.Background(), e.pool, Event{Type: OrderUnavailable, Scopes: []string{DriversScope},
+		Data: map[string]string{"order_id": "o-1", "status": "accepted"}}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := readJSON(t, c); ev["type"] != OrderUnavailable || ev["data"].(map[string]any)["order_id"] != "o-1" {
+		t.Fatalf("shared driver event: %v", ev)
+	}
+
+	pending := testutil.CreateDriver(t, e.pool, testutil.DriverOptions{})
+	if _, err := e.pool.Exec(context.Background(), `UPDATE driver_profiles SET status = 'pending' WHERE id = $1`, pending.DriverID); err != nil {
+		t.Fatal(err)
+	}
+	ptok, _, _ := e.svc.IssueAppToken(pending.UserID, auth.AppDriver, time.Now())
+	pc := e.dial(t, nil)
+	send(t, pc, map[string]string{"type": "auth", "token": ptok})
+	if s := scopesOf(readJSON(t, pc)); slices.Contains(s, DriversScope) {
+		t.Fatalf("a pending driver joined the shared scope: %v", s)
 	}
 }
 
@@ -344,5 +371,44 @@ func TestWebSocketSlowClientDisconnected(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// TestOrderUnavailableLatency measures the committed-event-to-socket path
+// that closes cards in open driver lists: a transaction publishes
+// order.unavailable to the drivers scope, PostgreSQL delivers the NOTIFY on
+// commit, the hub fans it out. The requirement is about one second; the
+// test fails above 500 ms at the median and logs the measurements.
+func TestOrderUnavailableLatency(t *testing.T) {
+	e := newWSEnv(t, false)
+	d := testutil.CreateDriver(t, e.pool, testutil.DriverOptions{})
+	tok, _, _ := e.svc.IssueAppToken(d.UserID, auth.AppDriver, time.Now())
+	c := e.dial(t, nil)
+	send(t, c, map[string]string{"type": "auth", "token": tok})
+	if ready := readJSON(t, c); ready["type"] != "ready" {
+		t.Fatalf("ready: %v", ready)
+	}
+	const n = 20
+	lat := make([]time.Duration, 0, n)
+	for i := range n {
+		id := fmt.Sprintf("o-%d", i)
+		start := time.Now()
+		if err := db.WithTx(context.Background(), e.pool, func(tx pgx.Tx) error {
+			return Publish(context.Background(), tx, Event{Type: OrderUnavailable, Scopes: []string{DriversScope},
+				Data: map[string]string{"order_id": id, "status": "accepted"}})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ev := readJSON(t, c)
+		lat = append(lat, time.Since(start))
+		if ev["type"] != OrderUnavailable || ev["data"].(map[string]any)["order_id"] != id {
+			t.Fatalf("event %d: %v", i, ev)
+		}
+	}
+	slices.Sort(lat)
+	median, worst := lat[n/2], lat[n-1]
+	t.Logf("order.unavailable commit→socket over %d events: median %v, max %v", n, median, worst)
+	if median > 500*time.Millisecond {
+		t.Fatalf("median latency %v", median)
 	}
 }

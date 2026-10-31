@@ -51,6 +51,7 @@ export const useWalletStore = defineStore('wallet', () => {
   /** Key of the create request in progress, reused when the same amount is retried. */
   let pendingCreate: { amount: number; key: string } | null = null
   let walletInFlight: Promise<void> | null = null
+  let walletAgain = false
 
   function remember(t: TopUp): TopUp {
     byId.value = { ...byId.value, [t.id]: t }
@@ -60,14 +61,22 @@ export const useWalletStore = defineStore('wallet', () => {
     return t
   }
 
+  /** Re-fetches the wallet; a call made during a request gets one follow-up request. */
   function refreshWallet(): Promise<void> {
-    walletInFlight ??= (async () => {
-      try {
-        wallet.value = await api.getWallet()
-        walletError.value = null
-      } catch (err) {
-        walletError.value = useSessionStore().handleAccessError(err) ? null : err
-      }
+    if (walletInFlight) {
+      walletAgain = true
+      return walletInFlight
+    }
+    walletInFlight = (async () => {
+      do {
+        walletAgain = false
+        try {
+          wallet.value = await api.getWallet()
+          walletError.value = null
+        } catch (err) {
+          walletError.value = useSessionStore().handleAccessError(err) ? null : err
+        }
+      } while (walletAgain)
     })().finally(() => {
       walletInFlight = null
     })

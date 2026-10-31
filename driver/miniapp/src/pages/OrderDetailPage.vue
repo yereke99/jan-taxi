@@ -2,11 +2,12 @@
   Order detail (GET /driver/orders/{id}): an available order the driver may
   accept, or one of their own. Large white map (driver → A → … → E), the
   settlement of pickup A above every stop, the requested vehicle class with passenger count or cargo size (§21),
-  comment / cargo, fare with commission and net earning, and the sticky
-  "accept" button with the commission charged on acceptance stated right
-  above it (§22.2). Acceptance is atomic on the server; the outcomes are
-  handled per openapi acceptOrder: 402 shows how much is missing with a
-  top-up button, a taken order closes, a missing location is fixed in place.
+  comment / cargo, the fare and payment method (drivers never see the
+  commission), and the sticky «Тапсырысты алу» button. Acceptance is the
+  same one-tap operation as on the order cards (features/orders/useAcceptOrder,
+  atomic on the server): 402 shows how much is missing with a top-up button, a
+  taken or closed order closes, a missing location is fixed in place. Taking
+  the order through the bot meanwhile moves this screen to the trip.
 -->
 <script setup lang="ts">
 import { ChevronLeft, Clock, MapPin, Navigation, Package, Route, Users } from '@lucide/vue'
@@ -19,9 +20,10 @@ import FareBreakdown from '../components/driver/FareBreakdown.vue'
 import StopList from '../components/driver/StopList.vue'
 import TripMap from '../components/driver/TripMap.vue'
 import VehicleClassIcon from '../components/driver/VehicleClassIcon.vue'
-import { JBadge, JButton, JEmptyState, JListGroup, JListRow, JMapButton, JSheet, JSkeleton, toast, type SheetSnap } from '../components/ui'
+import { JBadge, JButton, JEmptyState, JMapButton, JSheet, JSkeleton, toast, type SheetSnap } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
-import { classifyAcceptError, suggestedTopUpAmount } from '../features/orders/acceptOutcome'
+import { suggestedTopUpAmount } from '../features/orders/acceptOutcome'
+import { useAcceptOrder } from '../features/orders/useAcceptOrder'
 import { findClass } from '../features/vehicle/classes'
 import { useVehicleText } from '../features/vehicle/useVehicleText'
 import { isActiveTripStatus } from '../features/trip/sequence'
@@ -29,14 +31,12 @@ import { useDriverErrorText } from '../composables/useDriverErrorText'
 import { ROUTE } from '../router/names'
 import { isApiError } from '../services/http'
 import { useRealtime } from '../services/realtime'
-import { useDutyStore } from '../stores/duty'
 import { useLocationStore } from '../stores/location'
 import { useOrdersStore } from '../stores/orders'
 import { useSessionStore } from '../stores/session'
 import { useTripStore } from '../stores/trip'
 import { useWalletStore } from '../stores/wallet'
 import { navigationPrefix, normalizeTwoGisBase, planNavigation } from '../features/navigation/twogis'
-import { useEnsureLocation } from '../features/location/useEnsureLocation'
 import { effectiveSafeInsets, haptics, navigateBack, openExternal, useTelegramFullscreen } from '../telegram'
 import { orderStatusTone } from '../utils/status'
 
@@ -47,20 +47,19 @@ const route = useRoute()
 const router = useRouter()
 const orders = useOrdersStore()
 const trip = useTripStore()
-const duty = useDutyStore()
 const session = useSessionStore()
 const location = useLocationStore()
 const realtime = useRealtime()
-const gps = useEnsureLocation()
 const wallet = useWalletStore()
+const acceptor = useAcceptOrder()
 const vt = useVehicleText()
 
 const order = shallowRef<DriverOrderDetail | null>(null)
 const loading = ref(true)
 const loadError = shallowRef<unknown>(null)
 const gone = ref(false)
-const accepting = ref(false)
-/** Set by a 402 insufficient_balance: what the commission needs and what is available. */
+const accepting = computed(() => order.value !== null && acceptor.acceptingId.value === order.value.id)
+/** Set by a 402 insufficient_balance: what taking the order needs and what is available. */
 const shortfall = ref<{ required: number | null; available: number | null; topUp: number | null } | null>(null)
 const snap = ref<SheetSnap>('half')
 const sheetHeight = ref(0)
@@ -146,38 +145,7 @@ function markGone(): void {
   }
 }
 
-/** Opens the location settings after a denial, or reads and sends a fresh fix. */
-async function enableLocation(): Promise<void> {
-  if (await gps.fix()) toast.show(t('order.location_ready'))
-}
-
-/**
- * Accepts the order. Without a recent location the API answers
- * location_required: a fresh fix is sent and the acceptance tried once more.
- */
-async function acceptWithLocation(orderId: string): Promise<DriverOrderDetail> {
-  try {
-    return await trip.accept(orderId)
-  } catch (err) {
-    if (classifyAcceptError(err).kind !== 'location_required' || !(await gps.ensure())) throw err
-    return trip.accept(orderId)
-  }
-}
-
-function locationProblemText(): string {
-  switch (gps.state.value) {
-    case 'denied':
-      return t('orders.location_denied')
-    case 'failed':
-      return t('orders.location_failed')
-    case 'outside':
-      return t('duty.outside_text')
-    default:
-      return t('order.location_toast')
-  }
-}
-
-/** After a top-up the shortfall message goes away once the balance covers the commission. */
+/** After a top-up the shortfall message goes away once the balance covers the order. */
 function clearShortfallIfCovered(): void {
   const w = wallet.wallet
   const o = order.value
@@ -186,76 +154,21 @@ function clearShortfallIfCovered(): void {
 
 async function accept(): Promise<void> {
   const o = order.value
-  if (!o || accepting.value) return
-  accepting.value = true
-  try {
-    await acceptWithLocation(o.id)
-    haptics.notification('success')
-    shortfall.value = null
-    orders.remove(o.id)
-    toast.success(t('order.accepted_toast'))
-    // The commission was charged with the acceptance.
-    void wallet.refreshWallet()
-    void router.replace({ name: ROUTE.trip })
-  } catch (err) {
-    const f = classifyAcceptError(err)
-    haptics.notification('error')
-    switch (f.kind) {
-      case 'taken':
-        // Another driver was faster: normal in dispatch, not an error.
-        toast.show(t('order.taken'))
-        markGone()
-        gone.value = true
-        break
-      case 'insufficient_balance':
-        // The order stays open: say what is missing and offer the top-up right here.
-        shortfall.value = {
-          required: f.required ?? o.commission_amount,
-          available: f.available,
-          topUp: f.suggestedTopUp ?? suggestedTopUpAmount(o.commission_amount, f.available, session.config.topup?.min ?? null),
-        }
-        snap.value = 'half'
-        void wallet.refreshWallet()
-        break
-      case 'has_active_order':
-        await trip.refresh()
-        void router.replace({ name: ROUTE.trip })
-        break
-      case 'offline':
-        toast.show({
-          message: t('order.offline_toast'),
-          action: { label: t('orders.go_online'), run: () => void goOnline() },
-          duration: 6000,
-        })
-        break
-      case 'location_required':
-        toast.show({
-          message: locationProblemText(),
-          action:
-            gps.state.value === 'outside'
-              ? undefined
-              : { label: gps.state.value === 'denied' ? t('common.open_settings') : t('orders.enable_location'), run: () => void enableLocation() },
-          duration: 8000,
-        })
-        break
-      case 'not_approved':
-        // The status changed (suspended, profile missing): re-reading /me re-routes the driver.
-        if (!session.handleAccessError(err)) {
-          toast.show(errorText(err))
-          void session.refreshMe()
-        }
-        break
-      default:
-        toast.error(errorText(f.error))
-    }
-  } finally {
-    accepting.value = false
-  }
-}
-
-async function goOnline(): Promise<void> {
-  const res = await duty.setOnline(true)
-  if (!res.ok) void router.replace({ name: ROUTE.home })
+  if (!o) return
+  const ok = await acceptor.accept(o.id, {
+    // The order stays open: say what is missing and offer the top-up right here.
+    onInsufficient: (f) => {
+      const required = f.required ?? o.commission_amount
+      shortfall.value = {
+        required,
+        available: f.available,
+        topUp: f.suggestedTopUp ?? suggestedTopUpAmount(required, f.available, session.config.topup?.min ?? null),
+      }
+      snap.value = 'half'
+    },
+    onGone: () => markGone(),
+  })
+  if (ok) shortfall.value = null
 }
 
 watch(() => wallet.wallet?.available, clearShortfallIfCovered)
@@ -267,8 +180,18 @@ onMounted(() => {
     realtime.on('order.taken', (ev) => {
       if (ev.data.order_id === id.value) markGone()
     }),
+    // Left the market (taken by anyone — possibly this driver through the
+    // bot —, cancelled or expired): re-read it; load() moves to the trip
+    // screen when it is this driver's, and closes the screen otherwise.
+    realtime.on('order.unavailable', (ev) => {
+      if (ev.data.order_id === id.value && !accepting.value) void load()
+    }),
     realtime.on('order.cancelled', (ev) => {
       if (ev.data.order_id === id.value) markGone()
+    }),
+    // Taken by this driver through the bot: load() moves to the trip screen.
+    realtime.on('order.accepted', (ev) => {
+      if (ev.data.order_id === id.value && !accepting.value) void load()
     }),
     realtime.onResync(() => void load()),
   )
@@ -368,25 +291,7 @@ watch(id, () => void load())
           </template>
         </section>
 
-        <!-- A cancelled trip earned nothing; only the commission taken at acceptance remains (§22.2). -->
-        <JListGroup
-          v-if="order.is_mine && order.status === 'cancelled'"
-          class="odetail__group"
-          :footer="order.commission_charged > 0 ? t('order.cancelled_commission_kept') : t('order.cancelled_commission_none')"
-        >
-          <JListRow :title="t('history.commission')">
-            <template #accessory><span class="odetail__minus jt-tabular">−{{ fmt.money(order.commission_charged) }}</span></template>
-          </JListRow>
-        </JListGroup>
-        <FareBreakdown
-          v-else
-          class="odetail__group"
-          :fare="order.fare"
-          :commission="order.commission_amount"
-          :payment-method="order.payment_method"
-          :compact="!order.is_mine"
-          :charged="order.is_mine"
-        />
+        <FareBreakdown class="odetail__group" :fare="order.fare" :payment-method="order.payment_method" />
 
         <JButton v-if="twoGisUrl && !finished" class="odetail__nav" variant="secondary" block @click="openTwoGis">
           <template #icon><MapPin :size="20" :stroke-width="2" aria-hidden="true" /></template>
@@ -398,7 +303,6 @@ watch(id, () => void load())
 
       <template v-if="canAcceptNow" #footer>
         <p v-if="shortfall" class="odetail__short" role="alert">{{ shortfallText }}</p>
-        <p v-else-if="order" class="odetail__fee jt-tabular">{{ t('order.commission_on_accept', { amount: fmt.money(order.commission_amount) }) }}</p>
         <div class="odetail__actions">
           <JButton v-if="shortfall" block @click="topUp">
             {{ shortfall.topUp ? t('order.top_up_amount', { amount: fmt.money(shortfall.topUp) }) : t('orders.top_up') }}
@@ -411,10 +315,6 @@ watch(id, () => void load())
 </template>
 
 <style scoped>
-.odetail__minus {
-  color: var(--jt-color-label-secondary);
-}
-
 .odetail {
   position: absolute;
   inset: 0;
@@ -504,16 +404,12 @@ watch(id, () => void load())
   color: var(--jt-color-label-secondary);
 }
 
-.odetail__fee,
 .odetail__short {
   margin-bottom: var(--jt-space-2);
   font: var(--jt-font-subheadline);
   text-align: center;
 }
 
-.odetail__fee {
-  color: var(--jt-color-label-secondary);
-}
 
 .odetail__short {
   color: var(--jt-color-red-text);

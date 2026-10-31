@@ -63,8 +63,17 @@ func invalidDriver(reason string) *httpx.Error {
 // driver_arriving order is re-assigned: the previous driver keeps having paid
 // unless opts.RefundPrevious (a reservation of the earlier model is
 // released), and the order restarts at accepted. Locks are taken in the same
-// order as Accept (wallet, then order) so the two never deadlock.
+// order as Accept (order, then driver profile, then wallet) so the two never
+// deadlock; the unlocked first read keeps what the operator saw.
 func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID, opts AssignOptions) (AssignResult, error) {
+	peek, err := lifecycle.LoadCore(ctx, tx, orderID, false)
+	if err != nil {
+		return AssignResult{}, err
+	}
+	before, err := lifecycle.LoadCore(ctx, tx, orderID, true)
+	if err != nil {
+		return AssignResult{}, err
+	}
 	drv, err := lockDriver(ctx, tx, driverID)
 	if err != nil {
 		if httpx.AsError(err).Status == 404 {
@@ -74,10 +83,6 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 	}
 	if drv.Status != "approved" || drv.UserBlocked {
 		return AssignResult{}, lifecycle.ErrDriverNotApproved()
-	}
-	peek, err := lifecycle.LoadCore(ctx, tx, orderID, false)
-	if err != nil {
-		return AssignResult{}, err
 	}
 	switch {
 	case peek.PassengerID == drv.UserID:
@@ -98,11 +103,6 @@ func Assign(ctx context.Context, tx pgx.Tx, orderID, driverID, adminID uuid.UUID
 		return AssignResult{}, invalidDriver(ReasonVehicleMismatch)
 	}
 	if err := checkFunds(ctx, tx, driverID, peek.CommissionAmount); err != nil {
-		return AssignResult{}, err
-	}
-
-	before, err := lifecycle.LoadCore(ctx, tx, orderID, true)
-	if err != nil {
 		return AssignResult{}, err
 	}
 	// A driver accepted the searching order while this request waited for

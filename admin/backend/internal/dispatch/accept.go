@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
@@ -102,10 +105,55 @@ type AcceptResult struct {
 
 // AcceptOptions tune Accept for the channel the driver used.
 type AcceptOptions struct {
-	// ViaBot is set when the driver tapped «Алу» in the driver bot: the bot
-	// edits that offer message and sends the trip card itself, so the outbox
-	// sends neither.
+	// ViaBot is set when the driver tapped «Тапсырысты алу» in the driver
+	// bot (journaled as channel "bot"). The bot marks the tapped message at
+	// once; the outbox still edits the driver's offer message (the tap may
+	// have come from an /orders list) and sends the trip card with the
+	// passenger's contact (retried, deduplicated and fenced against a later
+	// cancellation or reassignment), whichever channel won.
 	ViaBot bool
+}
+
+// Acceptance channels, logged with every attempt.
+const (
+	ChannelMiniApp = "miniapp"
+	ChannelBot     = "bot"
+)
+
+// AcceptOrder is the one acceptance operation behind both the driver Mini App
+// (POST /driver/orders/{id}/accept) and the driver bot's accept button (POST
+// /internal/v1/driver/{tg_id}/orders/{id}/accept): it runs AcceptWith in its
+// own transaction, so events and notifications leave only on commit, and
+// logs the outcome with the request id. A repeated request of the winner
+// (double tap, HTTP retry, redelivered callback) returns Replayed and
+// charges nothing; any other driver gets 409 order_already_taken.
+func AcceptOrder(ctx context.Context, pool *pgxpool.Pool, orderID, driverID uuid.UUID, opts AcceptOptions) (AcceptResult, error) {
+	start := time.Now()
+	var res AcceptResult
+	err := lifecycle.DBError(db.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		res, err = AcceptWith(ctx, tx, orderID, driverID, opts)
+		return err
+	}))
+	channel := ChannelMiniApp
+	if opts.ViaBot {
+		channel = ChannelBot
+	}
+	attrs := []any{slog.String("order_id", orderID.String()), slog.String("driver_id", driverID.String()),
+		slog.String("channel", channel), slog.Int64("duration_ms", time.Since(start).Milliseconds())}
+	log := httpx.Logger(ctx)
+	var he *httpx.Error
+	switch {
+	case err == nil && res.Replayed:
+		log.Info("order accept replayed", attrs...)
+	case err == nil:
+		log.Info("order accepted", append(attrs, slog.Int64("charged", res.Charged))...)
+	case errors.As(err, &he) && he.Status < http.StatusInternalServerError:
+		log.Info("order accept refused", append(attrs, slog.String("code", he.Code))...)
+	default:
+		log.Error("order accept failed", append(attrs, slog.Any("err", err))...)
+	}
+	return res, err
 }
 
 // errLocation is 422 location_required for a driver without a fresh location
@@ -118,6 +166,12 @@ func errLocation(reason string, p settings.DispatchSettings) *httpx.Error {
 // Accept assigns a searching order to the driver, exactly-one-winner
 // (ARCHITECTURE §5.1), in the caller's transaction:
 //
+//  0. the order row is locked FOR UPDATE first (then the driver profile, then
+//     the wallet: the lock order of every order transition, so none of them
+//     deadlocks with an acceptance), so concurrent acceptances of one order
+//     run one after another: whoever comes second sees the result of the
+//     first (its own earlier tap is a replay, anyone else is told the order
+//     is taken) instead of racing it to the conditional UPDATE;
 //  1. the driver is approved, online and not blocked, has no active order
 //     and has a fresh location (422 location_required) within the order's
 //     effective radius of the pickup, and the driver's vehicle fits the
@@ -135,37 +189,39 @@ func errLocation(reason string, p settings.DispatchSettings) *httpx.Error {
 //     lost (their bot messages are marked taken), the transition journaled,
 //     notifications and events queued.
 //
-// The Mini App and the driver bot («Алу», AcceptOptions.ViaBot) both use it.
+// The Mini App and the driver bot (AcceptOptions.ViaBot) both reach it
+// through AcceptOrder.
 func Accept(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) (AcceptResult, error) {
 	return AcceptWith(ctx, tx, orderID, driverID, AcceptOptions{})
 }
 
 // AcceptWith is Accept with options.
 func AcceptWith(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID, opts AcceptOptions) (AcceptResult, error) {
+	o, err := lifecycle.LoadCore(ctx, tx, orderID, true)
+	if err != nil {
+		return AcceptResult{}, err
+	}
 	drv, err := lockDriver(ctx, tx, driverID)
 	if err != nil {
 		return AcceptResult{}, err
 	}
-	switch {
-	case drv.Status != "approved" || drv.UserBlocked:
+	if drv.Status != "approved" || drv.UserBlocked {
 		return AcceptResult{}, lifecycle.ErrDriverNotApproved()
-	case !drv.IsOnline:
-		return AcceptResult{}, lifecycle.ErrDriverOffline()
-	}
-
-	o, err := lifecycle.LoadCore(ctx, tx, orderID, false)
-	if err != nil {
-		return AcceptResult{}, err
 	}
 	// The driver's own passenger orders are invisible to them.
 	if o.PassengerID == drv.UserID {
 		return AcceptResult{}, httpx.NotFound()
 	}
+	// A repeated request of the winner answers like the first one did, even
+	// when it arrives through the other channel.
 	if o.HasDriver(driverID) && lifecycle.OccupiesDriver(o.Status) {
 		return AcceptResult{Order: o, Replayed: true}, nil
 	}
+	if !drv.IsOnline {
+		return AcceptResult{}, lifecycle.ErrDriverOffline()
+	}
 	if o.Status != lifecycle.StatusSearching {
-		return AcceptResult{}, notAcceptable(o)
+		return AcceptResult{}, notAcceptable(o, driverID)
 	}
 	if active, err := activeOrderOf(ctx, tx, driverID); err != nil {
 		return AcceptResult{}, err
@@ -209,7 +265,7 @@ func AcceptWith(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID, opt
 		if lerr != nil {
 			return AcceptResult{}, lerr
 		}
-		return AcceptResult{}, notAcceptable(cur)
+		return AcceptResult{}, notAcceptable(cur, driverID)
 	case db.IsUniqueViolation(err, lifecycle.IdxOneActivePerDriver):
 		return AcceptResult{}, lifecycle.ErrDriverHasActiveOrder(uuid.Nil)
 	case err != nil:
@@ -224,9 +280,11 @@ func AcceptWith(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID, opt
 }
 
 // notAcceptable explains why an order that is no longer searching cannot be
-// accepted: taken by a driver, or closed without one.
-func notAcceptable(o lifecycle.Core) error {
-	if o.DriverID != nil {
+// accepted by driverID: taken by another driver, or closed — without a
+// driver, or as driverID's own finished trip (a late tap on an old offer
+// must not read "another driver took it").
+func notAcceptable(o lifecycle.Core, driverID uuid.UUID) error {
+	if o.DriverID != nil && !o.HasDriver(driverID) {
 		return lifecycle.ErrOrderTaken()
 	}
 	return lifecycle.InvalidTransition(o.Status, "accept")
@@ -340,24 +398,26 @@ func assigned(ctx context.Context, tx pgx.Tx, before, after lifecycle.Core, acto
 	}); err != nil {
 		return 0, fmt.Errorf("dispatch: notify passenger: %w", err)
 	}
-	if !opts.ViaBot {
-		// A bot acceptance gets its trip card and offer edit from the bot.
-		params, err := TripCardParams(ctx, tx, after.ID, charged)
-		if err != nil {
-			return 0, err
-		}
-		if err := lifecycle.Notify(ctx, tx, notifications.DriverBot, info.UserID, notifications.TplOrderAcceptedDriver,
-			params, "order_accepted_driver:"+suffix); err != nil {
-			return 0, err
-		}
-		if err := lifecycle.CloseOfferMessage(ctx, tx, after.ID, driverID, lifecycle.OfferMessageWon); err != nil {
-			return 0, err
-		}
+	params, err := TripCardParams(ctx, tx, after.ID)
+	if err != nil {
+		return 0, err
+	}
+	if err := lifecycle.Notify(ctx, tx, notifications.DriverBot, info.UserID, notifications.TplOrderAcceptedDriver,
+		params, "order_accepted_driver:"+suffix); err != nil {
+		return 0, err
+	}
+	if err := lifecycle.CloseOfferMessage(ctx, tx, after.ID, driverID, lifecycle.OfferMessageWon); err != nil {
+		return 0, err
 	}
 
 	if err := lifecycle.Publish(ctx, tx, realtime.OrderAccepted, lifecycle.EventData(after, map[string]any{"driver_eta_s": eta}),
 		lifecycle.PartyScopes(after)...); err != nil {
 		return 0, err
+	}
+	if before.Status == lifecycle.StatusSearching {
+		if err := lifecycle.PublishUnavailable(ctx, tx, after); err != nil {
+			return 0, err
+		}
 	}
 	if charged > 0 {
 		if err := lifecycle.PublishWallet(ctx, tx, driverID, after.ID, wallets.EntryCommissionCharge); err != nil {
@@ -384,23 +444,30 @@ func assigned(ctx context.Context, tx pgx.Tx, before, after lifecycle.Core, acto
 }
 
 // TripCardParams are the order_accepted_driver params of orderID: the trip
-// and how to reach the passenger (§22.4). charged is the commission paid.
-func TripCardParams(ctx context.Context, q db.Querier, orderID uuid.UUID, charged int64) (map[string]any, error) {
+// (route in order, class, load, comment) and how to reach the passenger
+// (§22.4). The commission is not part of it: drivers see the fare only.
+func TripCardParams(ctx context.Context, q db.Querier, orderID uuid.UUID) (map[string]any, error) {
 	var (
-		number             int64
-		fare               int64
-		payment, firstName string
-		username, phone    *string
-		tgID               int64
-		verified           bool
-		locality           *string
+		number                    int64
+		fare                      int64
+		category, payment         string
+		firstName                 string
+		username, phone           *string
+		tgID                      int64
+		verified                  bool
+		locality                  *string
+		passengers                *int
+		cargoSize, cargo, comment *string
+		recipient                 *string
+		classKK, classRU, classEN string
 	)
 	err := q.QueryRow(ctx, `
-		SELECT o.number, o.fare, o.payment_method, u.first_name, u.username, u.telegram_user_id,
-		       u.phone_e164, u.phone_verified_at IS NOT NULL, o.locality
-		FROM orders o JOIN users u ON u.id = o.passenger_id
-		WHERE o.id = $1`, orderID).Scan(&number, &fare, &payment, &firstName, &username, &tgID, &phone, &verified,
-		&locality)
+		SELECT o.number, o.fare, o.category, o.payment_method, u.first_name, u.username, u.telegram_user_id,
+		       u.phone_e164, u.phone_verified_at IS NOT NULL, o.locality, o.passenger_count, o.cargo_size,
+		       o.cargo_description, o.comment, o.recipient_phone, vc.name_kk, vc.name_ru, vc.name_en
+		FROM orders o JOIN users u ON u.id = o.passenger_id JOIN vehicle_classes vc ON vc.code = o.vehicle_class
+		WHERE o.id = $1`, orderID).Scan(&number, &fare, &category, &payment, &firstName, &username, &tgID, &phone,
+		&verified, &locality, &passengers, &cargoSize, &cargo, &comment, &recipient, &classKK, &classRU, &classEN)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: trip card: %w", err)
 	}
@@ -413,18 +480,37 @@ func TripCardParams(ctx context.Context, q db.Querier, orderID uuid.UUID, charge
 		name = "Telegram"
 	}
 	params := map[string]any{
-		"order_id": orderID.String(), "order_number": number, "pickup": route.Pickup,
-		"destination": route.Destination, "fare": fare, "payment_method": payment,
+		"order_id": orderID.String(), "order_number": number, "category": category,
+		"vehicle_class": map[string]string{"kk": classKK, "ru": classRU, "en": classEN},
+		"pickup":        route.Pickup, "destination": route.Destination, "fare": fare, "payment_method": payment,
 		"passenger_name": name, "passenger_link": lifecycle.TelegramLink(username, tgID),
 	}
-	if charged > 0 {
-		params["commission"] = charged
+	if via := route.ViaText("…"); via != "" {
+		params["via"] = via
+	}
+	if route.PickupDetails != "" {
+		params["pickup_details"] = route.PickupDetails
 	}
 	if locality != nil && *locality != "" {
 		params["locality"] = *locality
 	}
+	if passengers != nil {
+		params["passengers"] = *passengers
+	}
+	if cargoSize != nil {
+		params["cargo_size"] = *cargoSize
+	}
+	if cargo != nil && *cargo != "" {
+		params["cargo"] = *cargo
+	}
+	if comment != nil && *comment != "" {
+		params["comment"] = *comment
+	}
 	if verified && phone != nil && *phone != "" {
 		params["passenger_phone"] = phonefmt.Format(*phone)
+	}
+	if recipient != nil && *recipient != "" {
+		params["recipient_phone"] = phonefmt.Format(*recipient)
 	}
 	return params, nil
 }
