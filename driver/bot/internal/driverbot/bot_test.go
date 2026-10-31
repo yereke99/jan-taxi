@@ -122,6 +122,57 @@ func TestCatalogIsComplete(t *testing.T) {
 	}
 }
 
+// Every field and reason code a correction can carry (drivers.RegistrationFields
+// and drivers.CorrectionReasons, legacy ones included) has a label.
+func TestCorrectionLabels(t *testing.T) {
+	fields := []string{"avatar", "first_name", "last_name", "identity", "phone", "id_front", "id_back",
+		"vehicle_class", "vehicle_make_model", "vehicle_color", "vehicle_plate", "vehicle_photos"}
+	reasons := []string{"invalid_plate", "plate_mismatch", "duplicate_plate", "duplicate_phone", "id_unreadable",
+		"vehicle_photo_unclear", "missing_info", "other"}
+	for _, lang := range runtime.Languages {
+		for _, f := range fields {
+			if key := "field_" + f; texts.T(lang, key) == key {
+				t.Errorf("%s: no label for %s", lang, key)
+			}
+		}
+		for _, r := range reasons {
+			if key := "reason_" + r; texts.T(lang, key) == key {
+				t.Errorf("%s: no label for %s", lang, key)
+			}
+		}
+	}
+	if texts.T("kk", "field_identity") != "ЖСН" || texts.T("ru", "field_identity") != "ИИН" || texts.T("en", "field_identity") != "IIN" {
+		t.Fatal("identity is the IIN in every language")
+	}
+}
+
+// The registration texts describe the two-page form (photo, names, IIN,
+// Telegram phone, car) and working right after it; ID scans, vehicle photos
+// and a moderator's review are gone.
+func TestRegistrationTextsDescribeTheNewFlow(t *testing.T) {
+	iin := map[string]string{"kk": "ЖСН", "ru": "ИИН", "en": "IIN"}
+	finish := map[string]string{"kk": "Тіркелуді аяқтау", "ru": "Завершить регистрацию", "en": "Finish registration"}
+	retired := []string{"куәлік", "удостоверени", "ID card", "модератор", "Модератор", "moderator", "OCR", "көлік суреттері", "фото автомобиля", "photos of your"}
+	for _, lang := range runtime.Languages {
+		for _, key := range []string{"register", "register_verified", "status_pending_text", "status_changes_text"} {
+			text := texts.T(lang, key)
+			for _, word := range retired {
+				if strings.Contains(text, word) {
+					t.Errorf("%s %s still mentions %q: %s", lang, key, word, text)
+				}
+			}
+		}
+		for _, key := range []string{"register", "register_verified"} {
+			if text := texts.T(lang, key); !strings.Contains(text, iin[lang]) || !strings.Contains(text, finish[lang]) {
+				t.Errorf("%s %s lacks the IIN or the finish button: %s", lang, key, text)
+			}
+		}
+		if !strings.Contains(texts.T(lang, "register"), texts.T(lang, "kb_verify_phone")) {
+			t.Errorf("%s register does not name the phone button", lang)
+		}
+	}
+}
+
 func TestStartForNewDriver(t *testing.T) {
 	e := newEnv(t)
 	e.user["language_chosen"] = false

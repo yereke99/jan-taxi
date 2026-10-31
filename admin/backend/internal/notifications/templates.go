@@ -474,9 +474,9 @@ var registry = buildRegistry([]*Template{
 		Key: TplModerationApproved, Bots: driverOnly,
 		Params: []Param{{Name: "driver_code", Kind: KindText, Description: "driver_profiles.code, e.g. EMB001"}},
 		Bodies: labels(
-			"<b>Өтінім мақұлданды</b>\nСіздің кодыңыз: <b>{{driver_code}}</b>\nТапсырыс алу үшін балансты толтырып, желіге шығыңыз.",
-			"<b>Заявка одобрена</b>\nВаш код: <b>{{driver_code}}</b>\nПополните баланс и выходите на линию, чтобы получать заказы.",
-			"<b>Application approved</b>\nYour driver code: <b>{{driver_code}}</b>\nTop up your balance and go online to receive orders."),
+			"<b>Тіркелу аяқталды</b>\nСіздің кодыңыз: <b>{{driver_code}}</b>\nЖелідегі кезде жаныңыздағы жаңа тапсырыстар осы чатқа және қосымшаға келеді.",
+			"<b>Регистрация завершена</b>\nВаш код: <b>{{driver_code}}</b>\nПока вы на линии, новые заказы рядом приходят в этот чат и в приложение.",
+			"<b>Registration complete</b>\nYour driver code: <b>{{driver_code}}</b>\nWhile you are online, new orders nearby arrive in this chat and in the app."),
 		Button: &Button{Label: labels("Бастау", "Начать", "Get started"), StartParam: "home"},
 	},
 	{

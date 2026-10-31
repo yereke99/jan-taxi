@@ -7,7 +7,6 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/drivers"
 	"github.com/yereke99/jantaxi/admin/backend/internal/moderation"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // Driver housekeeping intervals (ARCHITECTURE §16).
@@ -18,28 +17,19 @@ const (
 
 // wireDrivers constructs the drivers, vehicles and moderation services and mounts their routes.
 func (a *App) wireDrivers() error {
-	identity, err := verification.NewService(a.Pool, verification.Options{
-		Enabled: a.Cfg.VerificationEnabled, Key: a.Cfg.VerificationKey,
-		AutoApprove:   a.Cfg.VerificationAutoApprove,
-		MinConfidence: a.Cfg.VerificationMinConfidence,
-		QueueLimit:    a.Cfg.VerificationQueueLimit,
-	})
-	if err != nil {
-		return err
-	}
 	dh := drivers.NewHandler(a.Pool, a.Store, drivers.Options{
 		DefaultCity:    a.Cfg.DefaultCity,
 		MaxUploadBytes: a.Cfg.MaxUploadBytes,
-	}).WithVerification(identity)
-	// /api/v1/driver/{registration,registration/files,registration/check,files,profile,availability,location}
+	})
+	// /api/v1/driver/{registration,registration/files,registration/check,files,profile,profile/iin,availability,location}
 	dh.MountDriver(a.Driver)
 	// /api/v1/orders/{id}/driver-photo
 	dh.MountPassenger(a.Passenger)
 	// /api/v1/admin/files/{id}, /api/v1/admin/drivers/locations
 	dh.MountAdmin(a.Admin)
 
-	mh := moderation.NewHandler(a.Pool).WithVerification(identity)
-	// /api/v1/driver/register
+	mh := moderation.NewHandler(a.Pool)
+	// /api/v1/driver/register (automatic checks, then approval)
 	mh.MountDriver(a.Driver)
 	// /api/v1/admin/drivers, /api/v1/admin/drivers/{id}[/approve|/reject|/request-corrections|/suspend|/restore]
 	mh.MountAdmin(a.Admin)

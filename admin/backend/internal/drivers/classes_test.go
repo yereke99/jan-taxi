@@ -35,12 +35,25 @@ func TestRegistrationVehicleClass(t *testing.T) {
 	env := driverstest.New(t)
 	c := env.DriverClient()
 
-	// Without a class the registration is incomplete and every class field is null.
+	// A new registration starts as a Sedan with its defaults (the form's
+	// preselected body type), so a vehicle sent without a class has one.
 	res := c.Do(http.MethodPut, pathRegistration, classBody(nil))
 	v := vehicleOf(res)
-	if res.Code != http.StatusOK || !slices.Contains(missing(res), "vehicle_class") || v["vehicle_class"] != nil ||
-		v["seats"] != nil || v["cargo_volume_l"] != nil || v["vehicle_class_name"] != nil {
-		t.Fatalf("no class yet: %s", res)
+	if res.Code != http.StatusOK || slices.Contains(missing(res), "vehicle_class") || v["vehicle_class"] != "sedan" ||
+		v["seats"] != float64(4) || v["cargo_volume_l"] != float64(400) || v["vehicle_class_name"].(map[string]any)["en"] != "Sedan" {
+		t.Fatalf("default class: %s", res)
+	}
+	// Without an active default class a new vehicle starts without one.
+	if _, err := env.Pool.Exec(context.Background(), `UPDATE vehicle_classes SET is_active = false WHERE code = 'sedan'`); err != nil {
+		t.Fatal(err)
+	}
+	other := env.DriverClient()
+	if r := other.Do(http.MethodPut, pathRegistration, classBody(nil)); r.Code != http.StatusOK || vehicleOf(r)["vehicle_class"] != nil ||
+		!slices.Contains(missing(r), "vehicle_class") {
+		t.Fatalf("no default class: %s", r)
+	}
+	if _, err := env.Pool.Exec(context.Background(), `UPDATE vehicle_classes SET is_active = true WHERE code = 'sedan'`); err != nil {
+		t.Fatal(err)
 	}
 
 	// Choosing a class fills in its seat and cargo defaults.
@@ -98,12 +111,12 @@ func TestRegistrationVehicleClass(t *testing.T) {
 	}
 }
 
-func TestVehicleClassThroughModeration(t *testing.T) {
+func TestVehicleClassThroughApprovalAndCorrections(t *testing.T) {
 	env := driverstest.New(t)
 	c := env.DriverClient()
 	driverID := c.CompleteDraft(driverstest.Registration{Plate: "555 ABC 04", Phone: "+77015550199",
 		VehicleClass: "microbus", Seats: 18})
-	if res := c.Submit(); res.Code != http.StatusOK {
+	if res := c.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" {
 		t.Fatalf("submit: %s", res)
 	}
 	admin := env.AdminClient(auth.RoleSuperAdmin)
@@ -124,45 +137,39 @@ func TestVehicleClassThroughModeration(t *testing.T) {
 		item["seats"] != float64(18) {
 		t.Fatalf("admin list vehicle: %s", list)
 	}
+	profile := c.Do(http.MethodGet, "/api/v1/driver/profile", nil)
+	if v := vehicleOf(profile); profile.Code != http.StatusOK || v["vehicle_class"] != "microbus" || v["seats"] != float64(18) {
+		t.Fatalf("driver profile vehicle: %s", profile)
+	}
 
-	// vehicle_class is a correction field: unflagged it is locked, flagged it is editable.
-	if r := admin.Do(http.MethodPost, "/api/v1/admin/drivers/"+driverID.String()+"/request-corrections", map[string]any{
+	// An application still pending from before: vehicle_class is a correction
+	// field, locked unless flagged.
+	legacy := env.DriverClient()
+	legacyID := legacy.LegacyPending(driverstest.Registration{Plate: "556 ABC 04", Phone: "+77015550198", VehicleClass: "microbus", Seats: 18})
+	if r := admin.Do(http.MethodPost, "/api/v1/admin/drivers/"+legacyID.String()+"/request-corrections", map[string]any{
 		"items": []map[string]any{{"field": "vehicle_color", "reason": "missing_info"}}}); r.Code != http.StatusOK {
 		t.Fatalf("request corrections: %s", r)
 	}
-	body := classBody(map[string]any{"make": "Toyota", "model": "Camry", "color": "Сұр", "plate": "555 ABC 04", "seats": 12})
-	if r := c.Do(http.MethodPut, pathRegistration, body); r.Code != 422 || r.Fields()["vehicle.seats"] != "not_editable" {
+	body := classBody(map[string]any{"make": "Toyota", "model": "Camry", "color": "Сұр", "plate": "556 ABC 04", "seats": 12})
+	if r := legacy.Do(http.MethodPut, pathRegistration, body); r.Code != 422 || r.Fields()["vehicle.seats"] != "not_editable" {
 		t.Fatalf("seats changed without a correction: %s", r)
 	}
 	delete(body["vehicle"].(map[string]any), "seats")
-	if r := c.Do(http.MethodPut, pathRegistration, body); r.Code != http.StatusOK || vehicleOf(r)["seats"] != float64(18) {
+	if r := legacy.Do(http.MethodPut, pathRegistration, body); r.Code != http.StatusOK || vehicleOf(r)["seats"] != float64(18) {
 		t.Fatalf("unchanged class fields pass: %s", r)
 	}
-	if r := c.Submit(); r.Code != http.StatusOK {
+	// The resubmission needs the IIN, which drivers of that time never gave.
+	if r := legacy.Submit(); r.Code != http.StatusUnprocessableEntity || r.ErrorCode() != "registration_incomplete" {
+		t.Fatalf("resubmit without IIN: %s", r)
+	}
+	if r := legacy.Do(http.MethodPut, pathRegistration, map[string]any{"iin": driverstest.NewIIN()}); r.Code != http.StatusOK {
+		t.Fatalf("add IIN: %s", r)
+	}
+	if r := legacy.Submit(); r.Code != http.StatusOK || r.Body["status"] != "approved" {
 		t.Fatalf("resubmit: %s", r)
 	}
-	if r := admin.Do(http.MethodPost, "/api/v1/admin/drivers/"+driverID.String()+"/request-corrections", map[string]any{
-		"items": []map[string]any{{"field": "vehicle_class", "reason": "other", "comment": "Орын санын тексеріңіз"}}}); r.Code != http.StatusOK {
-		t.Fatalf("request class correction: %s", r)
-	}
-	reg := c.Do(http.MethodGet, pathRegistration, nil)
-	if reg.Body["corrections"].([]any)[0].(map[string]any)["field"] != "vehicle_class" {
-		t.Fatalf("driver sees the class correction: %s", reg)
-	}
-	body["vehicle"].(map[string]any)["vehicle_class"] = "minivan"
-	if r := c.Do(http.MethodPut, pathRegistration, body); r.Code != http.StatusOK || vehicleOf(r)["vehicle_class"] != "minivan" ||
-		vehicleOf(r)["seats"] != float64(7) {
-		t.Fatalf("fix class: %s", r)
-	}
-	if r := c.Submit(); r.Code != http.StatusOK {
-		t.Fatalf("resubmit: %s", r)
-	}
-	if r := admin.Do(http.MethodPost, "/api/v1/admin/drivers/"+driverID.String()+"/approve", map[string]any{}); r.Code != http.StatusOK {
-		t.Fatalf("approve: %s", r)
-	}
-	profile := c.Do(http.MethodGet, "/api/v1/driver/profile", nil)
-	if v := vehicleOf(profile); profile.Code != http.StatusOK || v["vehicle_class"] != "minivan" || v["seats"] != float64(7) ||
-		v["cargo_volume_l"] != float64(800) {
-		t.Fatalf("driver profile vehicle: %s", profile)
+	profile = legacy.Do(http.MethodGet, "/api/v1/driver/profile", nil)
+	if v := vehicleOf(profile); profile.Code != http.StatusOK || v["vehicle_class"] != "microbus" || v["color"] != "Сұр" {
+		t.Fatalf("legacy driver profile vehicle: %s", profile)
 	}
 }

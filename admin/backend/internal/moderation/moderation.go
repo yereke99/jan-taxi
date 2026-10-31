@@ -1,9 +1,11 @@
 // Package moderation runs the driver application workflow: submission by the
-// driver and the administrators' decisions (approve, request corrections,
-// reject, suspend, restore, change city). Every transition is a conditional
-// state change in one transaction together with its moderation event, audit
-// row, Telegram notification and realtime hint. Nothing is auto-approved and no
-// history is ever deleted.
+// driver, which approves a registration that passes the automatic checks at
+// once (owner decision 2026-10-31, no manual review), and the administrators'
+// decisions (suspend, restore, change city, and approve, request corrections
+// or reject for applications still pending from before). Every transition is
+// a conditional state change in one transaction together with its moderation
+// event, audit row, Telegram notification and realtime hint. No history is
+// ever deleted.
 package moderation
 
 import (
@@ -24,19 +26,15 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // Handler serves the submission and admin moderation endpoints.
 type Handler struct {
-	pool         *pgxpool.Pool
-	verification *verification.Service
+	pool *pgxpool.Pool
 }
 
 // NewHandler builds the handler.
 func NewHandler(pool *pgxpool.Pool) *Handler { return &Handler{pool: pool} }
-
-func (h *Handler) WithVerification(s *verification.Service) *Handler { h.verification = s; return h }
 
 // MountDriver mounts POST /driver/register on the driver app router.
 func (h *Handler) MountDriver(r chi.Router) {
@@ -47,12 +45,11 @@ func (h *Handler) MountDriver(r chi.Router) {
 // Routes are registered flat so other packages can add /drivers/{id}/… routes.
 func (h *Handler) MountAdmin(r chi.Router) {
 	view := r.With(auth.Permit(auth.PermDriversView))
-	r.With(auth.Permit(auth.PermDriversModerate)).Get("/verification/queue", httpx.H(h.verificationQueue))
 	view.Get("/drivers", httpx.H(h.list))
 	view.Get("/drivers/{id}", httpx.H(h.detail))
 
 	moderate := r.With(auth.Permit(auth.PermDriversModerate))
-	moderate.Post("/drivers/{id}/approve", httpx.H(h.approve))
+	moderate.Post("/drivers/{id}/approve", httpx.H(h.approveByAdmin))
 	moderate.Post("/drivers/{id}/request-corrections", httpx.H(h.requestCorrections))
 	moderate.Post("/drivers/{id}/reject", httpx.H(h.reject))
 
@@ -130,12 +127,4 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return httpx.DecodeJSON(w, r, dst)
-}
-
-func (h *Handler) verificationQueue(w http.ResponseWriter, r *http.Request) error {
-	v, err := h.verification.QueueStats(r.Context())
-	if err != nil {
-		return err
-	}
-	return httpx.OK(w, v)
 }

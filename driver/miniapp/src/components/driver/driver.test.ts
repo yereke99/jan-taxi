@@ -1,5 +1,6 @@
-// Driver components for the v2 rules: vehicle class cards (§21), passenger
-// contact on the trip (§22.4/§22.5) and bonus rows in the wallet (§22.1/§22.7).
+// Driver components: the registration's body type row and IIN field (§11,
+// §21), passenger contact on the trip (§22.4/§22.5) and bonus rows in the
+// wallet (§22.1/§22.7).
 
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
@@ -12,7 +13,8 @@ import { i18n } from '../../i18n'
 import { useRegistrationStore } from '../../stores/registration'
 import { useSessionStore } from '../../stores/session'
 import LedgerRow from './LedgerRow.vue'
-import StepVehicleClass from './registration/StepVehicleClass.vue'
+import IinField from './registration/IinField.vue'
+import VehicleClassRow from './registration/VehicleClassRow.vue'
 import TripContacts from './TripContacts.vue'
 
 function cls(code: VehicleClassOption['icon'], seatsDefault: number, seatsMax: number, cargo: number, name: string): VehicleClassOption {
@@ -38,51 +40,98 @@ beforeEach(() => {
   i18n.global.locale.value = 'kk'
 })
 
-describe('StepVehicleClass', () => {
-  function setup(): ReturnType<typeof useRegistrationStore> {
+describe('VehicleClassRow', () => {
+  function setup(vehicle: Record<string, unknown> = {}): ReturnType<typeof useRegistrationStore> {
     useSessionStore().extras.vehicleClasses = [cls('sedan', 4, 4, 400, 'Седан'), cls('minivan', 7, 8, 800, 'Минивэн')]
     const reg = useRegistrationStore()
-    reg.registration = normalizeRegistration({ id: 'd1', status: 'draft', editable: true, vehicle: {} })
+    reg.registration = normalizeRegistration({ id: 'd1', status: 'draft', editable: true, vehicle })
     return reg
   }
 
-  it('shows a card per class with its capacity', () => {
-    setup()
-    const w = mount(StepVehicleClass, { props: { showErrors: false }, ...mountOpts() })
-    const cards = w.findAll('[role="radio"]')
-    expect(cards).toHaveLength(2)
-    expect(cards[0]!.text()).toContain('Седан')
-    expect(cards[0]!.text()).toContain('4 орын · 400 л')
-    expect(cards[1]!.text()).toContain('Toyota Alphard, Sienna')
-    expect(cards[1]!.find('svg').exists()).toBe(true)
-    expect(w.text()).not.toContain('Жолаушы орны') // capacity appears after a choice
+  it('shows the chosen class with its capacity in one row', () => {
+    const reg = setup({ vehicle_class: 'sedan', vehicle_class_name: { kk: 'Седан', ru: 'Седан', en: 'Sedan' }, seats: 4, cargo_volume_l: 400 })
+    reg.form.vehicle_class = 'sedan'
+    const w = mount(VehicleClassRow, { props: { showErrors: false }, ...mountOpts() })
+    expect(w.findAll('[role="radio"]')).toHaveLength(0)
+    const row = w.find('button[aria-expanded]')
+    expect(row.text()).toContain('Седан')
+    expect(row.text()).toContain('4 орын · 400 л')
+    expect(row.find('svg').exists()).toBe(true)
   })
 
-  it('choosing a card prefills seats and cargo; the stepper stops at the class maximum', async () => {
+  it('lists the active classes on tap; picking one closes the list', async () => {
     const reg = setup()
-    const w = mount(StepVehicleClass, { props: { showErrors: false }, ...mountOpts() })
-    await w.findAll('[role="radio"]')[1]!.trigger('click')
-    expect(reg.form).toMatchObject({ vehicle_class: 'minivan', seats: 7, cargo_volume_l: '800' })
-    expect(w.findAll('[role="radio"]')[1]!.attributes('aria-checked')).toBe('true')
-    const plus = w.find('.stepper__btn:last-of-type')
-    await plus.trigger('click')
-    expect(reg.form.seats).toBe(8)
-    expect(plus.attributes('disabled')).toBeDefined()
-    expect(w.find('input').element.value).toBe('800')
+    reg.form.vehicle_class = 'sedan'
+    const w = mount(VehicleClassRow, { props: { showErrors: false }, ...mountOpts() })
+    await w.find('button[aria-expanded]').trigger('click')
+    const options = w.findAll('[role="radio"]')
+    expect(options).toHaveLength(2)
+    expect(options[0]!.attributes('aria-checked')).toBe('true')
+    expect(options[1]!.text()).toContain('Toyota Alphard, Sienna')
+    await options[1]!.trigger('click')
+    expect(reg.form.vehicle_class).toBe('minivan')
+    expect(w.findAll('[role="radio"]')).toHaveLength(0)
+    expect(w.find('button[aria-expanded]').text()).toContain('7 орын · 800 л')
   })
 
-  it('asks for a class when Next is pressed without one', () => {
+  it('asks for a class when there is none', () => {
     setup()
-    const w = mount(StepVehicleClass, { props: { showErrors: true }, ...mountOpts() })
+    const w = mount(VehicleClassRow, { props: { showErrors: true }, ...mountOpts() })
     expect(w.find('[role="alert"]').text()).toBe('Көлік түрін таңдаңыз')
+    expect(w.find('button[aria-expanded]').text()).toContain('Таңдаңыз')
   })
 
-  it('offers a retry when the class list could not be loaded', () => {
+  it('is locked when the class was not flagged (corrections)', () => {
+    const reg = useRegistrationStore()
+    useSessionStore().extras.vehicleClasses = [cls('sedan', 4, 4, 400, 'Седан')]
+    reg.registration = normalizeRegistration({
+      id: 'd1',
+      status: 'changes_requested',
+      editable: true,
+      iin: '900101300017',
+      corrections: [{ field: 'vehicle_color', reason: 'other' }],
+      vehicle: { vehicle_class: 'sedan', seats: 4, cargo_volume_l: 400 },
+    })
+    reg.form.vehicle_class = 'sedan'
+    const w = mount(VehicleClassRow, { props: { showErrors: false }, ...mountOpts() })
+    expect(w.find('button[aria-expanded]').exists()).toBe(false)
+    expect(w.find('button').attributes('disabled')).toBeDefined()
+  })
+
+  it('offers a retry when the class list could not be loaded', async () => {
     const reg = useRegistrationStore()
     reg.registration = normalizeRegistration({ id: 'd1', status: 'draft', editable: true, vehicle: {} })
-    const w = mount(StepVehicleClass, { props: { showErrors: false }, ...mountOpts() })
-    expect(w.findAll('[role="radio"]')).toHaveLength(0)
+    const w = mount(VehicleClassRow, { props: { showErrors: false }, ...mountOpts() })
+    await w.find('button[aria-expanded]').trigger('click')
     expect(w.text()).toContain('Көлік түрлерінің тізімі жүктелмеді')
+  })
+})
+
+describe('IinField', () => {
+  const mountField = (modelValue: string, showErrors = false, serverError = '') =>
+    mount(IinField, { props: { modelValue, label: 'ЖСН', showErrors, serverError }, ...mountOpts() })
+
+  it('keeps digits only, with the numeric keyboard and a 12-digit counter', async () => {
+    const w = mountField('')
+    const input = w.find('input')
+    expect(input.attributes('inputmode')).toBe('numeric')
+    await input.setValue('9001 0130-a')
+    expect(w.emitted('update:modelValue')!.at(-1)).toEqual(['90010130'])
+    expect((input.element as HTMLInputElement).value).toBe('90010130')
+    expect(w.text()).toContain('0/12')
+  })
+
+  it('reports a wrong check digit at once, an unfinished number only after Next', () => {
+    expect(mountField('900101300018').find('[role="alert"]').text()).toBe('ЖСН қате: цифрларды тексеріңіз')
+    expect(mountField('9001').find('[role="alert"]').exists()).toBe(false)
+    expect(mountField('9001', true).find('[role="alert"]').text()).toBe('ЖСН 12 цифрдан тұрады')
+    expect(mountField('', true).find('[role="alert"]').text()).toBe('ЖСН-ді енгізіңіз')
+    expect(mountField('900101300017').find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('shows the server answer first', () => {
+    const w = mountField('900101300017', false, 'Бұл ЖСН басқа жүргізушіге тіркелген')
+    expect(w.find('[role="alert"]').text()).toBe('Бұл ЖСН басқа жүргізушіге тіркелген')
   })
 })
 

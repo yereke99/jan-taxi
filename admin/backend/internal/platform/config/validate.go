@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/mail"
 	"net/url"
@@ -56,7 +55,6 @@ func (v *validator) check(c *Config) {
 	v.checkStorage(c)
 	v.checkProduct(c)
 	v.checkIntegrations(c)
-	v.checkVerification(c)
 
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
@@ -67,21 +65,6 @@ func (v *validator) check(c *Config) {
 	case "json", "text":
 	default:
 		v.fail("LOG_FORMAT", "must be json or text")
-	}
-}
-
-func (v *validator) checkVerification(c *Config) {
-	if c.VerificationMinConfidence < 90 || c.VerificationMinConfidence > 100 {
-		v.fail("VERIFICATION_MIN_CONFIDENCE", "must be between 90 and 100")
-	}
-	if c.VerificationQueueLimit < 1 || c.VerificationQueueLimit > 100000 {
-		v.fail("VERIFICATION_QUEUE_LIMIT", "must be between 1 and 100000")
-	}
-	if c.VerificationEnabled || c.VerificationKey != "" {
-		key, err := base64.StdEncoding.DecodeString(c.VerificationKey)
-		if err != nil || len(key) != 32 {
-			v.fail("VERIFICATION_KEY", "must be a base64 encoded 32-byte key when verification is enabled")
-		}
 	}
 }
 

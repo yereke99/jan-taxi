@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setHttpTransport } from '../services/http'
-import { getRegistration } from './driver'
+import { getRegistration, saveProfileIin } from './driver'
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -17,18 +17,18 @@ describe('getRegistration', () => {
     expect(r.first_name).toBe('Ерлан')
   })
 
-  it('keeps protected own identity, verification status and PDF metadata through normalization', async () => {
-    setHttpTransport(vi.fn(async () => json(200, {
-      id:'d1',status:'pending',identity_enabled:true,
-      identity:{document_type:'driving_licence',iin:'999999999990',document_number:'AA000012',patronymic:''},
-      verification:{id:'j1',status:'admin_review',confidence:62,reasons:['iin_uncertain'],attempts:1,created_at:'now',finished_at:null},
-      documents:{id_front:{id:'f1',kind:'id_front',url:'/api/v1/driver/files/f1',width:0,height:0,mime:'application/pdf'}},
-    })))
-    const r=await getRegistration()
-    expect(r.identity_enabled).toBe(true)
-    expect(r.identity?.document_number).toBe('AA000012')
-    expect(r.verification?.status).toBe('admin_review')
-    expect(r.documents.id_front?.mime).toBe('application/pdf')
+  it('reads the patronymic and the own IIN, leading zeros kept', async () => {
+    setHttpTransport(vi.fn(async () => json(200, { id: 'd1', status: 'draft', editable: true, patronymic: 'Ахметұлы', iin: '000301500128' })))
+    const r = await getRegistration()
+    expect(r.patronymic).toBe('Ахметұлы')
+    expect(r.iin).toBe('000301500128')
+  })
+
+  it('reads a missing or malformed IIN as none', async () => {
+    for (const iin of [null, '', '1234', 900101300017]) {
+      setHttpTransport(vi.fn(async () => json(200, { id: 'd1', status: 'draft', iin })))
+      expect((await getRegistration()).iin).toBeNull()
+    }
   })
 
   it('treats "no profile yet" as a new, editable application instead of an error', async () => {
@@ -48,5 +48,28 @@ describe('getRegistration', () => {
   it('still reports other failures', async () => {
     setHttpTransport(vi.fn(async () => json(500, { error: { code: 'internal', message: 'boom' } })))
     await expect(getRegistration()).rejects.toMatchObject({ code: 'internal' })
+  })
+})
+
+describe('saveProfileIin', () => {
+  afterEach(() => setHttpTransport(null))
+
+  it('sends the IIN once and reads back the masked one', async () => {
+    const transport = vi.fn(async (_url: string, _init: RequestInit) =>
+      json(200, { id: 'd1', code: 'EMB001', status: 'approved', first_name: 'Ерлан', last_name: 'Сапаров', iin_masked: '********0017', vehicle: null }),
+    )
+    setHttpTransport(transport as unknown as typeof fetch)
+    const p = await saveProfileIin('900101300017')
+    const [url, init] = transport.mock.calls[0]!
+    expect(String(url)).toContain('/driver/profile/iin')
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(String(init.body))).toEqual({ iin: '900101300017' })
+    expect(p.iin_masked).toBe('********0017')
+    expect(p.patronymic).toBe('')
+  })
+
+  it('reports a different stored IIN as a conflict', async () => {
+    setHttpTransport(vi.fn(async () => json(409, { error: { code: 'conflict', message: 'x', details: { reason: 'iin_already_set' } } })))
+    await expect(saveProfileIin('900101300017')).rejects.toMatchObject({ code: 'conflict', details: { reason: 'iin_already_set' } })
   })
 })

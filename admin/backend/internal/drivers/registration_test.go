@@ -1,6 +1,7 @@
 package drivers_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -32,17 +33,20 @@ func TestRegistrationValidation(t *testing.T) {
 		body   any
 		fields map[string]string
 	}{
-		{"missing everything", `{}`, map[string]string{"first_name": "required", "last_name": "required", "vehicle": "required"}},
 		{"bad plate and name", registrationBody("Ерлан2", "Бекенов", "Toyota", "Camry", "Ақ", "ABC 123"),
 			map[string]string{"first_name": "invalid", "vehicle.plate": "invalid"}},
 		{"too long", registrationBody(strings.Repeat("ә", 61), "Б", strings.Repeat("x", 41), "M", strings.Repeat("c", 31), "123ABC04"),
 			map[string]string{"first_name": "too_long", "vehicle.make": "too_long", "vehicle.color": "too_long"}},
-		{"vehicle fields missing", `{"first_name":"А","last_name":"Б","vehicle":{}}`,
-			map[string]string{"vehicle.make": "required", "vehicle.model": "required", "vehicle.color": "required", "vehicle.plate": "required"}},
+		{"IIN of 11 digits", map[string]any{"iin": "90010130001"}, map[string]string{"iin": "invalid"}},
+		{"IIN of 13 digits", map[string]any{"iin": "9001013000170"}, map[string]string{"iin": "invalid"}},
+		{"IIN with a letter", map[string]any{"iin": "90010130001a"}, map[string]string{"iin": "invalid"}},
+		{"IIN with a wrong check digit", map[string]any{"iin": "900101300018"}, map[string]string{"iin": "checksum"}},
+		{"patronymic", map[string]any{"patronymic": "Ұлы1"}, map[string]string{"patronymic": "invalid"}},
+		{"long patronymic", map[string]any{"patronymic": strings.Repeat("а", 61)}, map[string]string{"patronymic": "too_long"}},
 	}
 	for _, tt := range cases {
 		res := c.Do(http.MethodPut, pathRegistration, tt.body)
-		if res.Code != http.StatusUnprocessableEntity {
+		if res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "validation_failed" {
 			t.Fatalf("%s: %s", tt.name, res)
 		}
 		for k, v := range tt.fields {
@@ -62,6 +66,9 @@ func TestRegistrationValidation(t *testing.T) {
 	if res.Code != http.StatusOK || res.Body["first_name"] != "Әлі-Ахмет" || res.Body["status"] != "draft" || res.Body["city"].(map[string]any)["code"] != "EMB" {
 		t.Fatalf("partial draft: %s", res)
 	}
+	if res.Body["iin"] != nil || res.Body["patronymic"] != "" {
+		t.Fatalf("identity before it was entered: %s", res)
+	}
 	if env.Count(`SELECT count(*) FROM wallets w JOIN driver_profiles d ON d.id = w.driver_id WHERE d.user_id = $1`, c.UserID) != 1 {
 		t.Fatal("wallet not created with the profile")
 	}
@@ -74,6 +81,7 @@ func TestRegistrationValidation(t *testing.T) {
 		{`{}`, nil, nil, nil, nil},
 		{`{"plate":"12"}`, false, nil, nil, "12"},
 		{`{"plate":"045 кма 04"}`, true, true, "045KMA04", "045 кма 04"},
+		{`{"plate":"D 123 ABC"}`, true, true, "D123ABC", "D 123 ABC"},
 	}
 	for _, tt := range checks {
 		res := c.Do(http.MethodPost, pathRegistration+"/check", tt.body)
@@ -84,6 +92,57 @@ func TestRegistrationValidation(t *testing.T) {
 		if p != nil && (p["valid"] != tt.valid || p["available"] != tt.available || p["normalized"] != tt.normalized || p["input"] != tt.input) {
 			t.Fatalf("check %s: %v", tt.body, p)
 		}
+	}
+}
+
+// TestRegistrationKeepsWhatIsNotSent: every key of PUT /driver/registration
+// is optional, so an older app version that does not know a field never
+// blanks it, and its identity object still carries the IIN.
+func TestRegistrationKeepsWhatIsNotSent(t *testing.T) {
+	env := driverstest.New(t)
+	c := env.DriverClient()
+	iin := "000301500128"
+	res := c.Do(http.MethodPut, pathRegistration, map[string]any{
+		"first_name": "Айгүл", "last_name": "Сәрсенова", "patronymic": "Нұрланқызы", "iin": " 0003 0150 0128 ",
+		"vehicle": map[string]any{"make": "Kia", "model": "Rio", "color": "Ақ", "plate": "045 кма 04", "vehicle_class": "sedan"},
+	})
+	if res.Code != http.StatusOK || res.Body["iin"] != iin || res.Body["patronymic"] != "Нұрланқызы" || vehicleOf(res)["plate"] != "045 KMA 04" {
+		t.Fatalf("full save: %s", res)
+	}
+	// An older app sends names and vehicle only: the IIN and patronymic stay.
+	res = c.Do(http.MethodPut, pathRegistration, registrationBody("Айгүл", "Сәрсенова", "Kia", "Rio", "Қара", "045 кма 04"))
+	if res.Code != http.StatusOK || res.Body["iin"] != iin || res.Body["patronymic"] != "Нұрланқызы" || vehicleOf(res)["color"] != "Қара" {
+		t.Fatalf("older app save: %s", res)
+	}
+	// Page 1 alone keeps the vehicle; page 2 alone keeps the person.
+	res = c.Do(http.MethodPut, pathRegistration, map[string]any{"first_name": "Айгүл", "last_name": "Сәрсен"})
+	if v := vehicleOf(res); res.Code != http.StatusOK || v["make"] != "Kia" || v["vehicle_class"] != "sedan" || res.Body["iin"] != iin {
+		t.Fatalf("person only: %s", res)
+	}
+	res = c.Do(http.MethodPut, pathRegistration, map[string]any{"vehicle": map[string]any{"vehicle_class": "minivan"}})
+	if v := vehicleOf(res); res.Code != http.StatusOK || v["vehicle_class"] != "minivan" || v["model"] != "Rio" || res.Body["last_name"] != "Сәрсен" {
+		t.Fatalf("vehicle only: %s", res)
+	}
+	// The identity object of older versions: its IIN and patronymic count, its
+	// document fields are ignored; an empty IIN there clears nothing.
+	other := "900101300017"
+	res = c.Do(http.MethodPut, pathRegistration, map[string]any{"identity": map[string]any{
+		"document_type": "id_card", "iin": other, "document_number": "123456789", "patronymic": "",
+	}})
+	if res.Code != http.StatusOK || res.Body["iin"] != other || res.Body["patronymic"] != "Нұрланқызы" {
+		t.Fatalf("identity object: %s", res)
+	}
+	res = c.Do(http.MethodPut, pathRegistration, map[string]any{"identity": map[string]any{"iin": "", "document_number": ""}})
+	if res.Code != http.StatusOK || res.Body["iin"] != other {
+		t.Fatalf("empty identity object: %s", res)
+	}
+	// An empty string clears a field while drafting.
+	res = c.Do(http.MethodPut, pathRegistration, map[string]any{"iin": "", "patronymic": ""})
+	if res.Code != http.StatusOK || res.Body["iin"] != nil || res.Body["patronymic"] != "" {
+		t.Fatalf("clear identity: %s", res)
+	}
+	if n := env.Count(`SELECT count(*) FROM driver_profiles WHERE user_id = $1 AND iin IS NULL`, c.UserID); n != 1 {
+		t.Fatal("cleared IIN stored as a value")
 	}
 }
 
@@ -143,57 +202,37 @@ func TestUploads(t *testing.T) {
 	if reg.Body["avatar"].(map[string]any)["id"] == first {
 		t.Fatal("avatar not replaced")
 	}
+	// Only the profile photo is uploaded now: ID scans and vehicle photos are refused.
 	invalid := []struct {
 		kind string
 		data []byte
 		code int
 		want string
 	}{
+		{"id_front", driverstest.JPEG(t, 10, 10, 1), 422, "validation_failed"},
+		{"id_back", driverstest.JPEG(t, 10, 10, 1), 422, "validation_failed"},
+		{"vehicle_main", driverstest.JPEG(t, 10, 10, 1), 422, "validation_failed"},
+		{"vehicle_extra", driverstest.JPEG(t, 10, 10, 1), 422, "validation_failed"},
 		{"passport", driverstest.JPEG(t, 10, 10, 1), 422, "validation_failed"},
 		{"", driverstest.JPEG(t, 10, 10, 1), 422, "validation_failed"},
-		{"id_front", nil, 422, "validation_failed"},
-		{"id_front", []byte("not an image at all"), 422, "unsupported_file_type"},
+		{"avatar", nil, 422, "validation_failed"},
+		{"avatar", []byte("not an image at all"), 422, "unsupported_file_type"},
+		{"avatar", []byte("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n"), 422, "unsupported_file_type"},
+		{"avatar", append([]byte{0xFF, 0xD8, 0xFF}, bytes.Repeat([]byte{0}, int(drivers.MaxAvatarBytes))...), 413, "file_too_large"},
 	}
 	for _, tt := range invalid {
 		if res := c.Upload(tt.kind, tt.data); res.Code != tt.code || res.ErrorCode() != tt.want {
 			t.Fatalf("upload %q: %s", tt.kind, res)
 		}
 	}
+	if n := env.Count(`SELECT count(*) FROM files WHERE owner_user_id = $1 AND purpose <> 'driver_avatar'`, c.UserID); n != 0 {
+		t.Fatalf("%d documents or vehicle photos stored", n)
+	}
 	if res := c.Do(http.MethodPost, pathRegistration+"/files", `{"kind":"avatar"}`); res.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("json upload: %s", res)
 	}
-
-	var extras []string
-	for i := range 4 {
-		res := c.Upload("vehicle_extra", driverstest.JPEG(t, 16, 16, uint8(10+i)))
-		if res.Code != http.StatusCreated {
-			t.Fatalf("extra %d: %s", i, res)
-		}
-		extras = append(extras, res.Body["id"].(string))
-	}
-	if res := c.Upload("vehicle_extra", driverstest.JPEG(t, 16, 16, 99)); res.Code != 422 || res.Fields()["kind"] != "too_many" {
-		t.Fatalf("fifth extra: %s", res)
-	}
-	main := c.Upload("vehicle_main", driverstest.JPEG(t, 16, 16, 50))
-	if res := c.Do(http.MethodDelete, pathRegistration+"/files/"+main.Body["id"].(string), nil); res.Code != http.StatusConflict ||
-		res.Details()["reason"] != "not_removable" {
-		t.Fatalf("delete main photo: %s", res)
-	}
-	if res := c.Do(http.MethodDelete, pathRegistration+"/files/"+extras[0], nil); res.Code != http.StatusNoContent {
-		t.Fatalf("delete extra: %s", res)
-	}
-	if res := c.Do(http.MethodDelete, pathRegistration+"/files/"+extras[0], nil); res.Code != http.StatusNotFound {
-		t.Fatalf("delete extra twice: %s", res)
-	}
-	if res := c.Do(http.MethodGet, "/api/v1/driver/files/"+extras[0], nil); res.Code != http.StatusNotFound {
-		t.Fatalf("deleted draft photo still served: %s", res)
-	}
-	if res := c.Upload("vehicle_extra", driverstest.JPEG(t, 16, 16, 98)); res.Code != http.StatusCreated {
-		t.Fatalf("extra after delete: %s", res)
-	}
-	photos := c.Do(http.MethodGet, pathRegistration, nil).Body["vehicle"].(map[string]any)["photos"].([]any)
-	if len(photos) != 5 || photos[0].(map[string]any)["kind"] != "main" {
-		t.Fatalf("photos: %v", photos)
+	if res := c.Do(http.MethodDelete, pathRegistration+"/files/"+first, nil); res.Code == http.StatusNoContent {
+		t.Fatalf("vehicle photo removal still mounted: %s", res)
 	}
 }
 
@@ -254,11 +293,15 @@ func TestDriverProfile(t *testing.T) {
 		res.Body["vehicle"].(map[string]any)["make"] != "Toyota" || res.Body["rating"] != nil {
 		t.Fatalf("profile: %s", res)
 	}
+	// A driver approved before the IIN was asked for has none and keeps working.
+	if v, ok := res.Body["iin_masked"]; !ok || v != nil || res.Body["patronymic"] != "" {
+		t.Fatalf("profile without IIN: %s", res)
+	}
 	if res := dc.Do(http.MethodPatch, "/api/v1/driver/profile", `{}`); res.Code != http.StatusOK {
 		t.Fatalf("empty patch: %s", res)
 	}
-	if res := dc.Do(http.MethodPatch, "/api/v1/driver/profile", `{"first_name":"Жаңа","vehicle":{}}`); res.Code != 422 ||
-		res.Fields()["first_name"] != "not_editable" || res.Fields()["vehicle"] != "not_editable" {
+	if res := dc.Do(http.MethodPatch, "/api/v1/driver/profile", `{"first_name":"Жаңа","vehicle":{},"iin":"900101300017"}`); res.Code != 422 ||
+		res.Fields()["first_name"] != "not_editable" || res.Fields()["vehicle"] != "not_editable" || res.Fields()["iin"] != "not_editable" {
 		t.Fatalf("moderated patch: %s", res)
 	}
 	if res := dc.Do(http.MethodPatch, "/api/v1/driver/profile", `{"nickname":"x"}`); res.Code != http.StatusBadRequest {
@@ -267,5 +310,55 @@ func TestDriverProfile(t *testing.T) {
 	// Passenger tokens never reach driver routes (403 forbidden: wrong app).
 	if res := env.AppClient(d.UserID, auth.AppPassenger).Do(http.MethodGet, "/api/v1/driver/profile", nil); res.Code != http.StatusForbidden || res.ErrorCode() != "forbidden" {
 		t.Fatalf("passenger token on driver route: %s", res)
+	}
+}
+
+// TestProfileIIN: a driver without an IIN adds it once from the profile;
+// the answer and every later read show it masked.
+func TestProfileIIN(t *testing.T) {
+	env := driverstest.New(t)
+	const path = "/api/v1/driver/profile/iin"
+	d := testutil.CreateDriver(t, env.Pool, testutil.DriverOptions{Online: true})
+	dc := env.AppClient(d.UserID, auth.AppDriver)
+	if res := env.DriverClient().Do(http.MethodPut, path, map[string]any{"iin": "900101300017"}); res.Code != http.StatusForbidden ||
+		res.ErrorCode() != "driver_not_registered" {
+		t.Fatalf("without a profile: %s", res)
+	}
+	for _, tt := range []struct{ body, reason string }{
+		{`{}`, "required"},
+		{`{"iin":" "}`, "required"},
+		{`{"iin":"90010130001"}`, "invalid"},
+		{`{"iin":"9001013000170"}`, "invalid"},
+		{`{"iin":"900101300018"}`, "checksum"},
+	} {
+		if res := dc.Do(http.MethodPut, path, tt.body); res.Code != 422 || res.Fields()["iin"] != tt.reason {
+			t.Fatalf("%s: %s", tt.body, res)
+		}
+	}
+	// Another live driver's IIN is refused.
+	held := testutil.CreateDriver(t, env.Pool, testutil.DriverOptions{})
+	if _, err := env.Pool.Exec(context.Background(), `UPDATE driver_profiles SET iin = '880808500671' WHERE id = $1`, held.DriverID); err != nil {
+		t.Fatal(err)
+	}
+	if res := dc.Do(http.MethodPut, path, map[string]any{"iin": "880808500671"}); res.Code != http.StatusConflict || res.ErrorCode() != "iin_taken" {
+		t.Fatalf("taken IIN: %s", res)
+	}
+	res := dc.Do(http.MethodPut, path, map[string]any{"iin": "000301500128"})
+	if res.Code != http.StatusOK || res.Body["iin_masked"] != "********0128" || strings.Contains(string(res.Raw), "000301500128") {
+		t.Fatalf("store IIN: %s", res)
+	}
+	if n := env.Count(`SELECT count(*) FROM driver_profiles WHERE id = $1 AND iin = '000301500128'`, d.DriverID); n != 1 {
+		t.Fatal("IIN not stored with its leading zeros")
+	}
+	// Repeating it is harmless; changing it is not the driver's call.
+	if res := dc.Do(http.MethodPut, path, map[string]any{"iin": "000301500128"}); res.Code != http.StatusOK {
+		t.Fatalf("same IIN again: %s", res)
+	}
+	if res := dc.Do(http.MethodPut, path, map[string]any{"iin": "900101300017"}); res.Code != http.StatusConflict ||
+		res.Details()["reason"] != "iin_already_set" {
+		t.Fatalf("change IIN: %s", res)
+	}
+	if res := dc.Do(http.MethodGet, "/api/v1/driver/profile", nil); res.Body["iin_masked"] != "********0128" || strings.Contains(string(res.Raw), "000301500128") {
+		t.Fatalf("profile after: %s", res)
 	}
 }

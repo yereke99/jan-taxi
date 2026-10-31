@@ -1,4 +1,4 @@
-<!-- Driver profile: identity, Telegram account, availability, moderation dates and consent. -->
+<!-- Driver profile: identity (the IIN only masked), Telegram account, availability, moderation dates and consent. -->
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -25,6 +25,8 @@ const person = computed<KeyValueItem[]>(() => {
   return [
     { key: 'code', label: t('drivers.code'), value: d.code, mono: true },
     { key: 'name', label: t('drivers.full_name'), value: `${d.first_name} ${d.last_name}`.trim() },
+    { key: 'patronymic', label: t('drivers.patronymic'), value: d.patronymic },
+    { key: 'iin', label: t('drivers.iin'), value: d.iin_masked ?? t('drivers.iin_not_entered'), mono: d.iin_masked !== null },
     { key: 'phone', label: t('common.phone'), value: d.phone, mono: true },
     { key: 'phone_verified', label: t('drivers.phone_verified'), value: d.phone_verified ? fmt.dateTime(d.phone_verified_at) : t('common.no') },
     { key: 'city', label: t('drivers.region'), value: regionText(d.city) },

@@ -1,29 +1,38 @@
-// Driver registration: the server draft (GET/PUT /driver/registration), photo
-// uploads, Telegram phone verification, plate availability and submission.
-// Text fields are saved to the server as the driver goes (debounced and on
-// every step change), so closing the Mini App loses nothing.
+// Driver registration: the server draft (GET/PUT /driver/registration), the
+// profile photo upload, Telegram phone verification, plate availability and
+// finishing (POST /driver/register, approved at once when the automatic
+// checks pass). Text fields are saved to the server as the driver goes
+// (debounced and on every page change), so closing the Mini App loses nothing.
 
 import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import * as api from '../api/driver'
 import type { UploadProgress } from '../api/upload'
-import { REGISTRATION_FIELDS, type DriverRegistration, type FileRef, type PlateCheck, type RegistrationField, type UploadKind } from '../api/types'
+import {
+  REGISTRATION_FIELDS,
+  type DriverRegistration,
+  type DriverRegistrationUpdate,
+  type FileRef,
+  type PlateCheck,
+  type RegistrationField,
+  type UploadKind,
+} from '../api/types'
 import { PD_CONSENT_VERSION } from '../features/registration/consent'
 import {
-  applyClass,
   buildUpdate,
+  defaultClass,
   editableFields,
+  emptyForm,
   formFromRegistration,
   isValidPlate,
   normalizePlateInput,
   sameUpdate,
-  seatsMaxFor,
   stepsForFields,
   validateName,
   type RegistrationForm,
   type StepId,
 } from '../features/registration/form'
-import { MAX_CARGO_VOLUME_L, type VehicleClassOption } from '../features/vehicle/classes'
+import type { VehicleClassOption } from '../features/vehicle/classes'
 import { isAbortError, isApiError } from '../services/http'
 import { getLocation, requestContact } from '../telegram'
 import { roundCoord } from '../utils/geo'
@@ -81,35 +90,38 @@ function writeConsent(v: boolean): void {
   }
 }
 
+function sameForm(a: RegistrationForm, b: RegistrationForm): boolean {
+  return (Object.keys(a) as Array<keyof RegistrationForm>).every((k) => a[k] === b[k])
+}
+
 export interface SubmitProblem {
-  /** Steps that need attention, in form order. */
+  /** Pages that need attention, in form order. */
   steps: StepId[]
   fields: RegistrationField[]
   error: unknown
 }
 
 export const useRegistrationStore = defineStore('registration', () => {
+  const session = useSessionStore()
   const registration = shallowRef<DriverRegistration | null>(null)
   const loading = ref(false)
   const loadError = shallowRef<unknown>(null)
-  const form = reactive<RegistrationForm>({
-    first_name: '',
-    last_name: '',
-    vehicle_class: '',
-    seats: null,
-    cargo_volume_l: '',
-    make: '',
-    model: '',
-    color: '',
-    plate: '',
-  })
+  const form = reactive<RegistrationForm>(emptyForm())
   const saving = ref(false)
   const saveError = shallowRef<unknown>(null)
   const consentGiven = ref(readConsent())
   const phoneFlow = ref<PhoneFlow>('idle')
   const plate = reactive<{ checking: boolean; result: PlateCheck | null; forInput: string }>({ checking: false, result: null, forInput: '' })
+  /**
+   * Values the API refused as another driver's (409 iin_taken, plate_taken,
+   * phone_taken): shown under their fields and not sent again by the autosave,
+   * so everything else still saves.
+   */
+  const taken = reactive<{ iin: string; plate: string; phone: boolean }>({ iin: '', plate: '', phone: false })
   const submitting = ref(false)
   let dirty = false
+  /** False until the form shows a registration from the server. */
+  let formFilled = false
   /** Incremented on every edit, so a save only clears `dirty` for what it sent. */
   let revision = 0
   let autosaveTimer: ReturnType<typeof setTimeout> | undefined
@@ -124,16 +136,53 @@ export const useRegistrationStore = defineStore('registration', () => {
   const editable = computed(() => (registration.value ? editableFields(registration.value) : new Set<RegistrationField>()))
   const consentRecorded = computed(() => registration.value?.pd_consent_version === PD_CONSENT_VERSION)
 
+  function classes(): readonly VehicleClassOption[] {
+    return session.extras.vehicleClasses
+  }
+
   function adopt(r: DriverRegistration, resetForm: boolean): void {
+    const prev = registration.value
+    // The form follows the server only while it shows what the server held:
+    // anything typed — saved or kept back, like an unfinished plate or a
+    // half-typed IIN — is never overwritten by a save or a background refresh.
+    const pristine = !formFilled || (!dirty && prev !== null && sameForm(form, formFromRegistration(prev)))
     registration.value = r
-    if (resetForm || !dirty) Object.assign(form, formFromRegistration(r))
+    if (resetForm || pristine) {
+      Object.assign(form, formFromRegistration(r))
+      formFilled = true
+    }
+    presetClass()
     if (phoneFlow.value === 'waiting') {
-      // Sharing again (flagged phone): wait for a different number or the bot's event.
+      // Sharing again (flagged or taken phone): wait for a different number or the bot's event.
       if (r.phone_verified && r.phone !== phoneBefore) finishPhone('verified')
     } else if (phoneFlow.value !== 'requesting' && r.phone_verified) {
       phoneFlow.value = 'verified'
     }
   }
+
+  /**
+   * The body type starts as the stored one or, for a new registration, as
+   * Sedan when it is offered (the API gives the profile it creates the same
+   * default). The driver may pick another class on the vehicle page.
+   */
+  function presetClass(): void {
+    const r = registration.value
+    if (!r || form.vehicle_class || !editable.value.has('vehicle_class')) return
+    if (r.vehicle.vehicle_class) {
+      form.vehicle_class = r.vehicle.vehicle_class
+      return
+    }
+    const c = defaultClass(classes())
+    if (!c) return
+    form.vehicle_class = c.code
+    touch()
+  }
+
+  // The class list arrives with the public config, possibly after the registration.
+  watch(
+    () => session.extras.vehicleClasses,
+    () => presetClass(),
+  )
 
   async function load(): Promise<void> {
     loading.value = true
@@ -156,19 +205,25 @@ export const useRegistrationStore = defineStore('registration', () => {
     }
   }
 
-  function payload(): ReturnType<typeof buildUpdate> | null {
+  function payload(): DriverRegistrationUpdate | null {
     const r = registration.value
     if (!r || (r.id !== null && !r.editable)) return null
     const body = buildUpdate(r, form)
     // An unfinished plate is not sent (the API rejects invalid plates); the
-    // vehicle step blocks "Next" until it is valid.
-    if (body.vehicle.plate && !isValidPlate(body.vehicle.plate)) body.vehicle.plate = r.vehicle.plate
-    // Seats outside the class range are not sent either (the class step keeps
-    // them in range; the API would answer 422).
-    const seats = body.vehicle.seats
-    if (seats !== undefined && body.vehicle.vehicle_class && (seats < 1 || seats > seatsMaxFor(classes(), body.vehicle.vehicle_class))) delete body.vehicle.seats
-    if (body.vehicle.cargo_volume_l !== undefined && body.vehicle.cargo_volume_l > MAX_CARGO_VOLUME_L) delete body.vehicle.cargo_volume_l
+    // vehicle page blocks finishing until it is valid. Nor is a plate or an
+    // IIN the API already refused as another driver's.
+    const plateText = body.vehicle.plate
+    if (plateText && (!isValidPlate(plateText) || normalizePlateInput(plateText) === taken.plate)) body.vehicle.plate = r.vehicle.plate
+    if (body.iin !== undefined && body.iin === taken.iin) delete body.iin
     return body
+  }
+
+  /** Remembers a value the API refused as another driver's. */
+  function noteTaken(err: unknown): void {
+    if (!isApiError(err)) return
+    if (err.code === 'iin_taken') taken.iin = form.iin
+    else if (err.code === 'plate_taken') taken.plate = normalizePlateInput(form.plate)
+    else if (err.code === 'phone_taken') taken.phone = true
   }
 
   async function doSave(force: boolean, create: boolean): Promise<void> {
@@ -176,7 +231,7 @@ export const useRegistrationStore = defineStore('registration', () => {
     // Nothing typed: no request (and no profile is created just by opening the form).
     if (!force && !dirty) return
     const creating = registration.value.id === null
-    // Only an explicit step action creates the profile, with the device position;
+    // Only an explicit page action creates the profile, with the device position;
     // background saves (typing, app hidden) wait for it.
     if (creating && !create) return
     const location = creating ? await profileLocation() : undefined
@@ -196,6 +251,7 @@ export const useRegistrationStore = defineStore('registration', () => {
       adopt(saved, false)
       saveError.value = null
     } catch (err) {
+      noteTaken(err)
       saveError.value = err
       throw err
     } finally {
@@ -204,10 +260,10 @@ export const useRegistrationStore = defineStore('registration', () => {
   }
 
   /**
-   * Saves pending text changes now (step change, app hidden, before
-   * upload/submit). `create` marks an explicit step action ("Next", first
-   * upload, submit): only such a save creates the profile, sending the device
-   * position with it; before that, background saves send nothing.
+   * Saves pending text changes now (page change, app hidden, before
+   * upload/submit). `create` marks an explicit page action ("Next", first
+   * upload, finishing): only such a save creates the profile, sending the
+   * device position with it; before that, background saves send nothing.
    */
   function save(force = false, create = force): Promise<void> {
     clearTimeout(autosaveTimer)
@@ -216,14 +272,10 @@ export const useRegistrationStore = defineStore('registration', () => {
     return run
   }
 
-  function classes(): readonly VehicleClassOption[] {
-    return useSessionStore().extras.vehicleClasses
-  }
-
-  /** Chooses a vehicle class: seats and cargo take its defaults (saved like typed text). */
+  /** Chooses the body type; the API gives the vehicle the class's seats and cargo space. */
   function chooseClass(c: VehicleClassOption): void {
     if (!editable.value.has('vehicle_class') || form.vehicle_class === c.code) return
-    applyClass(form, c)
+    form.vehicle_class = c.code
     touch()
   }
 
@@ -237,7 +289,7 @@ export const useRegistrationStore = defineStore('registration', () => {
 
   /**
    * Suggests the Telegram name for a new application (only into empty fields,
-   * only names the API accepts). Saved with the first step like typed text.
+   * only names the API accepts). Saved with the first page like typed text.
    */
   function prefillNames(first: string, last: string): void {
     const r = registration.value
@@ -254,7 +306,7 @@ export const useRegistrationStore = defineStore('registration', () => {
     if (changed) dirty = true
   }
 
-  /** The profile must exist before files can be attached (first PUT creates it). */
+  /** The profile must exist before the photo can be attached (first PUT creates it). */
   async function ensureProfile(): Promise<void> {
     if (registration.value?.id === null || !registration.value) await save(true)
   }
@@ -264,11 +316,6 @@ export const useRegistrationStore = defineStore('registration', () => {
     const ref = await api.uploadRegistrationFile(kind, blob, { onProgress, signal })
     await refresh()
     return ref
-  }
-
-  async function removeExtraPhoto(fileId: string): Promise<void> {
-    await api.deleteRegistrationFile(fileId)
-    await refresh()
   }
 
   // --- Phone verification through the driver bot (§11) ---------------------
@@ -281,6 +328,7 @@ export const useRegistrationStore = defineStore('registration', () => {
   function finishPhone(state: PhoneFlow): void {
     stopPhonePolling()
     phoneFlow.value = state
+    if (state === 'verified') taken.phone = false
   }
 
   function pollPhone(): void {
@@ -355,14 +403,18 @@ export const useRegistrationStore = defineStore('registration', () => {
     () => checkPlateSoon(),
   )
 
-  // --- Consent and submission ---------------------------------------------------
+  // --- Consent and finishing ------------------------------------------------------
 
   function setConsent(v: boolean): void {
     consentGiven.value = v
     writeConsent(v)
   }
 
-  /** Submits for moderation; on failure returns where the driver must look. */
+  /**
+   * Finishes the registration (POST /driver/register). When the automatic
+   * checks pass the API approves the driver in the same request; on failure
+   * returns where the driver must look.
+   */
   async function submit(): Promise<{ ok: true; registration: DriverRegistration } | { ok: false; problem: SubmitProblem }> {
     submitting.value = true
     try {
@@ -372,6 +424,7 @@ export const useRegistrationStore = defineStore('registration', () => {
       adopt(r, true)
       return { ok: true, registration: r }
     } catch (err) {
+      noteTaken(err)
       return { ok: false, problem: submitProblem(err, registration.value) }
     } finally {
       submitting.value = false
@@ -382,6 +435,9 @@ export const useRegistrationStore = defineStore('registration', () => {
     stopPhonePolling()
     clearTimeout(autosaveTimer)
     registration.value = null
+    Object.assign(form, emptyForm())
+    Object.assign(taken, { iin: '', plate: '', phone: false })
+    formFilled = false
     dirty = false
   }
 
@@ -396,6 +452,7 @@ export const useRegistrationStore = defineStore('registration', () => {
     consentRecorded,
     phoneFlow,
     plate,
+    taken,
     submitting,
     editable,
     load,
@@ -405,7 +462,6 @@ export const useRegistrationStore = defineStore('registration', () => {
     chooseClass,
     prefillNames,
     upload,
-    removeExtraPhoto,
     requestPhone,
     onPhoneVerified,
     setConsent,
@@ -414,7 +470,7 @@ export const useRegistrationStore = defineStore('registration', () => {
   }
 })
 
-/** Maps a submit error to the steps that need attention. */
+/** Maps a save or submit error to the pages that need attention. */
 export function submitProblem(err: unknown, r: DriverRegistration | null): SubmitProblem {
   const fields: RegistrationField[] = []
   if (isApiError(err)) {
@@ -424,6 +480,9 @@ export function submitProblem(err: unknown, r: DriverRegistration | null): Submi
         for (const f of list) if (typeof f === 'string' && isField(f)) fields.push(f)
         break
       }
+      case 'iin_taken':
+        fields.push('identity')
+        break
       case 'phone_not_verified':
       case 'phone_taken':
         fields.push('phone')
@@ -434,7 +493,7 @@ export function submitProblem(err: unknown, r: DriverRegistration | null): Submi
       case 'validation_failed':
         for (const key of Object.keys(err.fields)) {
           const f = fieldFromRequestKey(key)
-          if (f) fields.push(f)
+          if (f && !fields.includes(f)) fields.push(f)
         }
         break
     }
@@ -448,12 +507,15 @@ function isField(f: string): f is RegistrationField {
   return FIELDS.has(f)
 }
 
-/** Request field names (vehicle.plate) → registration fields. */
+/** Request field names (vehicle.plate, iin) → registration fields. */
 export function fieldFromRequestKey(key: string): RegistrationField | null {
   switch (key) {
     case 'first_name':
     case 'last_name':
       return key
+    case 'iin':
+    case 'patronymic':
+      return 'identity'
     case 'vehicle.make':
     case 'vehicle.model':
       return 'vehicle_make_model'

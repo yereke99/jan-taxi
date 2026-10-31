@@ -1,14 +1,16 @@
 <!--
   The driver's profile (GET /driver/profile): photo, name, code, masked
-  phone, vehicle with its class, seats and cargo space (§21) and plate,
-  rating, trips, status and city. Moderated data changes only through
-  registration corrections.
+  phone, masked IIN, vehicle with its class, seats and cargo space (§21) and
+  plate, rating, trips, status and city. A driver registered before the IIN
+  was asked for gets a «ЖСН енгізіңіз» row that adds it once (IinDialog);
+  nothing waits for it. Other details change through support.
 -->
 <script setup lang="ts">
 import { Star } from '@lucide/vue'
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import DriverPage from '../components/driver/DriverPage.vue'
+import IinDialog from '../components/driver/IinDialog.vue'
 import PrivateImage from '../components/driver/PrivateImage.vue'
 import { JBadge, JButton, JEmptyState, JListGroup, JListRow, JSkeleton } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
@@ -29,6 +31,12 @@ const store = useProfileStore()
 const vt = useVehicleText()
 
 const p = computed(() => store.profile)
+const iinOpen = ref(false)
+/** Drivers who work (or did) add a missing IIN here; an application in progress does it in the registration. */
+const canAddIin = computed(() => {
+  const x = p.value
+  return Boolean(x && !x.iin_masked && (x.status === 'approved' || x.status === 'suspended' || x.status === 'pending'))
+})
 const name = computed(() => (p.value ? `${p.value.first_name} ${p.value.last_name}`.trim() : ''))
 const vehicle = computed(() => {
   const v = p.value?.vehicle
@@ -84,6 +92,10 @@ onMounted(() => void store.refresh())
           <template #accessory><JBadge :tone="moderationStatusTone(p.status)" :label="t(`moderation_status.${p.status}`)" /></template>
         </JListRow>
         <JListRow :title="t('profile.phone')" :value="session.me?.phone_masked ?? t('profile.phone_none')" />
+        <JListRow v-if="p.iin_masked" :title="t('profile.iin')">
+          <template #accessory><span class="prof__iin jt-tabular">{{ p.iin_masked }}</span></template>
+        </JListRow>
+        <JListRow v-else-if="canAddIin" clickable chevron :title="t('profile.iin_add')" @click="iinOpen = true" />
         <JListRow v-if="p.city" :title="t('profile.city')" :value="pickLocalized(p.city.name, fmt.locale.value)" />
         <JListRow :title="t('profile.trips')" :value="String(p.completed_trips)" />
       </JListGroup>
@@ -106,6 +118,7 @@ onMounted(() => void store.refresh())
         <JListRow :title="t('profile.support')" :to="{ name: ROUTE.support }" />
       </JListGroup>
     </template>
+    <IinDialog v-model:open="iinOpen" />
   </DriverPage>
 </template>
 
@@ -152,6 +165,11 @@ onMounted(() => void store.refresh())
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.prof__iin {
+  color: var(--jt-color-label-secondary);
+  letter-spacing: 0.5px;
 }
 
 .prof__plate {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/iin"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
 )
 
@@ -69,7 +70,8 @@ type Event struct {
 }
 
 // Registration is everything known about a driver's application. Profile is
-// nil before the first save.
+// nil before the first save. IDFront, IDBack and Photos are only filled for
+// drivers who uploaded them before ID scans and vehicle photos were retired.
 type Registration struct {
 	User         UserInfo
 	Profile      *Profile
@@ -340,7 +342,9 @@ func (r Registration) RejectionReason() *string {
 }
 
 // EditableFields returns the registration fields the driver may change now:
-// all of them in draft, only the flagged ones in changes_requested, none otherwise.
+// all of them in draft, only the flagged ones in changes_requested (plus the
+// IIN while none is stored, so a driver whose application predates the IIN is
+// never stuck), none otherwise.
 func (r Registration) EditableFields() map[string]bool {
 	out := map[string]bool{}
 	switch r.Status() {
@@ -353,22 +357,25 @@ func (r Registration) EditableFields() map[string]bool {
 		for _, f := range CorrectionFields(items) {
 			out[f] = true
 		}
+		if r.IIN() == "" {
+			out[FieldIdentity] = true
+		}
 	}
 	return out
 }
 
-// HasMainPhoto reports whether the vehicle has its main photo.
-func (r Registration) HasMainPhoto() bool {
-	for _, p := range r.Photos {
-		if p.Kind == vehicles.PhotoMain {
-			return true
-		}
+// IIN returns the stored IIN, or "" when there is none (or no profile yet).
+func (r Registration) IIN() string {
+	if r.Profile == nil {
+		return ""
 	}
-	return false
+	return r.Profile.IINValue()
 }
 
-// MissingFields lists what is still needed before submission. The phone is
-// listed only when a verified phone is required.
+// MissingFields lists what is still needed before submission, in form order:
+// profile photo, names, a valid IIN, the phone (only when a Telegram-verified
+// phone is required), vehicle class, make and model, colour and plate. ID
+// scans and vehicle photos are no longer asked for.
 func (r Registration) MissingFields(requirePhone bool) []string {
 	missing := map[string]bool{}
 	if r.Avatar == nil {
@@ -380,14 +387,11 @@ func (r Registration) MissingFields(requirePhone bool) []string {
 	if r.Profile == nil || r.Profile.LastName == "" {
 		missing[FieldLastName] = true
 	}
+	if !iin.Valid(r.IIN()) {
+		missing[FieldIdentity] = true
+	}
 	if requirePhone && !r.PhoneVerified() {
 		missing[FieldPhone] = true
-	}
-	if r.IDFront == nil {
-		missing[FieldIDFront] = true
-	}
-	if r.IDBack == nil {
-		missing[FieldIDBack] = true
 	}
 	v := r.Vehicle
 	if v == nil || !v.HasClass() {
@@ -402,11 +406,8 @@ func (r Registration) MissingFields(requirePhone bool) []string {
 	if v == nil || v.PlateNormalized == "" {
 		missing[FieldVehiclePlate] = true
 	}
-	if !r.HasMainPhoto() {
-		missing[FieldVehiclePhotos] = true
-	}
 	out := []string{}
-	for _, f := range RegistrationFields {
+	for _, f := range RequiredFields {
 		if missing[f] {
 			out = append(out, f)
 		}

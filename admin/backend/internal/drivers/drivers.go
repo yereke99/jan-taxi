@@ -14,6 +14,7 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/iin"
 )
 
 // Driver statuses (driver_profiles.status).
@@ -57,18 +58,29 @@ var ActiveOrderStatuses = []string{"accepted", "driver_arriving", "in_progress"}
 // Field limits (code points).
 const (
 	MaxNameLen = 60
+	// MaxPatronymicLen bounds the optional patronymic (Әкесінің аты).
+	MaxPatronymicLen = 60
 )
 
 // Errors shared by driver endpoints.
 var (
 	ErrNotFound   = httpx.NotFound()
 	ErrPhoneTaken = httpx.NewError(http.StatusConflict, "phone_taken", "phone is registered to another driver")
+	ErrIINTaken   = httpx.NewError(http.StatusConflict, "iin_taken", "IIN is registered to another driver")
 )
 
-// PhoneUniqueIndex is the partial unique index that keeps one phone per live driver.
-const PhoneUniqueIndex = "driver_profiles_phone_unique"
+// Partial unique indexes that keep one phone and one IIN per live driver
+// (pending, approved, changes_requested, suspended).
+const (
+	PhoneUniqueIndex = "driver_profiles_phone_unique"
+	IINUniqueIndex   = "driver_profiles_iin_unique"
+)
 
-// Profile is a driver_profiles row.
+// liveStatuses hold a phone, an IIN and a plate; drafts and rejected profiles do not.
+var liveStatuses = []string{StatusPending, StatusApproved, StatusChangesRequested, StatusSuspended}
+
+// Profile is a driver_profiles row. IIN is the 12-digit ЖСН (nil until
+// entered); outside the driver's own registration it is only shown masked.
 type Profile struct {
 	ID               uuid.UUID
 	UserID           uuid.UUID
@@ -78,6 +90,8 @@ type Profile struct {
 	LastName         string
 	PhoneE164        *string
 	PhoneVerifiedAt  *time.Time
+	IIN              *string
+	Patronymic       string
 	AvatarFileID     *uuid.UUID
 	Status           string
 	IsOnline         bool
@@ -113,19 +127,36 @@ func Rating(sum, count int) *float64 {
 // PhoneVerified reports whether the profile holds a Telegram-verified phone.
 func (p Profile) PhoneVerified() bool { return p.PhoneE164 != nil && p.PhoneVerifiedAt != nil }
 
+// IINValue returns the stored IIN, or "" before the driver entered one.
+func (p Profile) IINValue() string {
+	if p.IIN == nil {
+		return ""
+	}
+	return *p.IIN
+}
+
+// IINMasked returns the IIN for administrators, e.g. "********1234", or nil.
+func (p Profile) IINMasked() *string {
+	if p.IIN == nil || *p.IIN == "" {
+		return nil
+	}
+	m := iin.Mask(*p.IIN)
+	return &m
+}
+
 // Editable reports whether the driver may change registration data.
 func (p Profile) Editable() bool {
 	return p.Status == StatusDraft || p.Status == StatusChangesRequested
 }
 
-const profileColumns = `id, user_id, code, city_id, first_name, last_name, phone_e164, phone_verified_at, avatar_file_id,
-	status, is_online, online_since, last_heartbeat_at, submitted_at, approved_at, suspended_at, suspended_reason,
+const profileColumns = `id, user_id, code, city_id, first_name, last_name, phone_e164, phone_verified_at, iin, patronymic,
+	avatar_file_id, status, is_online, online_since, last_heartbeat_at, submitted_at, approved_at, suspended_at, suspended_reason,
 	rating_sum, rating_count, completed_trips, pd_consent_at, pd_consent_version, created_at, updated_at`
 
 func scanProfile(row interface{ Scan(...any) error }) (Profile, error) {
 	var p Profile
 	err := row.Scan(&p.ID, &p.UserID, &p.Code, &p.CityID, &p.FirstName, &p.LastName, &p.PhoneE164, &p.PhoneVerifiedAt,
-		&p.AvatarFileID, &p.Status, &p.IsOnline, &p.OnlineSince, &p.LastHeartbeatAt, &p.SubmittedAt, &p.ApprovedAt,
+		&p.IIN, &p.Patronymic, &p.AvatarFileID, &p.Status, &p.IsOnline, &p.OnlineSince, &p.LastHeartbeatAt, &p.SubmittedAt, &p.ApprovedAt,
 		&p.SuspendedAt, &p.SuspendedReason, &p.RatingSum, &p.RatingCount, &p.CompletedTrips, &p.PDConsentAt,
 		&p.PDConsentVersion, &p.CreatedAt, &p.UpdatedAt)
 	if db.IsNoRows(err) {

@@ -21,8 +21,6 @@ import {
   type TopUp,
   type TopUpReceipt,
   type VehicleClassFields,
-  type VehiclePhoto,
-  type VehiclePhotoKind,
 } from './types'
 
 export function rec(v: unknown): Record<string, unknown> {
@@ -75,15 +73,15 @@ export function normalizeCity(v: unknown): CityRef | null {
 export function normalizeFile(v: unknown): FileRef | null {
   const f = rec(v)
   if (!str(f.id) || !str(f.url)) return null
-  return { ...(f.mime === 'application/pdf' ? {mime:'application/pdf'} : {}), id: str(f.id), kind: str(f.kind), url: str(f.url), width: num(f.width), height: num(f.height), created_at: str(f.created_at) }
+  return { id: str(f.id), kind: str(f.kind), url: str(f.url), width: num(f.width), height: num(f.height), created_at: str(f.created_at) }
 }
 
-const PHOTO_KINDS: readonly VehiclePhotoKind[] = ['main', 'back', 'side', 'plate', 'extra']
+const IIN_RE = /^\d{12}$/
 
-function normalizePhoto(v: unknown): VehiclePhoto | null {
-  const f = normalizeFile(v)
-  if (!f || !(PHOTO_KINDS as readonly string[]).includes(f.kind)) return null
-  return { ...f, kind: f.kind as VehiclePhotoKind }
+/** The driver's own IIN as stored (twelve digits), null when absent or malformed. */
+export function iinOrNull(v: unknown): string | null {
+  const s = str(v)
+  return IIN_RE.test(s) ? s : null
 }
 
 function normalizeCorrections(v: unknown): CorrectionItem[] {
@@ -202,18 +200,15 @@ export function normalizeRegistration(raw: unknown): DriverRegistration {
   const r = rec(raw)
   const docs = rec(r.documents)
   const v = rec(r.vehicle)
-  const identity = rec(r.identity)
-  const verification = rec(r.verification)
   return {
-    identity_enabled: r.identity_enabled === true,
-    ...(r.identity ? {identity:{document_type:identity.document_type === 'driving_licence' ? 'driving_licence' as const : 'id_card' as const,iin:str(identity.iin),document_number:str(identity.document_number),patronymic:str(identity.patronymic)}} : {}),
-    ...(r.verification ? {verification:{id:str(verification.id),status:str(verification.status),confidence:typeof verification.confidence === 'number' ? num(verification.confidence) : null,reasons:arr(verification.reasons).map(str),attempts:num(verification.attempts),created_at:str(verification.created_at),finished_at:strOrNull(verification.finished_at)}} : {}),
     id: strOrNull(r.id),
     status: moderationStatus(r.status),
     code: strOrNull(r.code),
     city: normalizeCity(r.city),
     first_name: str(r.first_name),
     last_name: str(r.last_name),
+    patronymic: str(r.patronymic),
+    iin: iinOrNull(r.iin),
     phone: strOrNull(r.phone),
     phone_verified: r.phone_verified === true,
     avatar: normalizeFile(r.avatar),
@@ -225,9 +220,6 @@ export function normalizeRegistration(raw: unknown): DriverRegistration {
       plate: str(v.plate),
       plate_normalized: strOrNull(v.plate_normalized),
       ...normalizeVehicleClassFields(v),
-      photos: arr(v.photos)
-        .map(normalizePhoto)
-        .filter((p): p is VehiclePhoto => p !== null),
     },
     corrections: normalizeCorrections(r.corrections),
     correction_comment: strOrNull(r.correction_comment),

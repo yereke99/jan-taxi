@@ -20,7 +20,8 @@ const Redacted = "[redacted]"
 var sensitiveKeys = []string{
 	"token", "secret", "password", "passwd", "init_data", "initdata",
 	"authorization", "cookie", "api_key", "apikey",
-	"verification_key", "iin", "document_number", "ocr_text",
+	// Identity data never reaches logs, whatever attribute carries it.
+	"iin", "document_number",
 }
 
 // botTokenRe matches Telegram bot tokens, which appear inside Bot API URLs and

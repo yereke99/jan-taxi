@@ -87,12 +87,6 @@ type Config struct {
 
 	NotificationWorkerEnabled, JobsEnabled bool
 
-	VerificationEnabled       bool
-	VerificationKey           string // base64 AES-256 key; never log its value
-	VerificationAutoApprove   bool
-	VerificationMinConfidence float64
-	VerificationQueueLimit    int
-
 	LogLevel, LogFormat string // info, json
 
 	// Warnings lists non-fatal problems found by Load (relaxed checks outside

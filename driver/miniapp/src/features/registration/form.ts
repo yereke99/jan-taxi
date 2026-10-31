@@ -1,62 +1,78 @@
-// Registration form rules: steps, field → step mapping, client-side checks
-// mirroring the API (names ≤ 60, make/model ≤ 40, colour ≤ 30, KZ plate,
-// vehicle class with seats 1..class max and cargo 0..100000 L) and correction
-// locking (in changes_requested only the flagged fields change).
+// Registration form rules (ARCHITECTURE §11): the two pages, field → page
+// mapping, client-side checks mirroring the API (names ≤ 60 letters, the
+// optional patronymic, a 12-digit IIN with its check digit, make/model ≤ 40,
+// colour ≤ 30, the plate formats of platform/plate, an active vehicle class)
+// and correction locking (in changes_requested only the flagged fields change,
+// plus the IIN while none is stored).
 
-import type { DriverRegistration, DriverRegistrationUpdate, RegistrationField, VehicleInput } from '../../api/types'
+import {
+  REGISTRATION_FIELDS,
+  type DriverRegistration,
+  type DriverRegistrationUpdate,
+  type RegistrationField,
+  type VehicleInput,
+} from '../../api/types'
 import { codePointLength } from '../../utils/text'
-import { findClass, MAX_CARGO_VOLUME_L, MAX_SEATS, type VehicleClassOption } from '../vehicle/classes'
+import { findClass, type VehicleClassOption } from '../vehicle/classes'
+import { iinProblem, isValidIin, type IinProblem } from './iin'
 
-export const STEP_IDS = ['personal', 'phone', 'documents', 'vehicle_class', 'vehicle', 'photos', 'consent', 'review'] as const
+/** Page 1: photo, names, IIN and phone; page 2: the car and, last, the consent. */
+export const STEP_IDS = ['personal', 'vehicle'] as const
 export type StepId = (typeof STEP_IDS)[number]
 
+/**
+ * The page of every registration field. The retired ID scans and car photos
+ * keep a page so remarks on applications from before are still shown.
+ */
 export const FIELD_STEP: Record<RegistrationField, StepId> = {
-  identity: 'personal',
   avatar: 'personal',
   first_name: 'personal',
   last_name: 'personal',
-  phone: 'phone',
-  id_front: 'documents',
-  id_back: 'documents',
-  vehicle_class: 'vehicle_class',
+  identity: 'personal',
+  phone: 'personal',
+  id_front: 'personal',
+  id_back: 'personal',
+  vehicle_class: 'vehicle',
   vehicle_make_model: 'vehicle',
   vehicle_color: 'vehicle',
   vehicle_plate: 'vehicle',
-  vehicle_photos: 'photos',
+  vehicle_photos: 'vehicle',
 }
 
-export const LIMITS = { name: 60, make: 40, model: 40, color: 30, plate: 20 } as const
+export const LIMITS = { name: 60, patronymic: 60, make: 40, model: 40, color: 30, plate: 20 } as const
 
-/** Extra vehicle photos the app lets the driver add besides the main one. */
-export const MAX_EXTRA_PHOTOS = 4
+/** The body type a new registration starts with (vehicleclasses.Default). */
+export const DEFAULT_CLASS = 'sedan'
 
 export interface RegistrationForm {
- identity?: import('../../api/types').DriverIdentity
   first_name: string
   last_name: string
-  /** Vehicle class code; '' until chosen. */
+  /** Optional (Әкесінің аты). */
+  patronymic: string
+  /** Digits only, as typed. */
+  iin: string
+  /** Vehicle class code; '' until chosen. Seats and cargo space follow the class. */
   vehicle_class: string
-  /** Passenger seats; null until a class is chosen. */
-  seats: number | null
-  /** Cargo space in litres as typed (digits); '' until a class is chosen. */
-  cargo_volume_l: string
   make: string
   model: string
   color: string
   plate: string
 }
 
-export type FieldError = 'required' | 'too_long' | 'invalid' | 'too_small' | 'too_large'
-export type FormErrors = Partial<Record<keyof RegistrationForm, FieldError>>
+export type FieldError = 'required' | 'too_long' | 'invalid'
+export type FormErrors = Partial<Record<Exclude<keyof RegistrationForm, 'iin'>, FieldError>> & { iin?: IinProblem }
+
+export function emptyForm(): RegistrationForm {
+  return { first_name: '', last_name: '', patronymic: '', iin: '', vehicle_class: '', make: '', model: '', color: '', plate: '' }
+}
 
 export function formFromRegistration(r: DriverRegistration): RegistrationForm {
   return {
-    ...(r.identity_enabled ? {identity: r.identity ? {...r.identity} : {document_type:'id_card' as const,iin:'',document_number:'',patronymic:''}} : {}),
     first_name: r.first_name,
     last_name: r.last_name,
+    patronymic: r.patronymic,
+    iin: r.iin ?? '',
     vehicle_class: r.vehicle.vehicle_class ?? '',
-    seats: r.vehicle.seats,
-    cargo_volume_l: r.vehicle.cargo_volume_l === null ? '' : String(r.vehicle.cargo_volume_l),
     make: r.vehicle.make,
     model: r.vehicle.model,
     color: r.vehicle.color,
@@ -66,82 +82,104 @@ export function formFromRegistration(r: DriverRegistration): RegistrationForm {
 
 // --- Vehicle class (§21) ----------------------------------------------------------
 
-/** Litres typed by the driver ("1 500", "1500 л") → whole litres, null when not a number. */
-export function parseLitres(s: string): number | null {
-  const digits = s.replace(/[\s\u00a0\u202f]/g, '').replace(/(л|l|L|литр.*|litre.*|liter.*)$/u, '')
-  if (!/^\d{1,7}$/.test(digits)) return null
-  return Number(digits)
-}
-
-/** Picks a class: seats and cargo take the class defaults (both stay editable). */
-export function applyClass(f: RegistrationForm, c: VehicleClassOption): void {
-  if (f.vehicle_class === c.code) return
-  f.vehicle_class = c.code
-  f.seats = c.seats_default
-  f.cargo_volume_l = String(c.cargo_volume_l_default)
-}
-
-/** Seat limit of the chosen class; the API maximum when the class is not listed. */
-export function seatsMaxFor(classes: readonly VehicleClassOption[], code: string): number {
-  return findClass(classes, code)?.seats_max ?? MAX_SEATS
-}
-
 /**
- * Checks the class step. A class that is no longer offered is accepted only
+ * Checks the body type. A class that is no longer offered is accepted only
  * when it is the one already stored (the API keeps it), not as a new choice.
  */
 export function validateVehicleClass(f: RegistrationForm, classes: readonly VehicleClassOption[], storedClass: string | null = null): FormErrors {
-  const e: FormErrors = {}
-  if (!f.vehicle_class) {
-    e.vehicle_class = 'required'
-    return e
-  }
-  if (classes.length > 0 && !findClass(classes, f.vehicle_class) && f.vehicle_class !== storedClass) e.vehicle_class = 'invalid'
-  const max = seatsMaxFor(classes, f.vehicle_class)
-  if (f.seats === null || !Number.isInteger(f.seats)) e.seats = 'required'
-  else if (f.seats < 1) e.seats = 'too_small'
-  else if (f.seats > max) e.seats = 'too_large'
-  const raw = f.cargo_volume_l.trim()
-  if (!raw) e.cargo_volume_l = 'required'
-  else {
-    const litres = parseLitres(raw)
-    if (litres === null) e.cargo_volume_l = 'invalid'
-    else if (litres > MAX_CARGO_VOLUME_L) e.cargo_volume_l = 'too_large'
-  }
-  return e
+  if (!f.vehicle_class) return { vehicle_class: 'required' }
+  if (classes.length > 0 && !findClass(classes, f.vehicle_class) && f.vehicle_class !== storedClass) return { vehicle_class: 'invalid' }
+  return {}
 }
 
-// --- Plate ------------------------------------------------------------------
+/** The default body type when it is offered, else null (the driver picks one). */
+export function defaultClass(classes: readonly VehicleClassOption[]): VehicleClassOption | null {
+  return findClass(classes, DEFAULT_CLASS)
+}
 
-const CYRILLIC_LOOKALIKES: Record<string, string> = {
+// --- Plate (admin/backend/internal/platform/plate) ------------------------------------
+
+export type PlateKind = 'current' | 'legacy'
+
+export interface ParsedPlate {
+  /** As stored in vehicles.plate_normalized, e.g. "123ABC04" or "D123ABC". */
+  normalized: string
+  kind: PlateKind
+  /** "04" for current plates, "D" for legacy ones. */
+  region: string
+}
+
+/** Cyrillic capitals that look like the Latin plate letters. */
+const LOOKALIKES: Readonly<Record<string, string>> = {
   А: 'A', В: 'B', Е: 'E', К: 'K', М: 'M', Н: 'H', О: 'O', Р: 'P', С: 'C', Т: 'T', У: 'Y', Х: 'X',
+  Ү: 'Y', І: 'I', Ј: 'J', Ѕ: 'S', Ԛ: 'Q', Ԝ: 'W',
 }
 
-const PLATE_RE = /^(\d{3})([A-Z]{2,3})(0[1-9]|1\d|20)$/
+const SEPARATORS = new Set([' ', '\t', '-', '.', '_', '|', '/', ' ', '‐', '‑', '‒', '–', '—', '−'])
 
-/** Uppercase, spaces/dashes removed, Cyrillic look-alikes → Latin (as the API does). */
-export function normalizePlateInput(s: string): string {
-  let out = s
-    .toUpperCase()
-    .replace(/[\s-]+/g, '')
-    .replace(/./gu, (ch) => CYRILLIC_LOOKALIKES[ch] ?? ch)
-  if (out.startsWith('KZ') && out.length > 8) out = out.slice(2)
+/** Current plates (since 2012): NNN LL(L) RR with region 01–20. */
+const CURRENT_RE = /^(\d{3})([A-Z]{2,3})(0[1-9]|1\d|20)$/
+/** Legacy plates (1993–2012), still valid: L NNN LL(L), the first letter is the region. */
+const LEGACY_RE = /^([A-Z])(\d{3})([A-Z]{2,3})$/
+const PLATE_INPUT_MAX = 32
+const PLATE_CHAR_RE = /^[0-9A-Z]$/
+
+/**
+ * Full-width forms folded (NFKC), upper-cased one character at a time (as Go
+ * does: "ß" stays "ß"), look-alikes mapped to Latin and separators dropped;
+ * null on any other character.
+ */
+function canonicalPlate(s: string): string | null {
+  let out = ''
+  for (const ch of s.normalize('NFKC')) {
+    const up = ch.toUpperCase()
+    const single = [...up].length === 1 ? up : ch
+    const c = LOOKALIKES[single] ?? single
+    if (PLATE_CHAR_RE.test(c)) out += c
+    else if (!SEPARATORS.has(c)) return null
+  }
   return out
 }
 
-/** "123 ABC 04" for a valid plate in the current format, otherwise null. */
+function matchPlate(s: string): ParsedPlate | null {
+  const current = CURRENT_RE.exec(s)
+  if (current) return { normalized: s, kind: 'current', region: current[3]! }
+  const legacy = LEGACY_RE.exec(s)
+  if (legacy) return { normalized: s, kind: 'legacy', region: legacy[1]! }
+  return null
+}
+
+/** The plate as the API reads it, or null when it is not an accepted Kazakhstan plate. */
+export function parsePlate(s: string): ParsedPlate | null {
+  if ([...s].length > PLATE_INPUT_MAX) return null
+  const canon = canonicalPlate(s)
+  if (!canon) return null
+  // Some drivers copy the "KZ" country mark printed on the plate.
+  return matchPlate(canon) ?? (canon.startsWith('KZ') ? matchPlate(canon.slice(2)) : null)
+}
+
+/** The canonical form for comparisons while typing: the parsed plate, else the input without separators. */
+export function normalizePlateInput(s: string): string {
+  return parsePlate(s)?.normalized ?? canonicalPlate(s) ?? s.toUpperCase().replace(/[\s-]+/g, '')
+}
+
+/** "123 ABC 04" or "D 123 ABC" for an accepted plate, otherwise null. */
 export function formatPlate(s: string): string | null {
-  const m = PLATE_RE.exec(normalizePlateInput(s))
-  return m ? `${m[1]} ${m[2]} ${m[3]}` : null
+  const p = parsePlate(s)
+  if (!p) return null
+  const m = (p.kind === 'current' ? CURRENT_RE : LEGACY_RE).exec(p.normalized)!
+  return `${m[1]} ${m[2]} ${m[3]}`
 }
 
 export function isValidPlate(s: string): boolean {
-  return formatPlate(s) !== null
+  return parsePlate(s) !== null
 }
 
 // --- Validation -------------------------------------------------------------
 
-const NAME_RE = /^\p{L}[\p{L}\p{M}' .-]*$/u
+/** Letters of any script with spaces, hyphens, apostrophes and dots (drivers.validName). */
+const NAME_CHARS_RE = /^[\p{L}\p{M} '’ʼ.-]+$/u
+const LETTER_RE = /\p{L}/u
 
 function text(value: string, max: number, required: boolean): FieldError | undefined {
   const v = value.trim()
@@ -150,18 +188,33 @@ function text(value: string, max: number, required: boolean): FieldError | undef
   return undefined
 }
 
-export function validateName(value: string): FieldError | undefined {
-  const base = text(value, LIMITS.name, true)
-  if (base) return base
-  return NAME_RE.test(value.trim()) ? undefined : 'invalid'
+function nameError(value: string, max: number, required: boolean): FieldError | undefined {
+  const base = text(value, max, required)
+  const v = value.trim()
+  if (base || !v) return base
+  return NAME_CHARS_RE.test(v) && LETTER_RE.test(v) ? undefined : 'invalid'
 }
 
+export function validateName(value: string): FieldError | undefined {
+  return nameError(value, LIMITS.name, true)
+}
+
+/** The patronymic is optional; when given it follows the name rules. */
+export function validatePatronymic(value: string): FieldError | undefined {
+  return nameError(value, LIMITS.patronymic, false)
+}
+
+/** Names, patronymic and IIN of page 1 (the photo and the phone are checked by isStepComplete). */
 export function validatePersonal(f: RegistrationForm): FormErrors {
   const e: FormErrors = {}
   const first = validateName(f.first_name)
   const last = validateName(f.last_name)
+  const patronymic = validatePatronymic(f.patronymic)
+  const iin = iinProblem(f.iin)
   if (first) e.first_name = first
   if (last) e.last_name = last
+  if (patronymic) e.patronymic = patronymic
+  if (iin) e.iin = iin
   return e
 }
 
@@ -181,12 +234,18 @@ export function validateVehicle(f: RegistrationForm): FormErrors {
 
 // --- Correction locking ------------------------------------------------------
 
-/** Fields the driver may change now: all in draft, the flagged ones in changes_requested. */
-export function editableFields(r: Pick<DriverRegistration, 'status' | 'corrections' | 'editable' | 'id'>): Set<RegistrationField> {
-  if (r.status === 'draft' || r.id === null) {
-    return new Set(Object.keys(FIELD_STEP) as RegistrationField[])
+/**
+ * Fields the driver may change now: all in draft; in changes_requested the
+ * flagged ones, plus the IIN while none is stored (the API allows it, so an
+ * application from before the IIN was asked for is never stuck).
+ */
+export function editableFields(r: Pick<DriverRegistration, 'status' | 'corrections' | 'editable' | 'id' | 'iin'>): Set<RegistrationField> {
+  if (r.status === 'draft' || r.id === null) return new Set(REGISTRATION_FIELDS)
+  if (r.status === 'changes_requested' && r.editable) {
+    const out = new Set(r.corrections.map((c) => c.field))
+    if (!r.iin) out.add('identity')
+    return out
   }
-  if (r.status === 'changes_requested' && r.editable) return new Set(r.corrections.map((c) => c.field))
   return new Set()
 }
 
@@ -194,14 +253,13 @@ export function isCorrectionMode(r: Pick<DriverRegistration, 'status'>): boolean
   return r.status === 'changes_requested'
 }
 
-/** Form fields belonging to each registration field (for locking text inputs). */
+/** Form fields belonging to each registration field (for locking inputs). */
 const FORM_FIELD_OWNER: Record<keyof RegistrationForm, RegistrationField> = {
-  identity: 'identity',
   first_name: 'first_name',
   last_name: 'last_name',
+  patronymic: 'identity',
+  iin: 'identity',
   vehicle_class: 'vehicle_class',
-  seats: 'vehicle_class',
-  cargo_volume_l: 'vehicle_class',
   make: 'vehicle_make_model',
   model: 'vehicle_make_model',
   color: 'vehicle_color',
@@ -214,105 +272,99 @@ export function isFormFieldLocked(editable: ReadonlySet<RegistrationField>, fiel
 
 type TextField = 'first_name' | 'last_name' | 'make' | 'model' | 'color' | 'plate'
 
+function clean(s: string): string {
+  return s.trim().replace(/\s+/g, ' ')
+}
+
 /**
- * PUT /driver/registration body. The endpoint replaces all text fields, so a
- * locked field is always sent with the value the server holds (changing it
- * would be rejected with fields.<name> = not_editable). The class fields are
- * optional on the API: they are sent only once a class is chosen and while
- * they may change; omitted, the stored values stay.
+ * PUT /driver/registration body. A locked text field is sent with the value
+ * the server holds (changing it would be refused with not_editable). The
+ * patronymic is sent only while valid and the IIN only once all twelve digits
+ * pass the check, so a half-typed value never fails the autosave; omitted, the
+ * stored values stay. The class goes only when it changes: the API then gives
+ * the vehicle the class's seats and cargo space.
  */
 export function buildUpdate(r: DriverRegistration, f: RegistrationForm): DriverRegistrationUpdate {
   const editable = editableFields(r)
-  const pick = (field: TextField, server: string): string =>
-    isFormFieldLocked(editable, field) ? server : f[field].trim().replace(/\s+/g, ' ')
+  const pick = (field: TextField, server: string): string => (isFormFieldLocked(editable, field) ? server : clean(f[field]))
   const vehicle: VehicleInput = {
     make: pick('make', r.vehicle.make),
     model: pick('model', r.vehicle.model),
     color: pick('color', r.vehicle.color),
     plate: pick('plate', r.vehicle.plate),
   }
-  if (!isFormFieldLocked(editable, 'vehicle_class') && f.vehicle_class) {
+  if (!isFormFieldLocked(editable, 'vehicle_class') && f.vehicle_class && f.vehicle_class !== r.vehicle.vehicle_class) {
     vehicle.vehicle_class = f.vehicle_class
-    if (f.seats !== null && Number.isInteger(f.seats)) vehicle.seats = f.seats
-    const litres = parseLitres(f.cargo_volume_l)
-    if (litres !== null) vehicle.cargo_volume_l = litres
   }
-  return { first_name: pick('first_name', r.first_name), last_name: pick('last_name', r.last_name), vehicle, ...(r.identity_enabled && f.identity ? {identity:isFormFieldLocked(editable,'identity') ? r.identity : {...f.identity}} : {}) }
+  const body: DriverRegistrationUpdate = { first_name: pick('first_name', r.first_name), last_name: pick('last_name', r.last_name), vehicle }
+  if (!isFormFieldLocked(editable, 'patronymic') && !validatePatronymic(f.patronymic)) body.patronymic = clean(f.patronymic)
+  if (!isFormFieldLocked(editable, 'iin') && isValidIin(f.iin)) body.iin = f.iin
+  return body
 }
 
 export function sameUpdate(a: DriverRegistrationUpdate, b: DriverRegistrationUpdate): boolean {
   return (
-    JSON.stringify(a.identity) === JSON.stringify(b.identity) &&
     a.first_name === b.first_name &&
     a.last_name === b.last_name &&
+    a.patronymic === b.patronymic &&
+    a.iin === b.iin &&
     a.vehicle.make === b.vehicle.make &&
     a.vehicle.model === b.vehicle.model &&
     a.vehicle.color === b.vehicle.color &&
     a.vehicle.plate === b.vehicle.plate &&
-    a.vehicle.vehicle_class === b.vehicle.vehicle_class &&
-    a.vehicle.seats === b.vehicle.seats &&
-    a.vehicle.cargo_volume_l === b.vehicle.cargo_volume_l
+    a.vehicle.vehicle_class === b.vehicle.vehicle_class
   )
 }
 
-// --- Steps --------------------------------------------------------------------
+// --- Pages --------------------------------------------------------------------
 
 export interface StepContext {
   registration: DriverRegistration
   form: RegistrationForm
-  consentGiven: boolean
   /** Active vehicle classes from the public config (empty while unavailable). */
   classes?: readonly VehicleClassOption[]
 }
 
-export function hasMainPhoto(r: DriverRegistration): boolean {
-  return r.vehicle.photos.some((p) => p.kind === 'main')
+/**
+ * The phone is confirmed through Telegram, or not required: the API lists
+ * phone in missing_fields only while driver.require_phone_verification is on.
+ */
+export function phoneDone(r: DriverRegistration): boolean {
+  return r.phone_verified || (r.id !== null && !r.missing_fields.includes('phone'))
 }
 
-export function extraPhotos(r: DriverRegistration): DriverRegistration['vehicle']['photos'] {
-  return r.vehicle.photos.filter((p) => p.kind === 'extra')
-}
-
-/** True when the step has everything it needs (client view; the server re-checks). */
+/** True when the page has everything it needs (client view; the server re-checks). */
 export function isStepComplete(step: StepId, c: StepContext): boolean {
   const r = c.registration
   switch (step) {
     case 'personal':
-      return r.avatar !== null && Object.keys(validatePersonal(c.form)).length === 0
-    case 'phone':
-      return r.phone_verified
-    case 'documents':
-      return r.documents.id_front !== null && r.documents.id_back !== null
-    case 'vehicle_class':
-      return Object.keys(validateVehicleClass(c.form, c.classes ?? [], r.vehicle.vehicle_class)).length === 0
+      return r.avatar !== null && Object.keys(validatePersonal(c.form)).length === 0 && phoneDone(r)
     case 'vehicle':
-      return Object.keys(validateVehicle(c.form)).length === 0
-    case 'photos':
-      return hasMainPhoto(r)
-    case 'consent':
-      return c.consentGiven
-    case 'review':
-      return STEP_IDS.filter((s) => s !== 'review').every((s) => isStepComplete(s, c))
+      return (
+        Object.keys(validateVehicleClass(c.form, c.classes ?? [], r.vehicle.vehicle_class)).length === 0 &&
+        Object.keys(validateVehicle(c.form)).length === 0
+      )
   }
 }
 
-/** Steps shown in this mode: all of them for a new application, flagged ones for corrections. */
-export function visibleSteps(r: DriverRegistration, consentRecorded: boolean): StepId[] {
+/**
+ * Pages shown: both for a new application; for corrections the pages with a
+ * flagged or editable field (a missing IIN opens page 1), at least one.
+ */
+export function visibleSteps(r: DriverRegistration): StepId[] {
   if (!isCorrectionMode(r)) return [...STEP_IDS]
-  const flagged = new Set(r.corrections.map((c) => FIELD_STEP[c.field]))
-  const steps = STEP_IDS.filter((s) => flagged.has(s))
-  if (!consentRecorded) steps.push('consent')
-  steps.push('review')
-  return steps
+  const fields = [...r.corrections.map((c) => c.field), ...editableFields(r)]
+  const steps = STEP_IDS.filter((s) => fields.some((f) => FIELD_STEP[f] === s))
+  return steps.length > 0 ? steps : [STEP_IDS[0]]
 }
 
-/** Steps that hold the given server-side missing fields, in form order. */
+/** Pages that hold the given server-side fields, in form order. */
 export function stepsForFields(fields: readonly RegistrationField[]): StepId[] {
   const set = new Set(fields.map((f) => FIELD_STEP[f]))
   return STEP_IDS.filter((s) => set.has(s))
 }
 
-/** First visible step that still needs work, or review when everything is done. */
+/** First visible page that still needs work, or the last one when everything is filled in. */
 export function firstOpenStep(steps: readonly StepId[], c: StepContext): StepId {
-  return steps.find((s) => s !== 'review' && !isStepComplete(s, c)) ?? 'review'
+  return steps.find((s) => !isStepComplete(s, c)) ?? steps[steps.length - 1] ?? STEP_IDS[0]
 }

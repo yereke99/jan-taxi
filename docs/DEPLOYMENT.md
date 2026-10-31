@@ -9,7 +9,7 @@ in [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md).
 ## 1. Hosting in Kazakhstan
 
 The service stores personal data of citizens of Kazakhstan (names, phone numbers,
-trip addresses, driver ID card photos). The Law of the Republic of Kazakhstan
+driver IINs, trip addresses, driver photos). The Law of the Republic of Kazakhstan
 "On personal data and their protection" No. 94-V, Art. 12(2), requires that such
 data is stored in databases located on the territory of Kazakhstan. Therefore:
 
@@ -214,17 +214,10 @@ make health
 - Refresh the routing data monthly: `make osrm-prepare`, then
   `docker compose --profile osrm up -d --force-recreate osrm`.
 
-### OCR profile and the 4-CPU / 6-GB deployment
+### The 4-CPU / 6-GB deployment
 
 When an external OSRM URL is configured, leave the local `osrm` profile disabled.
-For document verification use `COMPOSE_PROFILES=ocr`, `VERIFICATION_ENABLED=true`,
-`VERIFICATION_AUTO_APPROVE=true` and a securely stored base64 32-byte
-`VERIFICATION_KEY`. Preserve that key across all updates and backups.
-
-The OCR image now builds an offline PP-OCRv5 Cyrillic recognizer. Its first build
-needs internet access for pinned Python packages and hash-checked model files.
-At runtime one global queue gate permits only one OCR job, with a 1-CPU / 768-MiB
-worker limit. Build images sequentially on the smaller host:
+Build images sequentially on the smaller host:
 
 ```sh
 git pull --ff-only origin main
@@ -234,15 +227,19 @@ export IMAGE_TAG="$(git rev-parse --short HEAD)"
 docker compose --env-file .env --parallel 1 build --pull
 make up
 make health
-docker compose --env-file .env logs --since=5m --tail=80 ocr-worker
 ```
 
-This applies migration 12 before API startup and preserves database, uploads,
-`.env`, keys and backups. Reopen the Mini Apps after updating their JavaScript.
-Check the admin manual-address setting if it was explicitly disabled. Logs should
-show `OCR engine ready`, a queue summary and job reason codes, without identity
-values. Completed review jobs are not silently reapproved by a release: a driver
-uses the existing resubmission flow, or an administrator resolves the application.
+This applies the pending migrations (such as 12 and 13) before API startup and
+preserves database, uploads, `.env` and backups. Reopen the Mini Apps after
+updating their JavaScript. Check the admin manual-address setting if it was
+explicitly disabled.
+
+The driver document OCR worker was retired on 31 October 2026 (registration asks
+for an IIN instead of ID scans and approves automatically, ARCHITECTURE §11.1).
+The update needs no change to `.env`: `make up` removes an old `ocr-worker`
+container (`--remove-orphans`), and a leftover `ocr` in `COMPOSE_PROFILES` or
+`VERIFICATION_*` / `OCR_*` lines are ignored (delete them whenever convenient).
+Stored ID scans stay in the private volume and remain viewable in the admin panel.
 
 ## 7. Rollback
 

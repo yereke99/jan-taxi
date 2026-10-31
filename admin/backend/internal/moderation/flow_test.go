@@ -35,7 +35,10 @@ func strs(v any) []string {
 	return out
 }
 
-func TestCompleteRegistrationAndApproval(t *testing.T) {
+// TestRegistrationIsApprovedOnSubmit: a complete registration that passes the
+// automatic checks is approved in the submitting request, through the same
+// effects as an administrator's approval, with the system as the actor.
+func TestRegistrationIsApprovedOnSubmit(t *testing.T) {
 	env := driverstest.New(t)
 	c := env.DriverClient()
 
@@ -44,20 +47,22 @@ func TestCompleteRegistrationAndApproval(t *testing.T) {
 		res.Body["can_submit"] != false || res.Body["editable"] != true {
 		t.Fatalf("empty registration: %s", res)
 	}
-	if got := strs(res.Body["missing_fields"]); len(got) != 11 {
+	if got := strs(res.Body["missing_fields"]); fmt.Sprint(got) != "[avatar first_name last_name identity phone vehicle_class vehicle_make_model vehicle_color vehicle_plate]" {
 		t.Fatalf("missing fields before start: %v", got)
 	}
 
-	driverID := c.CompleteDraft(driverstest.Registration{Plate: "123 АВС 04", Phone: "8 701 555 12 34"})
+	iin := "000102500780"
+	driverID := c.CompleteDraft(driverstest.Registration{Plate: "123 АВС 04", Phone: "8 701 555 12 34", IIN: iin, Patronymic: "Серікұлы"})
 	res = c.Do(http.MethodGet, pathRegistration, nil)
-	if res.Body["can_submit"] != true || len(strs(res.Body["missing_fields"])) != 0 || res.Body["phone"] != "+77015551234" {
+	if res.Body["can_submit"] != true || len(strs(res.Body["missing_fields"])) != 0 || res.Body["phone"] != "+77015551234" ||
+		res.Body["iin"] != iin || res.Body["patronymic"] != "Серікұлы" {
 		t.Fatalf("complete draft: %s", res)
 	}
 	if !regexp.MustCompile(`^EMB\d{3,}$`).MatchString(fmt.Sprint(res.Body["code"])) {
 		t.Fatalf("driver code: %v", res.Body["code"])
 	}
 	vehicle := res.Body["vehicle"].(map[string]any)
-	if vehicle["plate"] != "123 ABC 04" || vehicle["plate_normalized"] != "123ABC04" || len(vehicle["photos"].([]any)) != 1 {
+	if vehicle["plate"] != "123 ABC 04" || vehicle["plate_normalized"] != "123ABC04" || len(vehicle["photos"].([]any)) != 0 {
 		t.Fatalf("vehicle: %v", vehicle)
 	}
 
@@ -69,65 +74,87 @@ func TestCompleteRegistrationAndApproval(t *testing.T) {
 		t.Fatalf("submit without consent version: %s", res)
 	}
 	res = c.Submit()
-	if res.Code != http.StatusOK || res.Body["status"] != "pending" || res.Body["editable"] != false || res.Body["pd_consent_version"] != "2026-10" {
+	if res.Code != http.StatusOK || res.Body["status"] != "approved" || res.Body["editable"] != false || res.Body["pd_consent_version"] != "2026-10" {
 		t.Fatalf("submit: %s", res)
+	}
+	if n := env.Count(`SELECT count(*) FROM driver_profiles WHERE id = $1 AND status = 'approved' AND approved_at IS NOT NULL
+		AND submitted_at IS NOT NULL AND pd_consent_at IS NOT NULL AND iin = $2`, driverID, iin); n != 1 {
+		t.Fatal("profile not approved")
 	}
 	if n := env.Count(`SELECT count(*) FROM vehicles WHERE driver_id = $1 AND status = 'claimed'`, driverID); n != 1 {
 		t.Fatalf("vehicle not claimed")
 	}
-	if n := env.Count(`SELECT count(*) FROM driver_applications WHERE driver_id = $1 AND round = 1 AND status = 'pending'
-		AND jsonb_array_length(snapshot->'file_ids') = 4 AND snapshot->>'phone' = '+77015551234'`, driverID); n != 1 {
+	if n := env.Count(`SELECT count(*) FROM driver_applications WHERE driver_id = $1 AND round = 1 AND status = 'approved'
+		AND reviewed_by IS NULL AND reviewed_at IS NOT NULL AND snapshot->>'phone' = '+77015551234'
+		AND snapshot->>'iin_masked' = '********0780' AND snapshot->>'patronymic' = 'Серікұлы'`, driverID); n != 1 {
 		t.Fatalf("application snapshot missing")
 	}
-	if n := env.Count(`SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = 'moderation_submitted'`, c.UserID); n != 1 {
-		t.Fatalf("moderation_submitted not queued")
+	var actions []string
+	rows, err := env.Pool.Query(context.Background(), `
+		SELECT action || ':' || actor_type || ':' || COALESCE(admin_id::text, '-') FROM driver_moderation_events
+		WHERE driver_id = $1 ORDER BY id`, driverID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := env.Count(`SELECT count(*) FROM driver_profiles WHERE id = $1 AND pd_consent_at IS NOT NULL`, driverID); n != 1 {
-		t.Fatalf("consent not stored")
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			t.Fatal(err)
+		}
+		actions = append(actions, a)
 	}
-	// Submitted data is locked.
-	if res := c.Do(http.MethodPut, pathRegistration, map[string]any{"first_name": "A", "last_name": "B",
-		"vehicle": map[string]any{"make": "", "model": "", "color": "", "plate": ""}}); res.Code != http.StatusConflict ||
+	rows.Close()
+	if fmt.Sprint(actions) != "[submitted:driver:- approved:system:-]" {
+		t.Fatalf("events: %v", actions)
+	}
+	if n := env.Count(`SELECT count(*) FROM admin_audit_logs WHERE action = 'driver.approve' AND entity_id = $1 AND admin_id IS NULL`, driverID.String()); n != 1 {
+		t.Fatalf("automatic approval not audited")
+	}
+	for tpl, want := range map[string]int{"moderation_approved": 1, "driver_welcome_bonus": 1, "moderation_submitted": 0, "moderation_review_required": 0} {
+		if n := env.Count(`SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = $2`, c.UserID, tpl); n != want {
+			t.Errorf("%s queued %d times, want %d", tpl, n, want)
+		}
+	}
+	if n := env.Count(`SELECT COALESCE((SELECT balance FROM wallets WHERE driver_id = $1), 0)`, driverID); n != 500 {
+		t.Fatalf("welcome bonus balance %d", n)
+	}
+	// The raw IIN stays in the profile row only.
+	for _, q := range []string{
+		`SELECT count(*) FROM driver_applications WHERE snapshot::text LIKE '%' || $1 || '%'`,
+		`SELECT count(*) FROM admin_audit_logs WHERE COALESCE(after::text, '') || COALESCE(before::text, '') LIKE '%' || $1 || '%'`,
+		`SELECT count(*) FROM notification_outbox WHERE params::text LIKE '%' || $1 || '%'`,
+		`SELECT count(*) FROM driver_moderation_events WHERE COALESCE(comment, '') || reasons::text LIKE '%' || $1 || '%'`,
+	} {
+		if n := env.Count(q, iin); n != 0 {
+			t.Errorf("raw IIN copied: %s", q)
+		}
+	}
+
+	// Approved data is locked; submitting again is a conflict.
+	if res := c.Do(http.MethodPut, pathRegistration, map[string]any{"first_name": "A", "last_name": "B"}); res.Code != http.StatusConflict ||
 		res.Details()["reason"] != "registration_locked" {
-		t.Fatalf("edit while pending: %s", res)
+		t.Fatalf("edit after approval: %s", res)
 	}
 	if res := c.Upload("avatar", driverstest.JPEG(t, 20, 20, 9)); res.Code != http.StatusConflict {
-		t.Fatalf("upload while pending: %s", res)
+		t.Fatalf("upload after approval: %s", res)
 	}
 	if res := c.Submit(); res.Code != http.StatusConflict || res.ErrorCode() != "invalid_transition" {
 		t.Fatalf("double submit: %s", res)
 	}
-
-	// Only drivers.moderate may decide.
-	for _, role := range []auth.Role{auth.RoleOperator, auth.RoleFinanceManager, auth.RoleAuditor} {
-		if res := env.AdminClient(role).Do(http.MethodPost, adminPath(driverID, "approve"), nil); res.Code != http.StatusForbidden {
-			t.Fatalf("%s approve: %s", role, res)
-		}
-	}
 	mod := env.AdminClient(auth.RoleDriverModerator)
-	res = mod.Do(http.MethodPost, adminPath(driverID, "approve"), map[string]any{"comment": "Барлығы дұрыс"})
-	if res.Code != http.StatusOK || res.Body["status"] != "approved" || res.Body["approved_at"] == nil || res.Body["wallet"] == nil {
-		t.Fatalf("approve: %s", res)
-	}
-	apps := res.Body["applications"].([]any)
-	if len(apps) != 1 || apps[0].(map[string]any)["status"] != "approved" || apps[0].(map[string]any)["reviewed_by"] == nil {
-		t.Fatalf("applications: %v", apps)
-	}
 	if res := mod.Do(http.MethodPost, adminPath(driverID, "approve"), nil); res.Code != http.StatusConflict || res.ErrorCode() != "invalid_transition" {
-		t.Fatalf("approve twice: %s", res)
-	}
-	if n := env.Count(`SELECT count(*) FROM admin_audit_logs WHERE action = 'driver.approve' AND entity_id = $1`, driverID.String()); n != 1 {
-		t.Fatalf("approve not audited")
-	}
-	if n := env.Count(`SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = 'moderation_approved'`, c.UserID); n != 1 {
-		t.Fatalf("moderation_approved not queued")
-	}
-	if n := env.Count(`SELECT count(*) FROM driver_moderation_events WHERE driver_id = $1`, driverID); n != 2 {
-		t.Fatalf("events: %d", n)
+		t.Fatalf("approve an approved driver: %s", res)
 	}
 	res = c.Do(http.MethodGet, pathRegistration, nil)
 	if res.Body["status"] != "approved" || len(res.Body["history"].([]any)) != 2 {
 		t.Fatalf("driver view after approval: %s", res)
+	}
+	// The driver may go online at once (with a fresh location).
+	if res := c.Do(http.MethodPost, "/api/v1/driver/location", map[string]any{"lat": 48.8264, "lon": 58.1442}); res.Code != http.StatusNoContent {
+		t.Fatalf("location: %s", res)
+	}
+	if res := c.Do(http.MethodPatch, "/api/v1/driver/availability", map[string]any{"online": true}); res.Code != http.StatusOK || res.Body["is_online"] != true {
+		t.Fatalf("online: %s", res)
 	}
 }
 
@@ -143,12 +170,16 @@ func TestSubmitIncompleteListsMissingFields(t *testing.T) {
 	if res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "registration_incomplete" {
 		t.Fatalf("submit incomplete: %s", res)
 	}
-	want := []string{"avatar", "last_name", "phone", "id_front", "id_back", "vehicle_class", "vehicle_make_model", "vehicle_color", "vehicle_plate", "vehicle_photos"}
+	// The body type starts as Sedan, so only what the driver must type is missing.
+	want := []string{"avatar", "last_name", "identity", "phone", "vehicle_make_model", "vehicle_color", "vehicle_plate"}
 	if got := strs(res.Details()["missing_fields"]); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("missing_fields = %v, want %v", got, want)
 	}
 	if n := env.Count(`SELECT count(*) FROM driver_applications`); n != 0 {
 		t.Fatal("application created for incomplete registration")
+	}
+	if n := env.Count(`SELECT count(*) FROM driver_profiles WHERE user_id = $1 AND status = 'draft'`, c.UserID); n != 1 {
+		t.Fatal("incomplete registration left draft")
 	}
 }
 
@@ -159,25 +190,39 @@ func TestSubmitRequiresVerifiedPhone(t *testing.T) {
 	if res := c.Submit(); res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "phone_not_verified" {
 		t.Fatalf("submit without phone: %s", res)
 	}
-	// With the requirement switched off by an admin the application goes through.
+	// With the requirement switched off by an admin the registration goes through.
 	if _, err := env.Pool.Exec(context.Background(),
 		`UPDATE app_settings SET value = 'false' WHERE key = 'driver.require_phone_verification'`); err != nil {
 		t.Fatal(err)
 	}
-	if res := c.Submit(); res.Code != http.StatusOK || res.Body["status"] != "pending" {
+	if res := c.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" {
 		t.Fatalf("submit with requirement off: %s", res)
+	}
+	// Without a phone there is no welcome bonus (it is once per phone and plate).
+	if n := env.Count(`SELECT count(*) FROM welcome_bonus_grants`); n != 0 {
+		t.Fatalf("bonus without a phone")
 	}
 }
 
-func TestDuplicatePhoneAndPlate(t *testing.T) {
+// TestUniqueIINPhoneAndPlate: the automatic checks refuse an IIN, a phone or
+// a plate another live driver holds; nothing of the refused submission stays.
+func TestUniqueIINPhoneAndPlate(t *testing.T) {
 	env := driverstest.New(t)
 	a, b := env.DriverClient(), env.DriverClient()
 
-	// B saves the plate and phone while A is still a draft (nothing claimed yet).
-	a.CompleteDraft(driverstest.Registration{Plate: "123ABC04", Phone: "+77011112233"})
-	b.CompleteDraft(driverstest.Registration{Plate: "123 авс 04", Phone: "87011112233"})
-	if res := a.Submit(); res.Code != http.StatusOK {
+	// B saves A's IIN, plate and phone while A is still a draft (nothing claimed yet).
+	shared := driverstest.NewIIN()
+	a.CompleteDraft(driverstest.Registration{Plate: "123ABC04", Phone: "+77011112233", IIN: shared})
+	bID := b.CompleteDraft(driverstest.Registration{Plate: "123 авс 04", Phone: "87011112233", IIN: shared})
+	if res := a.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" {
 		t.Fatalf("A submit: %s", res)
+	}
+	if res := b.Submit(); res.Code != http.StatusConflict || res.ErrorCode() != "iin_taken" {
+		t.Fatalf("B submit with A's IIN: %s", res)
+	}
+	// B's draft still holds the IIN it typed; correcting it moves on to the phone.
+	if res := b.Do(http.MethodPut, pathRegistration, map[string]any{"iin": "900101300017"}); res.Code != http.StatusOK {
+		t.Fatalf("B fixes the IIN: %s", res)
 	}
 	if res := b.Submit(); res.Code != http.StatusConflict || res.ErrorCode() != "phone_taken" {
 		t.Fatalf("B submit with A's phone: %s", res)
@@ -188,13 +233,23 @@ func TestDuplicatePhoneAndPlate(t *testing.T) {
 	if res := b.Submit(); res.Code != http.StatusConflict || res.ErrorCode() != "plate_taken" {
 		t.Fatalf("B submit with A's plate (Cyrillic spelling): %s", res)
 	}
+	if n := env.Count(`SELECT count(*) FROM driver_profiles WHERE id = $1 AND status = 'draft' AND submitted_at IS NULL`, bID); n != 1 {
+		t.Fatal("refused submission changed the profile")
+	}
+	if n := env.Count(`SELECT count(*) FROM driver_applications WHERE driver_id = $1`, bID); n != 0 {
+		t.Fatal("refused submission left an application")
+	}
 
-	// Once claimed, the plate and phone are refused early.
+	// Once claimed, the plate, phone and IIN are refused early.
 	c := env.DriverClient()
 	res := c.Do(http.MethodPut, pathRegistration, map[string]any{"first_name": "Ерлан", "last_name": "Сейтқали",
 		"vehicle": map[string]any{"make": "Kia", "model": "Rio", "color": "Қара", "plate": "123-АВС-04"}})
 	if res.Code != http.StatusConflict || res.ErrorCode() != "plate_taken" {
 		t.Fatalf("save claimed plate: %s", res)
+	}
+	if res := c.Do(http.MethodPut, pathRegistration, map[string]any{"first_name": "Ерлан", "iin": shared}); res.Code != http.StatusConflict ||
+		res.ErrorCode() != "iin_taken" {
+		t.Fatalf("save claimed IIN: %s", res)
 	}
 	res = c.Do(http.MethodPost, pathRegistration+"/check", map[string]any{"plate": "123 АВС 04"})
 	plate := res.Body["plate"].(map[string]any)
@@ -250,18 +305,18 @@ func TestConcurrentSamePlateSubmissionsHaveOneWinner(t *testing.T) {
 	if got := env.Count(`SELECT count(*) FROM driver_applications`); got != 1 {
 		t.Fatalf("applications: %d", got)
 	}
+	if got := env.Count(`SELECT count(*) FROM welcome_bonus_grants`); got != 1 {
+		t.Fatalf("welcome bonuses: %d", got)
+	}
 }
 
-func TestCorrectionsWorkflow(t *testing.T) {
+// TestLegacyCorrectionsWorkflow: an application pending from before automatic
+// approval is sent back by a moderator; the driver fixes the flagged fields,
+// adds the IIN that was never asked for and is approved on resubmission.
+func TestLegacyCorrectionsWorkflow(t *testing.T) {
 	env := driverstest.New(t)
 	c := env.DriverClient()
-	driverID := c.CompleteDraft(driverstest.Registration{Plate: "321ABC04", Phone: "+77051234567"})
-	if res := c.Upload("vehicle_extra", driverstest.JPEG(t, 30, 30, 7)); res.Code != http.StatusCreated {
-		t.Fatalf("extra photo: %s", res)
-	}
-	if res := c.Submit(); res.Code != http.StatusOK {
-		t.Fatalf("submit: %s", res)
-	}
+	driverID := c.LegacyPending(driverstest.Registration{Plate: "321ABC04", Phone: "+77051234567"})
 	mod := env.AdminClient(auth.RoleDriverModerator)
 
 	invalid := []struct {
@@ -285,7 +340,7 @@ func TestCorrectionsWorkflow(t *testing.T) {
 			{"field": "vehicle_plate", "reason": "plate_mismatch", "comment": "Нөмір суреттегіге сәйкес емес"},
 			{"field": "id_back", "reason": "id_unreadable"},
 		},
-		"comment": "Көліктің артқы жағын қайта суретке түсіріңіз",
+		"comment": "Нөмірді тексеріңіз",
 	})
 	if res.Code != http.StatusOK || res.Body["status"] != "changes_requested" || len(res.Body["corrections"].([]any)) != 2 {
 		t.Fatalf("request corrections: %s", res)
@@ -299,7 +354,7 @@ func TestCorrectionsWorkflow(t *testing.T) {
 		c.UserID).Scan(&notice); err != nil {
 		t.Fatal(err)
 	}
-	if notice != "Жеке куәліктің артқы беті; Мемлекеттік нөмір. Көліктің артқы жағын қайта суретке түсіріңіз" {
+	if notice != "Жеке куәліктің артқы беті; Мемлекеттік нөмір. Нөмірді тексеріңіз" {
 		t.Fatalf("notification comment = %q", notice)
 	}
 
@@ -317,45 +372,45 @@ func TestCorrectionsWorkflow(t *testing.T) {
 	if res := c.Upload("avatar", driverstest.JPEG(t, 20, 20, 3)); res.Code != 422 || res.Fields()["kind"] != "not_editable" {
 		t.Fatalf("upload locked avatar: %s", res)
 	}
-	extraID := reg.Body["vehicle"].(map[string]any)["photos"].([]any)[1].(map[string]any)["id"].(string)
-	if res := c.Do(http.MethodDelete, pathRegistration+"/files/"+extraID, nil); res.Code != 422 {
-		t.Fatalf("delete locked vehicle photo: %s", res)
+	// ID scans are no longer collected, even when a moderator flagged one.
+	if res := c.Upload("id_back", driverstest.JPEG(t, 50, 30, 4)); res.Code != 422 || res.Fields()["kind"] != "invalid" {
+		t.Fatalf("upload id_back: %s", res)
 	}
-	// Flagged fields can be fixed.
+	// Flagged fields can be fixed, and so can the IIN that was never given.
 	body["first_name"] = "Ерлан"
 	body["vehicle"].(map[string]any)["plate"] = "321 ABD 04"
+	body["iin"] = driverstest.NewIIN()
 	if res := c.Do(http.MethodPut, pathRegistration, body); res.Code != http.StatusOK {
-		t.Fatalf("fix plate: %s", res)
+		t.Fatalf("fix plate and add IIN: %s", res)
 	}
-	if res := c.Upload("id_back", driverstest.JPEG(t, 50, 30, 4)); res.Code != http.StatusCreated {
-		t.Fatalf("replace id_back: %s", res)
+	// Once stored, the IIN is locked like any unflagged field.
+	if res := c.Do(http.MethodPut, pathRegistration, map[string]any{"iin": "900101300017"}); res.Code != 422 || res.Fields()["iin"] != "not_editable" {
+		t.Fatalf("change stored IIN: %s", res)
 	}
-	// Consent given in round 1 covers the resubmission.
+	// Consent given in round 1 covers the resubmission; the checks pass and it is approved.
 	res = c.Do(http.MethodPost, pathRegister, nil)
-	if res.Code != http.StatusOK || res.Body["status"] != "pending" {
+	if res.Code != http.StatusOK || res.Body["status"] != "approved" {
 		t.Fatalf("resubmit: %s", res)
-	}
-	if n := env.Count(`SELECT count(*) FROM driver_documents WHERE driver_id = $1 AND kind = 'id_back'`, driverID); n != 2 {
-		t.Fatalf("id_back history rows: %d", n)
 	}
 	detail := mod.Do(http.MethodGet, adminPath(driverID, ""), nil)
 	apps := detail.Body["applications"].([]any)
 	events := detail.Body["moderation_events"].([]any)
-	if len(apps) != 2 || apps[0].(map[string]any)["round"] != float64(2) || apps[1].(map[string]any)["status"] != "changes_requested" {
+	if len(apps) != 2 || apps[0].(map[string]any)["round"] != float64(2) || apps[0].(map[string]any)["status"] != "approved" ||
+		apps[1].(map[string]any)["status"] != "changes_requested" {
 		t.Fatalf("applications: %v", apps)
 	}
 	var actions []string
 	for _, e := range events {
-		actions = append(actions, e.(map[string]any)["action"].(string))
+		actions = append(actions, e.(map[string]any)["action"].(string)+":"+e.(map[string]any)["actor_type"].(string))
 	}
-	if fmt.Sprint(actions) != "[resubmitted changes_requested submitted]" {
+	if fmt.Sprint(actions) != "[approved:system resubmitted:driver changes_requested:admin submitted:driver]" {
 		t.Fatalf("events: %v", actions)
 	}
-	if detail.Body["vehicle"].(map[string]any)["plate_normalized"] != "321ABD04" {
-		t.Fatalf("plate not updated: %v", detail.Body["vehicle"])
+	if detail.Body["vehicle"].(map[string]any)["plate_normalized"] != "321ABD04" || detail.Body["iin_masked"] == nil {
+		t.Fatalf("detail after resubmission: %s", detail)
 	}
-	if res := mod.Do(http.MethodPost, adminPath(driverID, "approve"), nil); res.Code != http.StatusOK {
-		t.Fatalf("approve after resubmission: %s", res)
+	if res := mod.Do(http.MethodPost, adminPath(driverID, "approve"), nil); res.Code != http.StatusConflict || res.ErrorCode() != "invalid_transition" {
+		t.Fatalf("approve after automatic approval: %s", res)
 	}
 	if res := mod.Do(http.MethodPost, adminPath(driverID, "request-corrections"), `{"items":[{"field":"avatar","reason":"missing_info"}]}`); res.Code != http.StatusConflict ||
 		res.ErrorCode() != "invalid_transition" {
@@ -363,23 +418,53 @@ func TestCorrectionsWorkflow(t *testing.T) {
 	}
 }
 
+// TestLegacyApprovalByModerator: an application pending from before is still
+// approved by a moderator through the same approval path.
+func TestLegacyApprovalByModerator(t *testing.T) {
+	env := driverstest.New(t)
+	c := env.DriverClient()
+	driverID := c.LegacyPending(driverstest.Registration{Plate: "888AAA04", Phone: "+77771234500"})
+	for _, role := range []auth.Role{auth.RoleOperator, auth.RoleFinanceManager, auth.RoleAuditor} {
+		if res := env.AdminClient(role).Do(http.MethodPost, adminPath(driverID, "approve"), nil); res.Code != http.StatusForbidden {
+			t.Fatalf("%s approve: %s", role, res)
+		}
+	}
+	mod := env.AdminClient(auth.RoleDriverModerator)
+	res := mod.Do(http.MethodPost, adminPath(driverID, "approve"), map[string]any{"comment": "Барлығы дұрыс"})
+	if res.Code != http.StatusOK || res.Body["status"] != "approved" || res.Body["approved_at"] == nil || res.Body["wallet"] == nil ||
+		res.Body["iin_masked"] != nil {
+		t.Fatalf("approve: %s", res)
+	}
+	apps := res.Body["applications"].([]any)
+	if len(apps) != 1 || apps[0].(map[string]any)["status"] != "approved" || apps[0].(map[string]any)["reviewed_by"] == nil {
+		t.Fatalf("applications: %v", apps)
+	}
+	if n := env.Count(`SELECT count(*) FROM admin_audit_logs WHERE action = 'driver.approve' AND entity_id = $1 AND admin_id = $2`, driverID.String(), mod.Admin); n != 1 {
+		t.Fatalf("approve not audited")
+	}
+	if n := env.Count(`SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = 'moderation_approved'`, c.UserID); n != 1 {
+		t.Fatalf("moderation_approved not queued")
+	}
+	// A driver approved without an IIN keeps working and may add it later.
+	if res := c.Do(http.MethodPut, "/api/v1/driver/profile/iin", map[string]any{"iin": driverstest.NewIIN()}); res.Code != http.StatusOK || res.Body["iin_masked"] == nil {
+		t.Fatalf("add IIN after approval: %s", res)
+	}
+}
+
 func TestRejectReleasesPlateAndPhone(t *testing.T) {
 	env := driverstest.New(t)
 	a := env.DriverClient()
-	aID := a.CompleteDraft(driverstest.Registration{Plate: "999AAA04", Phone: "+77771234567"})
-	if res := a.Submit(); res.Code != http.StatusOK {
-		t.Fatalf("submit: %s", res)
-	}
+	aID := a.LegacyPending(driverstest.Registration{Plate: "999AAA04", Phone: "+77771234567"})
 	mod := env.AdminClient(auth.RoleDriverModerator)
 	if res := mod.Do(http.MethodPost, adminPath(aID, "reject"), `{"reason":""}`); res.Code != 422 || res.Fields()["reason"] != "required" {
 		t.Fatalf("reject without reason: %s", res)
 	}
-	res := mod.Do(http.MethodPost, adminPath(aID, "reject"), map[string]any{"reason": "Құжаттар жалған", "comment": "ішкі ескертпе"})
+	res := mod.Do(http.MethodPost, adminPath(aID, "reject"), map[string]any{"reason": "Деректер жалған", "comment": "ішкі ескертпе"})
 	if res.Code != http.StatusOK || res.Body["status"] != "rejected" {
 		t.Fatalf("reject: %s", res)
 	}
 	reg := a.Do(http.MethodGet, pathRegistration, nil)
-	if reg.Body["rejection_reason"] != "Құжаттар жалған" || reg.Body["editable"] != false {
+	if reg.Body["rejection_reason"] != "Деректер жалған" || reg.Body["editable"] != false {
 		t.Fatalf("driver view after reject: %s", reg)
 	}
 	if n := env.Count(`SELECT count(*) FROM vehicles WHERE driver_id = $1 AND status = 'released'`, aID); n != 1 {
@@ -391,7 +476,7 @@ func TestRejectReleasesPlateAndPhone(t *testing.T) {
 	// The plate and phone are free for another driver now.
 	b := env.DriverClient()
 	b.CompleteDraft(driverstest.Registration{Plate: "999 ААА 04", Phone: "+77771234567"})
-	if res := b.Submit(); res.Code != http.StatusOK {
+	if res := b.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" {
 		t.Fatalf("B submit with released plate and phone: %s", res)
 	}
 	if res := mod.Do(http.MethodPost, adminPath(aID, "reject"), `{"reason":"again"}`); res.Code != http.StatusConflict {

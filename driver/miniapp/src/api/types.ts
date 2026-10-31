@@ -41,10 +41,10 @@ export interface CursorList<T> {
 
 // --- Files ----------------------------------------------------------------
 
-export type UploadKind = 'avatar' | 'id_front' | 'id_back' | 'vehicle_main' | 'vehicle_back' | 'vehicle_side' | 'vehicle_plate' | 'vehicle_extra'
+/** The only registration upload: ID scans and car photos are no longer collected (§12). */
+export type UploadKind = 'avatar'
 
 export interface FileRef {
- mime?: string
   id: string
   kind: string
   /** /api/v1/driver/files/{id}; fetch with the Authorization header. */
@@ -54,19 +54,19 @@ export interface FileRef {
   created_at: string
 }
 
-export type VehiclePhotoKind = 'main' | 'back' | 'side' | 'plate' | 'extra'
-
-export interface VehiclePhoto extends FileRef {
-  kind: VehiclePhotoKind
-}
-
 // --- Registration ---------------------------------------------------------
 
+/**
+ * Registration fields in form order (drivers.RegistrationFields). identity is
+ * the IIN with the optional patronymic; id_front, id_back and vehicle_photos
+ * belong to the retired document and car-photo steps and only appear in
+ * remarks on applications from before.
+ */
 export const REGISTRATION_FIELDS = [
- 'identity',
   'avatar',
   'first_name',
   'last_name',
+  'identity',
   'phone',
   'id_front',
   'id_back',
@@ -77,6 +77,19 @@ export const REGISTRATION_FIELDS = [
   'vehicle_photos',
 ] as const
 export type RegistrationField = (typeof REGISTRATION_FIELDS)[number]
+
+/** What a registration needs before it is finished (drivers.RequiredFields). */
+export const REQUIRED_FIELDS: readonly RegistrationField[] = [
+  'avatar',
+  'first_name',
+  'last_name',
+  'identity',
+  'phone',
+  'vehicle_class',
+  'vehicle_make_model',
+  'vehicle_color',
+  'vehicle_plate',
+]
 
 export const CORRECTION_REASONS = [
   'invalid_plate',
@@ -113,7 +126,6 @@ export interface RegistrationVehicle extends VehicleClassFields {
   color: string
   plate: string
   plate_normalized: string | null
-  photos: VehiclePhoto[]
 }
 
 export interface RegistrationHistoryItem {
@@ -125,27 +137,22 @@ export interface RegistrationHistoryItem {
   created_at: string
 }
 
-export interface DriverIdentity {
- document_type: 'id_card' | 'driving_licence'
- iin: string
- document_number: string
- patronymic: string
-}
-export interface VerificationSummary {id:string;status:string;confidence:number|null;reasons:string[];attempts:number;created_at:string;finished_at:string|null}
-
+/** The driver's own application (GET/PUT /driver/registration, POST /driver/register). */
 export interface DriverRegistration {
- identity_enabled?: boolean
- identity?: DriverIdentity
- verification?: VerificationSummary
   id: string | null
   status: ModerationStatus
   code: string | null
   city: CityRef | null
   first_name: string
   last_name: string
+  /** Optional (Әкесінің аты); '' when not given. */
+  patronymic: string
+  /** The 12-digit IIN (ЖСН) as stored, shown only to its owner; null until entered. */
+  iin: string | null
   phone: string | null
   phone_verified: boolean
   avatar: FileRef | null
+  /** ID scans uploaded before they were retired; both null for newer drivers. */
   documents: { id_front: FileRef | null; id_back: FileRef | null }
   vehicle: RegistrationVehicle
   corrections: CorrectionItem[]
@@ -165,18 +172,20 @@ export interface VehicleInput {
   model: string
   color: string
   plate: string
-  /** Omitted: the stored class stays. A new class takes its own seat/cargo defaults unless sent. */
+  /** Omitted: the stored class stays. A new class takes its own seat and cargo defaults. */
   vehicle_class?: string
-  /** 1..class seats_max; omitted keeps the stored value. */
-  seats?: number
-  /** 0..100000 litres; omitted keeps the stored value. */
-  cargo_volume_l?: number
 }
 
+/**
+ * PUT /driver/registration. A key that is not sent keeps the stored value;
+ * an empty string clears it while drafting.
+ */
 export interface DriverRegistrationUpdate {
- identity?: DriverIdentity
   first_name: string
   last_name: string
+  patronymic?: string
+  /** Twelve digits with a valid check digit; sent only when complete. */
+  iin?: string
   vehicle: VehicleInput
   /**
    * Device position, sent only with the save that creates the profile: the
@@ -209,6 +218,9 @@ export interface DriverProfile {
   status: ModerationStatus
   first_name: string
   last_name: string
+  patronymic: string
+  /** "********1234"; null while the driver has not entered the IIN (PUT /driver/profile/iin). */
+  iin_masked: string | null
   phone: string | null
   phone_verified: boolean
   avatar: FileRef | null

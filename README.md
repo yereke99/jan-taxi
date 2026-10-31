@@ -19,11 +19,12 @@ the HTTP contract is [admin/backend/api/openapi.yaml](admin/backend/api/openapi.
   allowed fare range calculated by the server, pick a fare and order. They pay the
   driver directly, in cash or by bank transfer; the platform does not take
   passenger payments.
-- **Drivers** register in the driver Mini App: name, vehicle and plate, ID card
-  photos, vehicle photos and a phone number verified through Telegram. An admin
-  approves the application, asks for corrections or rejects it. Approved drivers go
-  online, see open orders in their city and accept them; exactly one driver wins an
-  order. During the trip they mark arrival, start, every intermediate stop and
+- **Drivers** register in the driver Mini App on two pages: profile photo, name,
+  IIN (ЖСН) and a phone number verified through Telegram, then the body type, make
+  and model, colour and plate. Finishing runs automatic checks (IIN check digit,
+  verified phone, IIN, phone and plate not held by another driver) and approves the
+  driver at once; admins can suspend a driver later. Approved drivers go online, see
+  open orders near them and accept them; exactly one driver wins an order. During the trip they mark arrival, start, every intermediate stop and
   completion, and open turn-by-turn navigation in 2GIS.
 - **Commission**: the platform charges 10% of the fare (configurable per tariff,
   integer tenge, rounded half up) from the driver's prepaid wallet. The amount is

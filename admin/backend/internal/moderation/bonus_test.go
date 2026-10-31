@@ -13,12 +13,13 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 )
 
-// pendingDriver registers and submits a driver with phone and plate.
-func pendingDriver(t *testing.T, env *driverstest.Env, phone, plate string) (uuid.UUID, *driverstest.Client) {
+// registeredDriver registers and submits a driver with phone and plate; the
+// automatic checks approve it at once.
+func registeredDriver(t *testing.T, env *driverstest.Env, phone, plate string) (uuid.UUID, *driverstest.Client) {
 	t.Helper()
 	c := env.DriverClient()
 	id := c.CompleteDraft(driverstest.Registration{Plate: plate, Phone: phone})
-	if res := c.Submit(); res.Code != http.StatusOK {
+	if res := c.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" {
 		t.Fatalf("submit: %s", res)
 	}
 	return id, c
@@ -42,19 +43,21 @@ func releaseClaims(t *testing.T, env *driverstest.Env, driverID uuid.UUID) {
 	}
 }
 
-// TestWelcomeBonusOnFirstApproval: approving a new driver credits 500 KZT once
-// (bonus_credit, welcome_bonus:<driver_id>), audited and announced (§22.1).
+// TestWelcomeBonusOnFirstApproval: the automatic approval of a new driver
+// credits 500 KZT once (bonus_credit, welcome_bonus:<driver_id>), audited and
+// announced (§22.1), with the system as the actor.
 func TestWelcomeBonusOnFirstApproval(t *testing.T) {
 	env := driverstest.New(t)
-	id, c := pendingDriver(t, env, "+77015550101", "101AAA04")
+	c := env.DriverClient()
+	id := c.CompleteDraft(driverstest.Registration{Plate: "101AAA04", Phone: "+77015550101"})
 	if balance(t, env, id) != 0 {
 		t.Fatal("money before approval")
 	}
-	mod := env.AdminClient(auth.RoleDriverModerator)
-	res := mod.Do(http.MethodPost, adminPath(id, "approve"), nil)
-	if res.Code != http.StatusOK {
-		t.Fatalf("approve: %s", res)
+	if res := c.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" {
+		t.Fatalf("submit: %s", res)
 	}
+	mod := env.AdminClient(auth.RoleDriverModerator)
+	res := mod.Do(http.MethodGet, adminPath(id, ""), nil)
 	w := res.Body["wallet"].(map[string]any)
 	b, _ := res.Body["welcome_bonus"].(map[string]any)
 	if w["balance"] != float64(500) || w["available"] != float64(500) || b == nil || b["amount"] != float64(500) {
@@ -62,20 +65,20 @@ func TestWelcomeBonusOnFirstApproval(t *testing.T) {
 	}
 	hist, _ := res.Body["bonuses"].([]any)
 	if len(hist) != 1 || hist[0].(map[string]any)["kind"] != "welcome" || hist[0].(map[string]any)["amount"] != float64(500) ||
-		hist[0].(map[string]any)["comment"] != nil || hist[0].(map[string]any)["admin_id"] != mod.Admin.String() {
+		hist[0].(map[string]any)["comment"] != nil || hist[0].(map[string]any)["admin_id"] != nil {
 		t.Fatalf("bonus history %v", res.Body["bonuses"])
 	}
 	if n := env.Count(`SELECT count(*) FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id
 		WHERE w.driver_id = $1 AND l.entry_type = 'bonus_credit' AND l.balance_delta = 500
-		  AND l.idempotency_key = 'welcome_bonus:' || $1 AND l.admin_id = $2`, id, mod.Admin); n != 1 {
+		  AND l.idempotency_key = 'welcome_bonus:' || $1 AND l.admin_id IS NULL`, id); n != 1 {
 		t.Fatal("bonus ledger entry")
 	}
 	if n := env.Count(`SELECT count(*) FROM welcome_bonus_grants WHERE driver_id = $1 AND phone_e164 = '+77015550101'
-		AND plate_normalized = '101AAA04' AND amount = 500`, id); n != 1 {
+		AND plate_normalized = '101AAA04' AND amount = 500 AND admin_id IS NULL`, id); n != 1 {
 		t.Fatal("grant not recorded")
 	}
 	if n := env.Count(`SELECT count(*) FROM admin_audit_logs WHERE action = 'driver.welcome_bonus' AND entity_id = $1
-		AND admin_id = $2 AND after->>'amount' = '500'`, id.String(), mod.Admin); n != 1 {
+		AND admin_id IS NULL AND after->>'amount' = '500'`, id.String()); n != 1 {
 		t.Fatal("bonus not audited")
 	}
 	if n := env.Count(`SELECT count(*) FROM notification_outbox WHERE user_id = $1 AND template = 'driver_welcome_bonus'
@@ -116,26 +119,16 @@ func TestWelcomeBonusOnFirstApproval(t *testing.T) {
 // plate does.
 func TestWelcomeBonusOncePerPhoneAndPlate(t *testing.T) {
 	env := driverstest.New(t)
-	mod := env.AdminClient(auth.RoleDriverModerator)
-	approve := func(id uuid.UUID) {
-		t.Helper()
-		if res := mod.Do(http.MethodPost, adminPath(id, "approve"), nil); res.Code != http.StatusOK {
-			t.Fatalf("approve: %s", res)
-		}
-	}
-	first, _ := pendingDriver(t, env, "+77015550201", "201BBB04")
-	approve(first)
+	first, _ := registeredDriver(t, env, "+77015550201", "201BBB04")
 	releaseClaims(t, env, first)
 
-	samePhone, _ := pendingDriver(t, env, "+77015550201", "202BBB04")
-	approve(samePhone)
+	samePhone, _ := registeredDriver(t, env, "+77015550201", "202BBB04")
 	if got := balance(t, env, samePhone); got != 0 {
 		t.Fatalf("bonus for a phone that had it: %d", got)
 	}
 	releaseClaims(t, env, samePhone)
 
-	samePlate, c := pendingDriver(t, env, "+77015550203", "201 ВВВ 04")
-	approve(samePlate)
+	samePlate, c := registeredDriver(t, env, "+77015550203", "201 ВВВ 04")
 	if got := balance(t, env, samePlate); got != 0 {
 		t.Fatalf("bonus for a plate that had it: %d", got)
 	}
@@ -143,8 +136,7 @@ func TestWelcomeBonusOncePerPhoneAndPlate(t *testing.T) {
 		t.Fatal("bonus message without a bonus")
 	}
 
-	fresh, _ := pendingDriver(t, env, "+77015550204", "204BBB04")
-	approve(fresh)
+	fresh, _ := registeredDriver(t, env, "+77015550204", "204BBB04")
 	if got := balance(t, env, fresh); got != 500 {
 		t.Fatalf("fresh driver balance %d", got)
 	}
@@ -156,58 +148,83 @@ func TestWelcomeBonusOncePerPhoneAndPlate(t *testing.T) {
 	if err := settings.Set(context.Background(), env.Pool, "driver.welcome_bonus", int64(0), uuid.Nil); err != nil {
 		t.Fatal(err)
 	}
-	off, _ := pendingDriver(t, env, "+77015550205", "205BBB04")
-	approve(off)
+	off, _ := registeredDriver(t, env, "+77015550205", "205BBB04")
 	if got := balance(t, env, off); got != 0 {
 		t.Fatalf("bonus while disabled: %d", got)
 	}
 	if err := settings.Set(context.Background(), env.Pool, "driver.welcome_bonus", int64(700), uuid.Nil); err != nil {
 		t.Fatal(err)
 	}
-	seven, _ := pendingDriver(t, env, "+77015550206", "206BBB04")
-	approve(seven)
+	seven, _ := registeredDriver(t, env, "+77015550206", "206BBB04")
 	if got := balance(t, env, seven); got != 700 {
 		t.Fatalf("bonus after a settings change: %d", got)
 	}
+
+	// A moderator approving an application pending from before grants it the same way.
+	legacy := env.DriverClient()
+	legacyID := legacy.LegacyPending(driverstest.Registration{Plate: "207BBB04", Phone: "+77015550207"})
+	mod := env.AdminClient(auth.RoleDriverModerator)
+	if res := mod.Do(http.MethodPost, adminPath(legacyID, "approve"), nil); res.Code != http.StatusOK {
+		t.Fatalf("approve: %s", res)
+	}
+	if got := balance(t, env, legacyID); got != 700 {
+		t.Fatalf("legacy driver balance %d", got)
+	}
+	if n := env.Count(`SELECT count(*) FROM wallet_ledger WHERE idempotency_key = 'welcome_bonus:' || $1 AND admin_id = $2`, legacyID, mod.Admin); n != 1 {
+		t.Fatal("moderator's grant not attributed")
+	}
 }
 
-// TestConcurrentApprovalsGrantOnce: many simultaneous approvals of one driver
-// approve and credit once.
+// TestConcurrentApprovalsGrantOnce: many simultaneous submissions by one
+// driver, or approvals of one pending application, approve and credit once.
 func TestConcurrentApprovalsGrantOnce(t *testing.T) {
 	env := driverstest.New(t)
-	id, _ := pendingDriver(t, env, "+77015550301", "301CCC04")
-	mod := env.AdminClient(auth.RoleDriverModerator)
-	const n = 10
-	codes := make([]int, n)
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for i := range n {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			<-start
-			codes[i] = mod.Do(http.MethodPost, adminPath(id, "approve"), nil).Code
-		}(i)
-	}
-	close(start)
-	wg.Wait()
-	ok := 0
-	for _, c := range codes {
-		switch c {
-		case http.StatusOK:
-			ok++
-		case http.StatusConflict:
-		default:
-			t.Fatalf("approve: %d", c)
+	race := func(n int, call func() int) (ok int) {
+		t.Helper()
+		codes := make([]int, n)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range n {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				codes[i] = call()
+			}(i)
 		}
+		close(start)
+		wg.Wait()
+		for _, c := range codes {
+			switch c {
+			case http.StatusOK:
+				ok++
+			case http.StatusConflict:
+			default:
+				t.Fatalf("call: %d", c)
+			}
+		}
+		return ok
 	}
-	if ok != 1 {
-		t.Fatalf("approvals = %d", ok)
+
+	c := env.DriverClient()
+	id := c.CompleteDraft(driverstest.Registration{Plate: "301CCC04", Phone: "+77015550301"})
+	if ok := race(10, func() int { return c.Submit().Code }); ok != 1 {
+		t.Fatalf("submissions = %d", ok)
 	}
 	if got := balance(t, env, id); got != 500 {
 		t.Fatalf("balance %d", got)
 	}
-	if n := env.Count(`SELECT count(*) FROM wallet_ledger WHERE entry_type = 'bonus_credit'`); n != 1 {
+
+	legacy := env.DriverClient()
+	legacyID := legacy.LegacyPending(driverstest.Registration{Plate: "302CCC04", Phone: "+77015550302"})
+	mod := env.AdminClient(auth.RoleDriverModerator)
+	if ok := race(10, func() int { return mod.Do(http.MethodPost, adminPath(legacyID, "approve"), nil).Code }); ok != 1 {
+		t.Fatalf("approvals = %d", ok)
+	}
+	if got := balance(t, env, legacyID); got != 500 {
+		t.Fatalf("balance %d", got)
+	}
+	if n := env.Count(`SELECT count(*) FROM wallet_ledger WHERE entry_type = 'bonus_credit'`); n != 2 {
 		t.Fatalf("bonus entries = %d", n)
 	}
 }

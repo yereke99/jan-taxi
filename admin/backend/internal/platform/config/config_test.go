@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -101,34 +100,6 @@ func TestLoadProductionDefaults(t *testing.T) {
 	}
 	if len(c.TrustedProxies) != 6 || !c.TrustedProxies[0].Contains(netip.MustParseAddr("127.0.0.1")) {
 		t.Errorf("trusted proxies: %v", c.TrustedProxies)
-	}
-}
-
-func TestVerificationConfigurationSafety(t *testing.T) {
-	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{71}, 32))
-	for _, tc := range []struct{ name, field, value string }{
-		{"missing encryption key", "VERIFICATION_KEY", ""},
-		{"short encryption key", "VERIFICATION_KEY", "c2hvcnQ="},
-		{"nonfinite confidence", "VERIFICATION_MIN_CONFIDENCE", "NaN"},
-		{"weak confidence", "VERIFICATION_MIN_CONFIDENCE", "50"},
-		{"empty queue", "VERIFICATION_QUEUE_LIMIT", "0"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			env := with(prodEnv(), "VERIFICATION_ENABLED", "true", "VERIFICATION_KEY", key, tc.field, tc.value)
-			if _, err := load(env); err == nil || !strings.Contains(err.Error(), tc.field) {
-				t.Fatalf("expected %s validation failure, got %v", tc.field, err)
-			}
-		})
-	}
-	cfg, err := load(with(prodEnv(), "VERIFICATION_ENABLED", "true", "VERIFICATION_KEY", key))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(fmt.Sprintf("%+v", cfg), key) {
-		t.Fatal("verification encryption key leaked through config formatting")
-	}
-	if !cfg.VerificationAutoApprove || cfg.VerificationQueueLimit != 1000 {
-		t.Fatal("verification defaults not loaded")
 	}
 }
 

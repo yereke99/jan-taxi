@@ -5,13 +5,16 @@ import (
 	"strings"
 )
 
-// Registration fields addressed by moderator corrections and missing_fields
-// (OpenAPI RegistrationField).
+// Registration fields addressed by missing_fields and moderator corrections
+// (OpenAPI RegistrationField). identity is the IIN (ЖСН) with the optional
+// patronymic. id_front, id_back and vehicle_photos belong to the retired
+// document and vehicle-photo steps: nothing requires them any more, but
+// applications decided before keep referring to them.
 const (
-	FieldIdentity         = "identity"
 	FieldAvatar           = "avatar"
 	FieldFirstName        = "first_name"
 	FieldLastName         = "last_name"
+	FieldIdentity         = "identity"
 	FieldPhone            = "phone"
 	FieldIDFront          = "id_front"
 	FieldIDBack           = "id_back"
@@ -22,10 +25,18 @@ const (
 	FieldVehiclePhotos    = "vehicle_photos"
 )
 
-// RegistrationFields lists the fields in the order of the registration form.
+// RegistrationFields lists the fields in the order of the registration form
+// (page 1: person, page 2: vehicle), the legacy ones where they used to be.
 var RegistrationFields = []string{
-	FieldIdentity, FieldAvatar, FieldFirstName, FieldLastName, FieldPhone, FieldIDFront, FieldIDBack,
+	FieldAvatar, FieldFirstName, FieldLastName, FieldIdentity, FieldPhone, FieldIDFront, FieldIDBack,
 	FieldVehicleClass, FieldVehicleMakeModel, FieldVehicleColor, FieldVehiclePlate, FieldVehiclePhotos,
+}
+
+// RequiredFields are the fields a registration needs before it is submitted
+// (the phone only while a Telegram-verified phone is required).
+var RequiredFields = []string{
+	FieldAvatar, FieldFirstName, FieldLastName, FieldIdentity, FieldPhone,
+	FieldVehicleClass, FieldVehicleMakeModel, FieldVehicleColor, FieldVehiclePlate,
 }
 
 // ValidRegistrationField reports whether f is a registration field.
@@ -83,10 +94,10 @@ func CorrectionFields(items []CorrectionItem) []string {
 
 // fieldLabels name the registration fields for drivers in kk, ru and en.
 var fieldLabels = map[string][3]string{
-	FieldIdentity:         {"Жеке құжат деректері", "Данные документа", "Identity document details"},
 	FieldAvatar:           {"Профиль суреті", "Фото профиля", "Profile photo"},
 	FieldFirstName:        {"Аты", "Имя", "First name"},
 	FieldLastName:         {"Тегі", "Фамилия", "Last name"},
+	FieldIdentity:         {"ЖСН", "ИИН", "IIN"},
 	FieldPhone:            {"Телефон нөмірі", "Номер телефона", "Phone number"},
 	FieldIDFront:          {"Жеке куәліктің алдыңғы беті", "Удостоверение личности, лицевая сторона", "ID card, front"},
 	FieldIDBack:           {"Жеке куәліктің артқы беті", "Удостоверение личности, оборотная сторона", "ID card, back"},

@@ -56,9 +56,6 @@ func ForTesting(databaseURL string) Config {
 		TelegramAPIBaseURL:        "http://127.0.0.1:1",
 		NotificationWorkerEnabled: false,
 		JobsEnabled:               false,
-		VerificationAutoApprove:   true,
-		VerificationMinConfidence: 98,
-		VerificationQueueLimit:    1000,
 		LogLevel:                  "debug",
 		LogFormat:                 "text",
 	}

@@ -6,7 +6,7 @@
 //   ?demo=order       order detail: map with the route A–D and the car's approach
 //   ?demo=topup       Kaspi top-up of 5 000 ₸ waiting for payment
 //   ?demo=home        driver home
-//   ?demo=register    registration at the vehicle class step
+//   ?demo=register    registration, the vehicle page (body type preset to Sedan)
 //   ?demo=wallet      wallet with the welcome bonus in the journal
 // Without ?demo the app opens on home; accepting an order and the trip
 // actions work against the in-memory API.
@@ -48,10 +48,19 @@ let draft: Record<string, unknown> | null = null
 
 /** The application as GET/PUT /driver/registration return it, built from the last PUT. */
 function registration() {
-  const body = (draft ?? {}) as { first_name?: string; last_name?: string; vehicle?: Record<string, unknown> }
+  const body = (draft ?? {}) as { first_name?: string; last_name?: string; patronymic?: string; iin?: string; vehicle?: Record<string, unknown> }
   const v = body.vehicle ?? {}
-  const code = typeof v.vehicle_class === 'string' ? v.vehicle_class : null
+  // The API gives the profile it creates the default body type (Sedan).
+  const code = typeof v.vehicle_class === 'string' ? v.vehicle_class : draft ? 'sedan' : null
   const cls = VEHICLE_CLASSES.find((c) => c.code === code) ?? null
+  const missing = [
+    'avatar',
+    ...(body.iin ? [] : ['identity']),
+    ...(cls ? [] : ['vehicle_class']),
+    ...(v.make && v.model ? [] : ['vehicle_make_model']),
+    ...(v.color ? [] : ['vehicle_color']),
+    ...(v.plate ? [] : ['vehicle_plate']),
+  ]
   return {
     id: draft ? 'a1b2c3d4-0000-4000-8000-00000000e002' : null,
     status: 'draft',
@@ -59,6 +68,8 @@ function registration() {
     city,
     first_name: body.first_name ?? '',
     last_name: body.last_name ?? '',
+    patronymic: body.patronymic ?? '',
+    iin: body.iin ?? null,
     phone: '+77011234567',
     phone_verified: true,
     avatar: null,
@@ -71,14 +82,14 @@ function registration() {
       plate_normalized: null,
       vehicle_class: cls?.code ?? null,
       vehicle_class_name: cls?.name ?? null,
-      seats: cls ? (typeof v.seats === 'number' ? v.seats : cls.seats_default) : null,
-      cargo_volume_l: cls ? (typeof v.cargo_volume_l === 'number' ? v.cargo_volume_l : cls.cargo_volume_l_default) : null,
+      seats: cls?.seats_default ?? null,
+      cargo_volume_l: cls?.cargo_volume_l_default ?? null,
       photos: [],
     },
     corrections: [],
     correction_comment: null,
     rejection_reason: null,
-    missing_fields: cls ? ['avatar', 'id_front', 'id_back', 'vehicle_photos'] : ['avatar', 'id_front', 'id_back', 'vehicle_class', 'vehicle_photos'],
+    missing_fields: missing,
     editable: true,
     can_submit: false,
     submitted_at: null,
@@ -260,6 +271,8 @@ const profile = () => ({
   status: 'approved',
   first_name: 'Ерлан',
   last_name: 'Сапаров',
+  patronymic: '',
+  iin_masked: '********0017',
   phone: '+77011234567',
   phone_verified: true,
   avatar: null,
@@ -400,7 +413,7 @@ export async function openDemoScreen(_pinia: Pinia, router: Router): Promise<voi
       await router.replace({ name: 'wallet' })
       break
     case 'register':
-      await router.replace({ name: 'register', query: { step: 'vehicle_class' } })
+      await router.replace({ name: 'register', query: { step: 'vehicle' } })
       break
     default:
       break

@@ -55,7 +55,7 @@ async function refresh(): Promise<void> {
 }
 
 // Realtime moves the driver on a decision; this is the fallback.
-usePolling(() => Promise.all([session.refreshMe(),reg.refresh()]), 60_000)
+usePolling(() => session.refreshMe(), 60_000)
 
 onMounted(() => {
   void reg.refresh()
@@ -69,7 +69,6 @@ onMounted(() => {
       <component :is="view.icon" :size="48" :stroke-width="1.5" class="status__icon" aria-hidden="true" />
       <h2 class="status__title">{{ view.title }}</h2>
       <p class="status__text">{{ view.text }}</p>
-      <p v-if="state === 'pending' && reg.registration?.verification" class="status__text">{{ t(`status.verification_${reg.registration.verification.status}`) }}</p>
       <p v-if="reason" class="status__reason">{{ t('status.reason', { reason }) }}</p>
       <p v-if="state === 'pending' && submittedAt" class="status__meta">{{ t('status.submitted_at', { time: fmt.dateTime(submittedAt) }) }}</p>
       <p v-if="code" class="status__meta jt-tabular">{{ t('status.code', { code }) }}</p>

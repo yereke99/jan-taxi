@@ -72,7 +72,8 @@ export interface OrderRef {
 }
 
 export interface FileRef {
- mime?: string
+  /** image/jpeg, or application/pdf for an ID scan uploaded as a PDF. */
+  mime?: string
   id: string
   kind: string
   url: string

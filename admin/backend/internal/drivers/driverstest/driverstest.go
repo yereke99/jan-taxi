@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,9 +31,9 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/moderation"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/iin"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // AdminHeader carries "<admin id>:<role>" for the injected admin principal.
@@ -40,16 +41,15 @@ const AdminHeader = "X-Test-Admin"
 
 // Env is a test environment.
 type Env struct {
-	T            testing.TB
-	Pool         *pgxpool.Pool
-	Auth         *auth.Service
-	Store        *storage.Store
-	H            http.Handler
-	Verification *verification.Service
+	T     testing.TB
+	Pool  *pgxpool.Pool
+	Auth  *auth.Service
+	Store *storage.Store
+	H     http.Handler
 }
 
 // New builds an environment on a fresh database.
-func New(t testing.TB, options ...verification.Options) *Env {
+func New(t testing.TB) *Env {
 	t.Helper()
 	pool := testutil.NewDB(t)
 	svc, err := auth.NewService(pool, auth.Config{
@@ -77,21 +77,14 @@ func New(t testing.TB, options ...verification.Options) *Env {
 	root := chi.NewRouter()
 	root.Mount("/api/v1", api)
 
-	var identity *verification.Service
-	if len(options) > 0 {
-		identity, err = verification.NewService(pool, options[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	dh := drivers.NewHandler(pool, store, drivers.Options{DefaultCity: "EMB", MaxUploadBytes: 10 << 20}).WithVerification(identity)
+	dh := drivers.NewHandler(pool, store, drivers.Options{DefaultCity: "EMB", MaxUploadBytes: 10 << 20})
 	dh.MountDriver(driverR)
 	dh.MountPassenger(passengerR)
 	dh.MountAdmin(adminR)
-	mh := moderation.NewHandler(pool).WithVerification(identity)
+	mh := moderation.NewHandler(pool)
 	mh.MountDriver(driverR)
 	mh.MountAdmin(adminR)
-	return &Env{T: t, Pool: pool, Auth: svc, Store: store, H: root, Verification: identity}
+	return &Env{T: t, Pool: pool, Auth: svc, Store: store, H: root}
 }
 
 func injectAdmin(next http.Handler) http.Handler {
@@ -261,16 +254,34 @@ func (e *Env) VerifyPhone(userID uuid.UUID, phone string) error {
 	})
 }
 
-// Registration describes the data CompleteDraft fills in. VehicleClass
-// defaults to "sedan"; Seats 0 takes the class default.
-type Registration struct {
-	FirstName, LastName, Make, Model, Color, Plate, Phone string
-	VehicleClass                                          string
-	Seats                                                 int
+var iinSeq atomic.Int64
+
+// NewIIN returns a valid IIN (check digit included) that no other driver of
+// this test process uses.
+func NewIIN() string {
+	for {
+		prefix := fmt.Sprintf("9001013%04d", iinSeq.Add(1)%10_000)
+		for d := '0'; d <= '9'; d++ {
+			if v := prefix + string(d); iin.Valid(v) {
+				return v
+			}
+		}
+	}
 }
 
-// CompleteDraft fills in every required field and photo of a driver's
-// registration (without submitting) and returns the driver profile id.
+// Registration describes the data CompleteDraft fills in. IIN defaults to a
+// fresh valid one (NoIIN leaves it out, like registrations from before it was
+// asked for); VehicleClass defaults to "sedan"; Seats 0 takes the class default.
+type Registration struct {
+	FirstName, LastName, Patronymic, Make, Model, Color, Plate, Phone string
+	IIN                                                               string
+	NoIIN                                                             bool
+	VehicleClass                                                      string
+	Seats                                                             int
+}
+
+// CompleteDraft fills in every required field and the profile photo of a
+// driver's registration (without submitting) and returns the driver profile id.
 func (c *Client) CompleteDraft(reg Registration) uuid.UUID {
 	t := c.env.T
 	t.Helper()
@@ -283,21 +294,23 @@ func (c *Client) CompleteDraft(reg Registration) uuid.UUID {
 	if reg.VehicleClass == "" {
 		reg.VehicleClass = "sedan"
 	}
+	if reg.IIN == "" && !reg.NoIIN {
+		reg.IIN = NewIIN()
+	}
 	vehicle := map[string]any{"make": reg.Make, "model": reg.Model, "color": reg.Color, "plate": reg.Plate,
 		"vehicle_class": reg.VehicleClass}
 	if reg.Seats > 0 {
 		vehicle["seats"] = reg.Seats
 	}
-	res := c.Do(http.MethodPut, "/api/v1/driver/registration", map[string]any{
-		"first_name": reg.FirstName, "last_name": reg.LastName, "vehicle": vehicle,
-	})
-	if res.Code != http.StatusOK {
+	body := map[string]any{"first_name": reg.FirstName, "last_name": reg.LastName, "patronymic": reg.Patronymic, "vehicle": vehicle}
+	if reg.IIN != "" {
+		body["iin"] = reg.IIN
+	}
+	if res := c.Do(http.MethodPut, "/api/v1/driver/registration", body); res.Code != http.StatusOK {
 		t.Fatalf("save registration: %s", res)
 	}
-	for i, kind := range []string{"avatar", "id_front", "id_back", "vehicle_main"} {
-		if up := c.Upload(kind, JPEG(t, 40, 30, uint8(i+1))); up.Code != http.StatusCreated {
-			t.Fatalf("upload %s: %s", kind, up)
-		}
+	if up := c.Upload("avatar", JPEG(t, 40, 30, 1)); up.Code != http.StatusCreated {
+		t.Fatalf("upload avatar: %s", up)
 	}
 	if reg.Phone != "" {
 		if err := c.env.VerifyPhone(c.UserID, reg.Phone); err != nil {
@@ -309,6 +322,72 @@ func (c *Client) CompleteDraft(reg Registration) uuid.UUID {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// LegacyPending creates an application still waiting for a moderator, as
+// submissions did before registrations were approved automatically: a
+// complete draft without an IIN (it was not asked for then) moved to pending
+// with its first application round, claimed vehicle and submission event.
+func (c *Client) LegacyPending(reg Registration) uuid.UUID {
+	t := c.env.T
+	t.Helper()
+	reg.NoIIN = true
+	id := c.CompleteDraft(reg)
+	err := db.WithTx(context.Background(), c.env.Pool, func(tx pgx.Tx) error {
+		ctx := context.Background()
+		if _, err := tx.Exec(ctx, `
+			UPDATE driver_profiles dp
+			SET status = 'pending', submitted_at = now(), pd_consent_at = now(), pd_consent_version = '2026-10',
+			    phone_e164 = u.phone_e164, phone_verified_at = u.phone_verified_at
+			FROM users u WHERE u.id = dp.user_id AND dp.id = $1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE vehicles SET status = 'claimed' WHERE driver_id = $1 AND status <> 'archived'`, id); err != nil {
+			return err
+		}
+		var appID uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO driver_applications (driver_id, round, status, snapshot) VALUES ($1, 1, 'pending', '{"round": 1}')
+			RETURNING id`, id).Scan(&appID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO driver_moderation_events (driver_id, application_id, actor_type, action, from_status, to_status)
+			VALUES ($1, $2, 'driver', 'submitted', 'draft', 'pending')`, id, appID)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("legacy pending application: %v", err)
+	}
+	return id
+}
+
+// LegacyEvidence stores ID scans and a vehicle photo for a driver, as
+// registrations collected them before they were retired, and returns the
+// file ids (front, back, vehicle photo).
+func (c *Client) LegacyEvidence(driverID uuid.UUID) (front, back, photo uuid.UUID) {
+	t := c.env.T
+	t.Helper()
+	ctx := context.Background()
+	save := func(purpose string, seed uint8) uuid.UUID {
+		f, err := c.env.Store.SaveImage(ctx, c.env.Pool, c.UserID, purpose, bytes.NewReader(JPEG(t, 40, 30, seed)))
+		if err != nil {
+			t.Fatalf("save %s: %v", purpose, err)
+		}
+		return f.ID
+	}
+	front, back, photo = save(storage.PurposeIDFront, 21), save(storage.PurposeIDBack, 22), save(storage.PurposeVehiclePhoto, 23)
+	if _, err := c.env.Pool.Exec(ctx, `
+		INSERT INTO driver_documents (driver_id, kind, file_id) VALUES ($1, 'id_front', $2), ($1, 'id_back', $3)`,
+		driverID, front, back); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.env.Pool.Exec(ctx, `
+		INSERT INTO vehicle_photos (vehicle_id, kind, file_id)
+		SELECT id, 'main', $2 FROM vehicles WHERE driver_id = $1 AND status <> 'archived'`, driverID, photo); err != nil {
+		t.Fatal(err)
+	}
+	return front, back, photo
 }
 
 // Submit posts the registration with the personal-data consent.

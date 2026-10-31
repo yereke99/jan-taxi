@@ -7,11 +7,17 @@ import { opt } from './common'
 import type { AdminLedgerEntry } from './finance'
 import type { AdminOrderListItem } from './orders'
 
+/**
+ * Registration fields named by corrections (OpenAPI RegistrationField), in
+ * form order. identity is the IIN (ЖСН) with the optional patronymic.
+ * id_front, id_back and vehicle_photos belong to the retired ID-scan and
+ * vehicle-photo steps: older corrections still name them.
+ */
 export const REGISTRATION_FIELDS = [
- 'identity',
   'avatar',
   'first_name',
   'last_name',
+  'identity',
   'phone',
   'id_front',
   'id_back',
@@ -22,6 +28,20 @@ export const REGISTRATION_FIELDS = [
   'vehicle_photos',
 ] as const
 export type RegistrationField = (typeof REGISTRATION_FIELDS)[number]
+
+/** Fields a driver can still change in the registration form: the only ones offered for new corrections. */
+export const CORRECTABLE_FIELDS = [
+  'avatar',
+  'first_name',
+  'last_name',
+  'identity',
+  'phone',
+  'vehicle_class',
+  'vehicle_make_model',
+  'vehicle_color',
+  'vehicle_plate',
+] as const satisfies readonly RegistrationField[]
+export type CorrectableField = (typeof CORRECTABLE_FIELDS)[number]
 
 export const CORRECTION_REASONS = [
   'invalid_plate',
@@ -162,15 +182,15 @@ export interface AdminDriverListItem {
 }
 
 export interface AdminDriverDetail {
- identity_conflicts?: Array<{kind:string;driver_id:string;driver_code:string;status:string}>
- identity?: {iin:string;document_type:string;document_number:string;patronymic:string}
- verification?: {id:string;status:string;confidence:number|null;reasons:string[];created_at:string;finished_at:string|null;result?:{extracted:{iin:string;document_type:string;document_number:string;patronymic:string};first_name:string;last_name:string;comparisons:Record<string,string>;field_confidence:Record<string,number>}}
- verification_history?: Array<{id:string;status:string;confidence:number|null;reasons:string[];created_at:string;finished_at:string|null}>
   id: string
   code: string
   status: ModerationStatus
   first_name: string
   last_name: string
+  /** Optional (Әкесінің аты); '' when not given. */
+  patronymic: string
+  /** The IIN with all but the last four digits hidden ("********1234"); null until the driver entered one. */
+  iin_masked: string | null
   phone: string | null
   phone_verified: boolean
   phone_verified_at: string | null
@@ -187,7 +207,12 @@ export interface AdminDriverDetail {
     driver_bot_blocked_at: string | null
   }
   avatar: FileRef | null
+  /**
+   * ID scans uploaded before they were retired (both null for drivers who
+   * registered later); null without documents.view.
+   */
   documents: { id_front: FileRef | null; id_back: FileRef | null } | null
+  /** The vehicle; photos exist only for drivers who registered before vehicle photos were retired. */
   vehicle: RegistrationVehicle | null
   corrections: CorrectionItem[]
   applications: DriverApplication[]

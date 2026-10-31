@@ -16,37 +16,22 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/iin"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/plate"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
 
 // RegistrationResponse loads and renders the user's registration.
-func RegistrationResponse(ctx context.Context, q db.Querier, userID uuid.UUID, services ...*verification.Service) (RegistrationView, error) {
+func RegistrationResponse(ctx context.Context, q db.Querier, userID uuid.UUID) (RegistrationView, error) {
 	reg, err := LoadRegistrationByUser(ctx, q, userID)
 	if err != nil {
 		return RegistrationView{}, err
 	}
-	v := NewRegistrationView(reg, settings.RequirePhoneVerification(ctx, q))
-	if len(services) > 0 && services[0].Enabled() {
-		v.IdentityEnabled = true
-		if v.ID != nil {
-			var err error
-			v.Identity, _, err = services[0].LoadInput(ctx, q, *v.ID)
-			if err != nil {
-				return v, err
-			}
-			v.Verification, err = services[0].Summary(ctx, q, *v.ID, false)
-			if err != nil {
-				return v, err
-			}
-		}
-	}
-	return v, nil
+	return NewRegistrationView(reg, settings.RequirePhoneVerification(ctx, q)), nil
 }
 
 func (h *Handler) getRegistration(w http.ResponseWriter, r *http.Request) error {
@@ -54,21 +39,36 @@ func (h *Handler) getRegistration(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return err
 	}
-	v, err := RegistrationResponse(r.Context(), h.pool, p.UserID, h.verification)
+	v, err := RegistrationResponse(r.Context(), h.pool, p.UserID)
 	if err != nil {
 		return err
 	}
 	return httpx.OK(w, v)
 }
 
+// registrationRequest is PUT /driver/registration. Every key is optional: a
+// key that is not sent keeps the stored value (older app versions do not know
+// every field), an empty string clears it while drafting.
 type registrationRequest struct {
-	Identity  *verification.Input `json:"identity"`
-	FirstName *string             `json:"first_name"`
-	LastName  *string             `json:"last_name"`
-	Vehicle   *vehicleRequest     `json:"vehicle"`
+	FirstName  *string         `json:"first_name"`
+	LastName   *string         `json:"last_name"`
+	Patronymic *string         `json:"patronymic"`
+	IIN        *string         `json:"iin"`
+	Vehicle    *vehicleRequest `json:"vehicle"`
 	// Location is the device's latest position (optional). On the first
 	// save it decides the driver's city and so the code prefix.
 	Location *registrationPoint `json:"location"`
+	// Identity is the object older app versions send. Its non-empty iin and
+	// patronymic stand in for the top-level keys; the document fields are
+	// accepted and ignored (document numbers are no longer collected).
+	Identity *legacyIdentity `json:"identity"`
+}
+
+type legacyIdentity struct {
+	DocumentType   *string `json:"document_type"`
+	IIN            *string `json:"iin"`
+	DocumentNumber *string `json:"document_number"`
+	Patronymic     *string `json:"patronymic"`
 }
 
 type registrationPoint struct {
@@ -89,14 +89,20 @@ type vehicleRequest struct {
 	CargoVolumeL *int64  `json:"cargo_volume_l"`
 }
 
-// registrationInput is a validated, normalised registrationRequest. The class
-// fields are resolved against the stored vehicle inside the transaction.
+// registrationInput is a validated, normalised registrationRequest; nil
+// means "not sent" (the stored value stays). The class fields are resolved
+// against the stored vehicle inside the transaction.
 type registrationInput struct {
-	FirstName, LastName string
-	Identity            *verification.Input
-	Vehicle             vehicles.Details
-	Class               classInput
-	Location            *geo.Point // nil when not sent
+	FirstName, LastName, Patronymic, IIN *string
+	Make, Model, Color                   *string
+	Plate                                *plateInput
+	Class                                classInput
+	Location                             *geo.Point // nil when not sent
+}
+
+// plateInput is a plate as typed and its canonical form ("" while empty).
+type plateInput struct {
+	Raw, Normalized string
 }
 
 // classInput is the requested vehicle class, seats and cargo volume; nil
@@ -109,32 +115,37 @@ type classInput struct {
 
 func (req registrationRequest) validate() (registrationInput, error) {
 	var in registrationInput
-	if req.Identity != nil {
-		v, err := req.Identity.Normalize()
-		if err != nil {
-			return in, err
-		}
-		in.Identity = &v
-	}
 	fields := map[string]string{}
-	in.FirstName = cleanName(req.FirstName, "first_name", fields)
-	in.LastName = cleanName(req.LastName, "last_name", fields)
-	if req.Vehicle == nil {
-		fields["vehicle"] = "required"
-		return in, httpx.Validation(fields)
-	}
-	in.Vehicle.Make = cleanField(req.Vehicle.Make, vehicles.MaxMake, "vehicle.make", fields)
-	in.Vehicle.Model = cleanField(req.Vehicle.Model, vehicles.MaxModel, "vehicle.model", fields)
-	in.Vehicle.Color = cleanField(req.Vehicle.Color, vehicles.MaxColor, "vehicle.color", fields)
-	raw := cleanField(req.Vehicle.Plate, vehicles.MaxPlateRaw, "vehicle.plate", fields)
-	if raw != "" {
-		norm, err := plate.Normalize(raw)
-		if err != nil {
-			fields["vehicle.plate"] = "invalid"
+	in.FirstName = cleanName(req.FirstName, MaxNameLen, "first_name", fields)
+	in.LastName = cleanName(req.LastName, MaxNameLen, "last_name", fields)
+	patronymic, rawIIN := req.Patronymic, req.IIN
+	if old := req.Identity; old != nil {
+		if patronymic == nil && old.Patronymic != nil && strings.TrimSpace(*old.Patronymic) != "" {
+			patronymic = old.Patronymic
 		}
-		in.Vehicle.PlateRaw, in.Vehicle.PlateNormalized = raw, norm
+		if rawIIN == nil && old.IIN != nil && strings.TrimSpace(*old.IIN) != "" {
+			rawIIN = old.IIN
+		}
 	}
-	in.Class = req.Vehicle.classInput(fields)
+	in.Patronymic = cleanName(patronymic, MaxPatronymicLen, "patronymic", fields)
+	in.IIN = cleanIIN(rawIIN, "iin", fields)
+	if v := req.Vehicle; v != nil {
+		in.Make = cleanText(v.Make, vehicles.MaxMake, "vehicle.make", fields)
+		in.Model = cleanText(v.Model, vehicles.MaxModel, "vehicle.model", fields)
+		in.Color = cleanText(v.Color, vehicles.MaxColor, "vehicle.color", fields)
+		if raw := cleanText(v.Plate, vehicles.MaxPlateRaw, "vehicle.plate", fields); raw != nil {
+			p := &plateInput{Raw: *raw}
+			if p.Raw != "" {
+				norm, err := plate.Normalize(p.Raw)
+				if err != nil {
+					fields["vehicle.plate"] = "invalid"
+				}
+				p.Normalized = norm
+			}
+			in.Plate = p
+		}
+		in.Class = v.classInput(fields)
+	}
 	if l := req.Location; l != nil {
 		if l.Lat == nil || l.Lon == nil || (geo.Point{Lat: *l.Lat, Lon: *l.Lon}).Valid() != nil {
 			fields["location"] = "invalid"
@@ -236,26 +247,52 @@ func resolveClass(ctx context.Context, q db.Querier, cur vehicles.Vehicle, in cl
 	return nil
 }
 
-func cleanField(s *string, max int, name string, fields map[string]string) string {
+// cleanText normalises an optional text field; nil stays nil (not sent).
+func cleanText(s *string, max int, name string, fields map[string]string) *string {
 	if s == nil {
-		fields[name] = "required"
-		return ""
+		return nil
 	}
 	v, err := textutil.CleanText(*s, max)
 	if err != nil {
 		fields[name] = textutil.Reason(err)
-		return ""
+		return nil
+	}
+	return &v
+}
+
+func cleanName(s *string, max int, name string, fields map[string]string) *string {
+	v := cleanText(s, max, name, fields)
+	if v != nil && *v != "" && !validName(*v) {
+		fields[name] = "invalid"
+		return nil
 	}
 	return v
 }
 
-func cleanName(s *string, name string, fields map[string]string) string {
-	v := cleanField(s, MaxNameLen, name, fields)
-	if v != "" && !validName(v) {
-		fields[name] = "invalid"
-		return ""
+// cleanIIN validates an optional IIN: "" clears it, anything else must be
+// twelve digits ("invalid") with a valid check digit ("checksum").
+func cleanIIN(s *string, name string, fields map[string]string) *string {
+	if s == nil {
+		return nil
 	}
-	return v
+	if strings.TrimSpace(*s) == "" {
+		empty := ""
+		return &empty
+	}
+	v, err := iin.Normalize(*s)
+	if err != nil {
+		fields[name] = iinReason(err)
+		return nil
+	}
+	return &v
+}
+
+// iinReason is the validation reason of an iin.Normalize error.
+func iinReason(err error) string {
+	if errors.Is(err, iin.ErrChecksum) {
+		return "checksum"
+	}
+	return "invalid"
 }
 
 // validName accepts letters of any script with spaces, hyphens, apostrophes
@@ -288,40 +325,28 @@ func (h *Handler) putRegistration(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	ctx := r.Context()
-	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		if err := saveRegistration(ctx, tx, p.UserID, h.opt.DefaultCity, in); err != nil {
-			return err
-		}
-		if in.Identity != nil {
-			prof, err := ProfileByUser(ctx, tx, p.UserID)
-			if err != nil {
-				return err
-			}
-			if prof.Status == StatusChangesRequested {
-				flagged, err := FlaggedFields(ctx, tx, prof.ID)
-				if err != nil {
-					return err
-				}
-				cur, _, err := h.verification.LoadInput(ctx, tx, prof.ID)
-				if err != nil {
-					return err
-				}
-				if !flagged[FieldIdentity] && (cur == nil || *cur != *in.Identity) {
-					return ErrFieldLocked(map[string]string{"identity": "not_editable"}, flagged)
-				}
-			}
-			return h.verification.SaveInput(ctx, tx, prof.ID, *in.Identity)
-		}
-		return nil
-	})
-	if err != nil {
+	if err := db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
+		return saveRegistration(ctx, tx, p.UserID, h.opt.DefaultCity, in)
+	}); err != nil {
 		return err
 	}
-	v, err := RegistrationResponse(ctx, h.pool, p.UserID, h.verification)
+	v, err := RegistrationResponse(ctx, h.pool, p.UserID)
 	if err != nil {
 		return err
 	}
 	return httpx.OK(w, v)
+}
+
+// personValues are the person fields of a profile as they will be stored.
+type personValues struct {
+	FirstName, LastName, Patronymic, IIN string
+}
+
+func pick(sent *string, stored string) string {
+	if sent != nil {
+		return *sent
+	}
+	return stored
 }
 
 // saveRegistration applies a registration update, creating the profile on the
@@ -342,22 +367,33 @@ func saveRegistration(ctx context.Context, tx pgx.Tx, userID uuid.UUID, defaultC
 	}
 	veh, err := vehicles.CurrentForUpdate(ctx, tx, prof.ID)
 	if errors.Is(err, vehicles.ErrNotFound) {
-		veh, err = vehicles.Create(ctx, tx, prof.ID, vehicles.Details{})
+		veh, err = createVehicle(ctx, tx, prof.ID)
 	}
 	if err != nil {
 		return err
 	}
 
-	next := in.Vehicle
+	// What was sent replaces the stored value; everything else stays.
+	person := personValues{
+		FirstName:  pick(in.FirstName, prof.FirstName),
+		LastName:   pick(in.LastName, prof.LastName),
+		Patronymic: pick(in.Patronymic, prof.Patronymic),
+		IIN:        pick(in.IIN, prof.IINValue()),
+	}
+	next := veh.Details()
+	next.Make, next.Model, next.Color = pick(in.Make, veh.Make), pick(in.Model, veh.Model), pick(in.Color, veh.Color)
+	if in.Plate != nil {
+		next.PlateRaw, next.PlateNormalized = in.Plate.Raw, in.Plate.Normalized
+	}
 	if err := resolveClass(ctx, tx, veh, in.Class, &next); err != nil {
 		return err
 	}
 	if prof.Status == StatusChangesRequested {
-		editable, err := FlaggedFields(ctx, tx, prof.ID)
+		editable, err := editableFieldsOf(ctx, tx, prof)
 		if err != nil {
 			return err
 		}
-		if err := checkLockedFields(prof, veh, in, next, editable); err != nil {
+		if err := checkLockedFields(prof, veh, person, next, editable); err != nil {
 			return err
 		}
 		if !editable[FieldVehiclePlate] {
@@ -373,16 +409,29 @@ func saveRegistration(ctx context.Context, tx pgx.Tx, userID uuid.UUID, defaultC
 			return vehicles.ErrPlateTaken
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE driver_profiles SET first_name = $2, last_name = $3 WHERE id = $1`,
-		prof.ID, in.FirstName, in.LastName); err != nil {
-		return fmt.Errorf("drivers: save names: %w", err)
+	if person.IIN != "" && person.IIN != prof.IINValue() {
+		held, err := IINHeldByOther(ctx, tx, person.IIN, prof.ID)
+		if err != nil {
+			return err
+		}
+		if held {
+			return ErrIINTaken
+		}
+	}
+	_, err = tx.Exec(ctx, `UPDATE driver_profiles SET first_name = $2, last_name = $3, patronymic = $4, iin = NULLIF($5, '') WHERE id = $1`,
+		prof.ID, person.FirstName, person.LastName, person.Patronymic, person.IIN)
+	if db.IsUniqueViolation(err, IINUniqueIndex) {
+		return ErrIINTaken
+	}
+	if err != nil {
+		return fmt.Errorf("drivers: save person: %w", err)
 	}
 	return vehicles.UpdateDetails(ctx, tx, veh.ID, next)
 }
 
 // checkLockedFields rejects changes to fields the moderator did not flag. next
-// carries the resolved class fields.
-func checkLockedFields(prof Profile, veh vehicles.Vehicle, in registrationInput, next vehicles.Details, editable map[string]bool) error {
+// carries the resolved vehicle fields.
+func checkLockedFields(prof Profile, veh vehicles.Vehicle, person personValues, next vehicles.Details, editable map[string]bool) error {
 	fields := map[string]string{}
 	lock := func(changed bool, field string, names ...string) {
 		if changed && !editable[field] {
@@ -391,12 +440,14 @@ func checkLockedFields(prof Profile, veh vehicles.Vehicle, in registrationInput,
 			}
 		}
 	}
-	lock(in.FirstName != prof.FirstName, FieldFirstName, "first_name")
-	lock(in.LastName != prof.LastName, FieldLastName, "last_name")
-	lock(in.Vehicle.Make != veh.Make, FieldVehicleMakeModel, "vehicle.make")
-	lock(in.Vehicle.Model != veh.Model, FieldVehicleMakeModel, "vehicle.model")
-	lock(in.Vehicle.Color != veh.Color, FieldVehicleColor, "vehicle.color")
-	lock(in.Vehicle.PlateNormalized != veh.PlateNormalized, FieldVehiclePlate, "vehicle.plate")
+	lock(person.FirstName != prof.FirstName, FieldFirstName, "first_name")
+	lock(person.LastName != prof.LastName, FieldLastName, "last_name")
+	lock(person.Patronymic != prof.Patronymic, FieldIdentity, "patronymic")
+	lock(person.IIN != prof.IINValue(), FieldIdentity, "iin")
+	lock(next.Make != veh.Make, FieldVehicleMakeModel, "vehicle.make")
+	lock(next.Model != veh.Model, FieldVehicleMakeModel, "vehicle.model")
+	lock(next.Color != veh.Color, FieldVehicleColor, "vehicle.color")
+	lock(next.PlateNormalized != veh.PlateNormalized, FieldVehiclePlate, "vehicle.plate")
 	lock(next.ClassCode != veh.ClassCode, FieldVehicleClass, "vehicle.vehicle_class")
 	lock(next.Seats != veh.Seats, FieldVehicleClass, "vehicle.seats")
 	lock(next.CargoVolumeL != veh.CargoVolumeL, FieldVehicleClass, "vehicle.cargo_volume_l")
@@ -421,6 +472,29 @@ func FlaggedFields(ctx context.Context, q db.Querier, driverID uuid.UUID) (map[s
 		out[f] = true
 	}
 	return out, nil
+}
+
+// editableFieldsOf returns the fields the driver may change in prof's status,
+// as Registration.EditableFields does for a loaded registration.
+func editableFieldsOf(ctx context.Context, q db.Querier, prof Profile) (map[string]bool, error) {
+	switch prof.Status {
+	case StatusDraft:
+		out := map[string]bool{}
+		for _, f := range RegistrationFields {
+			out[f] = true
+		}
+		return out, nil
+	case StatusChangesRequested:
+		flagged, err := FlaggedFields(ctx, q, prof.ID)
+		if err != nil {
+			return nil, err
+		}
+		if prof.IINValue() == "" {
+			flagged[FieldIdentity] = true
+		}
+		return flagged, nil
+	}
+	return map[string]bool{}, nil
 }
 
 // RegistrationCity is the city of a new driver profile: the city whose
@@ -474,13 +548,29 @@ func createProfile(ctx context.Context, tx pgx.Tx, userID uuid.UUID, defaultCity
 	if err != nil {
 		return Profile{}, err
 	}
-	if _, err := vehicles.Create(ctx, tx, p.ID, vehicles.Details{}); err != nil {
+	if _, err := createVehicle(ctx, tx, p.ID); err != nil {
 		return Profile{}, err
 	}
 	if _, err := wallets.Ensure(ctx, tx, p.ID); err != nil {
 		return Profile{}, fmt.Errorf("drivers: create wallet: %w", err)
 	}
 	return p, nil
+}
+
+// createVehicle creates the draft vehicle of a new registration with the
+// default class (Sedan) and its seat and cargo defaults, as the registration
+// form preselects it; the driver may switch the class. Without an active
+// default class the vehicle starts without one.
+func createVehicle(ctx context.Context, tx pgx.Tx, driverID uuid.UUID) (vehicles.Vehicle, error) {
+	var d vehicles.Details
+	class, err := vehicleclasses.Get(ctx, tx, vehicleclasses.Default)
+	switch {
+	case err == nil && class.IsActive:
+		d.ClassCode, d.Seats, d.CargoVolumeL = class.Code, class.SeatsDefault, class.CargoVolumeLDefault
+	case err != nil && !errors.Is(err, vehicleclasses.ErrNotFound):
+		return vehicles.Vehicle{}, err
+	}
+	return vehicles.Create(ctx, tx, driverID, d)
 }
 
 type checkRequest struct {

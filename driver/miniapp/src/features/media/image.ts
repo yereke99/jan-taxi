@@ -6,6 +6,8 @@ export const MAX_IMAGE_SIDE = 1600
 export const JPEG_QUALITY = 0.85
 /** API upload limit (10 MiB), checked before sending anything. */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+/** The profile photo is capped lower (drivers.MaxAvatarBytes, 5 MiB). */
+export const AVATAR_MAX_BYTES = 5 * 1024 * 1024
 
 const ACCEPTED_ORIGINAL_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
@@ -63,17 +65,18 @@ function toJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
 }
 
 /**
- * Returns a JPEG no larger than MAX_IMAGE_SIDE on its longest side. When the
- * device cannot decode the file but it is already an accepted type within the
- * upload limit, the original is returned for the server to process.
+ * Returns a JPEG no larger than MAX_IMAGE_SIDE on its longest side and
+ * maxBytes in size. When the device cannot decode the file but it is already
+ * an accepted type within the limit, the original is returned for the server
+ * to process.
  */
-export async function prepareImage(file: Blob, maxSide: number = MAX_IMAGE_SIDE): Promise<Blob> {
+export async function prepareImage(file: Blob, maxSide: number = MAX_IMAGE_SIDE, maxBytes: number = MAX_UPLOAD_BYTES): Promise<Blob> {
   let decoded: Decoded
   try {
     decoded = await decode(file)
   } catch {
-    if (ACCEPTED_ORIGINAL_TYPES.has(file.type) && file.size <= MAX_UPLOAD_BYTES) return file
-    throw new ImageError('unsupported')
+    if (ACCEPTED_ORIGINAL_TYPES.has(file.type) && file.size <= maxBytes) return file
+    throw new ImageError(ACCEPTED_ORIGINAL_TYPES.has(file.type) ? 'too_large' : 'unsupported')
   }
   try {
     const { width, height } = fitWithin(decoded.width, decoded.height, maxSide)
@@ -86,7 +89,7 @@ export async function prepareImage(file: Blob, maxSide: number = MAX_IMAGE_SIDE)
     ctx.fillRect(0, 0, width, height)
     ctx.drawImage(decoded.source, 0, 0, width, height)
     const blob = await toJpeg(canvas, JPEG_QUALITY)
-    if (blob.size > MAX_UPLOAD_BYTES) throw new ImageError('too_large')
+    if (blob.size > maxBytes) throw new ImageError('too_large')
     return blob
   } finally {
     decoded.release()

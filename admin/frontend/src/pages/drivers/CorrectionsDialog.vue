@@ -1,12 +1,15 @@
 <!--
   Request corrections: tick the registration fields to fix, choose a reason
   for each (reason "other" needs a comment), add optional per-field and
-  general comments. The driver sees these in the Mini App and the bot.
+  general comments. The driver sees these in the Mini App and the bot. Only
+  fields the driver can still change are offered: ID scans and vehicle
+  photos are no longer collected, so they (and the reasons about them)
+  cannot be asked for again.
 -->
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CORRECTION_REASONS, REGISTRATION_FIELDS, driversApi, type AdminDriverDetail, type CorrectionReason, type RegistrationField } from '../../api/drivers'
+import { CORRECTABLE_FIELDS, CORRECTION_REASONS, driversApi, type AdminDriverDetail, type CorrectableField, type CorrectionReason } from '../../api/drivers'
 import { AppButton, FormField, Modal, SelectInput, TextArea, TextInput } from '../../components'
 import { useErrors } from '../../composables/useErrors'
 import { LIMITS, validateCorrectionForm, type CorrectionRow } from '../../forms/validation'
@@ -23,47 +26,49 @@ interface FieldState {
   comment: string
 }
 
-const state = reactive<Record<RegistrationField, FieldState>>(
-  Object.fromEntries(REGISTRATION_FIELDS.map((f) => [f, { checked: false, reason: null, comment: '' }])) as Record<RegistrationField, FieldState>,
+const state = reactive<Record<CorrectableField, FieldState>>(
+  Object.fromEntries(CORRECTABLE_FIELDS.map((f) => [f, { checked: false, reason: null, comment: '' }])) as Record<CorrectableField, FieldState>,
 )
 const comment = ref('')
 const fieldErrors = ref<Record<string, string>>({})
 const formError = ref('')
 const busy = ref(false)
 
-const reasonOptions = computed(() => CORRECTION_REASONS.map((r) => ({ value: r, label: t(`correction_reason.${r}`) })))
+/** Reasons about the retired ID scans and vehicle photos. */
+const PHOTO_REASONS: readonly CorrectionReason[] = ['id_unreadable', 'vehicle_photo_unclear']
+
+const reasonOptions = computed(() =>
+  CORRECTION_REASONS.filter((r) => !PHOTO_REASONS.includes(r)).map((r) => ({ value: r, label: t(`correction_reason.${r}`) })),
+)
 
 /** Reasons that make sense for a field come first in the list. */
-const SUGGESTED: Partial<Record<RegistrationField, CorrectionReason>> = {
+const SUGGESTED: Partial<Record<CorrectableField, CorrectionReason>> = {
   vehicle_plate: 'invalid_plate',
   phone: 'duplicate_phone',
-  id_front: 'id_unreadable',
-  id_back: 'id_unreadable',
-  vehicle_photos: 'vehicle_photo_unclear',
 }
 
 watch(
   () => props.open,
   (open) => {
     if (!open) return
-    for (const f of REGISTRATION_FIELDS) Object.assign(state[f], { checked: false, reason: null, comment: '' })
+    for (const f of CORRECTABLE_FIELDS) Object.assign(state[f], { checked: false, reason: null, comment: '' })
     comment.value = ''
     fieldErrors.value = {}
     formError.value = ''
   },
 )
 
-function toggle(f: RegistrationField, checked: boolean): void {
+function toggle(f: CorrectableField, checked: boolean): void {
   state[f].checked = checked
   if (checked && !state[f].reason) state[f].reason = SUGGESTED[f] ?? null
 }
 
 const rows = computed<CorrectionRow[]>(() =>
-  REGISTRATION_FIELDS.filter((f) => state[f].checked).map((f) => ({ field: f, reason: state[f].reason, comment: state[f].comment })),
+  CORRECTABLE_FIELDS.filter((f) => state[f].checked).map((f) => ({ field: f, reason: state[f].reason, comment: state[f].comment })),
 )
 
 /** Maps "items.<i>.<x>" errors back to the field they belong to. */
-function errorFor(field: RegistrationField, part: 'reason' | 'comment' | 'field'): string {
+function errorFor(field: CorrectableField, part: 'reason' | 'comment' | 'field'): string {
   const i = rows.value.findIndex((r) => r.field === field)
   return i >= 0 ? (fieldErrors.value[`items.${i}.${part}`] ?? '') : ''
 }
@@ -93,7 +98,7 @@ async function submit(): Promise<void> {
     <form class="corr" novalidate @submit.prevent="submit">
       <p class="jt-muted">{{ t('drivers.corrections_hint') }}</p>
       <ul class="corr__list">
-        <li v-for="f in REGISTRATION_FIELDS" :key="f" class="corr__row" :class="{ 'is-checked': state[f].checked }">
+        <li v-for="f in CORRECTABLE_FIELDS" :key="f" class="corr__row" :class="{ 'is-checked': state[f].checked }">
           <label class="corr__check">
             <input type="checkbox" :checked="state[f].checked" @change="toggle(f, ($event.target as HTMLInputElement).checked)" />
             <span>{{ t(`correction_field.${f}`) }}</span>

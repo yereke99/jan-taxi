@@ -148,7 +148,7 @@ tags:
   - name: orders
     description: Passenger orders (taxi, parcel, other delivery).
   - name: driver-registration
-    description: Driver onboarding, documents and moderation corrections.
+    description: Driver onboarding (two pages, automatic approval on submission) and corrections of older applications.
   - name: driver
     description: Driver profile, availability and location.
   - name: driver-orders
@@ -172,7 +172,7 @@ tags:
   - name: admin-disputes
     description: Order disputes.
   - name: admin-drivers
-    description: Driver moderation, suspension, files and live locations.
+    description: Driver records, decisions on older pending applications, suspension, files and live locations.
   - name: admin-topups
     description: Top-up verification, rejection and refunds.
   - name: admin-ledger
@@ -995,9 +995,12 @@ paths:
       tags: [driver-registration]
       summary: Registration state
       description: |
-        Current registration data, uploaded files, moderation status, open corrections, missing
-        fields, personal-data consent and moderation history. Before the first `PUT` there is no
-        profile yet: the response has `status: draft`, `id: null` and `code: null`.
+        Current registration data (names, patronymic, the driver's own IIN unmasked, the profile
+        photo, the verified phone, the vehicle and its class), status, open corrections, missing
+        fields, personal-data consent and moderation history. ID photos and vehicle photos appear
+        only for drivers who uploaded them before 31 October 2026 (read-only). Before the first
+        `PUT` there is no profile yet: the response has `status: draft`, `id: null` and
+        `code: null`.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       responses:
@@ -1014,24 +1017,32 @@ paths:
       tags: [driver-registration]
       summary: Save registration data
       description: |
-        Saves the text fields of the application. The first call creates the driver profile, an
-        empty vehicle and the wallet, and assigns the driver code of the driver's city: with
-        `location` (the device position) inside Kazakhstan, the city owning the smallest active
-        zone that covers it, else the nationwide region `KAZ` (codes `KAZ001`…); without a
-        location (or outside Kazakhstan) the default city (`DEFAULT_CITY`, else the oldest active
-        city; `422 no_active_city` when none). Later saves never change the city or the code. Allowed while
-        `draft` or `changes_requested`; otherwise `409 conflict` with
-        `details {reason: registration_locked, status}`. In `changes_requested` only the flagged
-        fields may change: other changes are `422 validation_failed` with
+        Saves the fields of the application as the driver types (the Mini App autosaves both
+        pages). Every key is optional: a key that is not sent keeps the stored value, an empty
+        string clears it while drafting; completeness is checked on submit. The first call creates
+        the driver profile, a vehicle preset to the default class `sedan` with its seat and cargo
+        defaults (no class when it is inactive) and the wallet, and assigns the driver code of
+        the driver's city: with `location` (the device position) inside Kazakhstan, the city
+        owning the smallest active zone that covers it, else the nationwide region `KAZ` (codes
+        `KAZ001`…); without a location (or outside Kazakhstan) the default city (`DEFAULT_CITY`,
+        else the oldest active city; `422 no_active_city` when none). Later saves never change
+        the city or the code. Allowed while `draft` or `changes_requested`; otherwise
+        `409 conflict` with `details {reason: registration_locked, status}`. In
+        `changes_requested` only the flagged fields may change, plus the IIN and patronymic
+        (`identity`) while no IIN is stored: other changes are `422 validation_failed` with
         `fields.<name> = not_editable` and `details {reason: field_locked, editable_fields}`
-        (an unflagged plate is kept as stored). Empty strings are allowed while drafting;
-        completeness is checked on submit. A non-empty plate must be a valid Kazakhstan plate
-        (current format, or the legacy `L NNN LL(L)` format) and not claimed by another driver
-        (`409 plate_taken`).
-        `fields`: `first_name` / `last_name` = `required | too_long | invalid` (letters, spaces,
-        `-`, `'`, `.` only), `vehicle` = `required`, `vehicle.make` / `vehicle.model` /
-        `vehicle.color` = `required | too_long | invalid`, `vehicle.plate` =
-        `required | too_long | invalid`, `location` = `invalid`.
+        (an unflagged plate is kept as stored).
+        The IIN (white space dropped) must be twelve digits with a valid Kazakhstan check digit
+        and not held by another live driver (`409 iin_taken`). A non-empty plate must be a valid
+        Kazakhstan plate (current format, or the legacy `L NNN LL(L)` format) and not claimed by
+        another driver (`409 plate_taken`). Older app versions may send the IIN and patronymic in
+        the legacy `identity` object; its document fields are accepted and ignored.
+        `fields`: `first_name` / `last_name` / `patronymic` = `too_long | invalid` (letters,
+        spaces, `-`, `'`, `.` only), `iin` = `invalid` (not twelve digits) `| checksum`,
+        `vehicle.make` / `vehicle.model` / `vehicle.color` = `too_long`, `vehicle.plate` =
+        `too_long | invalid`, `vehicle.vehicle_class` = `invalid | required | not_found |
+        not_allowed`, `vehicle.seats` = `too_small | too_large` (with `details.seats_max`),
+        `vehicle.cargo_volume_l` = `too_small | too_large`, `location` = `invalid`.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       requestBody:
@@ -1057,21 +1068,21 @@ paths:
     post:
       operationId: uploadDriverRegistrationFile
       tags: [driver-registration]
-      summary: Upload a registration photo
+      summary: Upload the profile photo
       description: |
-        Multipart upload of one image: form fields `kind` and `file` only (any other part, or a
-        second file, is `400`). JPEG, PNG or WebP by magic bytes, file ≤ `MAX_UPLOAD_BYTES`
-        (10 MiB; `413 file_too_large`), at most 40 megapixels (`422 image_too_large`); other or
-        undecodable content is `422 unsupported_file_type`. The server decodes and re-encodes
-        it to JPEG (EXIF and GPS stripped, longest side ≤ 2000 px). For every kind except
-        `vehicle_extra` a new upload replaces the current file of that kind; up to 4
-        `vehicle_extra` photos are kept (`422` with `fields.kind = too_many` and
-        `details.max_extra_photos = 4`). Requires an existing profile
-        (`403 driver_not_registered` before the first `PUT /driver/registration`) in `draft` or
-        `changes_requested` (`409 conflict` with `details.reason = registration_locked`); in
-        `changes_requested` only flagged fields (`422 fields.kind = not_editable`,
-        `details.reason = field_locked`). `fields`: `kind` = `required | invalid | too_many |
-        not_editable`, `file` = `required`.
+        Multipart upload of the driver's portrait, the only registration upload: form fields
+        `kind` (`avatar`) and `file` only (any other part, or a second file, is `400`). ID scans
+        and vehicle photos are no longer accepted (`422 fields.kind = invalid`); files uploaded
+        before 31 October 2026 stay stored and viewable. JPEG, PNG or WebP by magic bytes, file
+        ≤ 5 MiB (or `MAX_UPLOAD_BYTES` when smaller; `413 file_too_large`), at most 40 megapixels
+        (`422 image_too_large`); other or undecodable content is `422 unsupported_file_type`.
+        The server decodes and re-encodes it to JPEG (EXIF and GPS stripped, longest side
+        ≤ 2000 px); a new upload replaces the current photo (the previous one is kept as
+        history). Requires an existing profile (`403 driver_not_registered` before the first
+        `PUT /driver/registration`) in `draft` or `changes_requested` (`409 conflict` with
+        `details.reason = registration_locked`); in `changes_requested` only when `avatar` is
+        flagged (`422 fields.kind = not_editable`, `details.reason = field_locked`).
+        `fields`: `kind` = `required | invalid | not_editable`, `file` = `required`.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       requestBody:
@@ -1100,31 +1111,6 @@ paths:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
               example: {error: {code: unsupported_media_type, message: expected multipart/form-data}}
         '422': {$ref: '#/components/responses/UnprocessableUpload'}
-        '429': {$ref: '#/components/responses/TooManyRequests'}
-  /driver/registration/files/{fileId}:
-    parameters:
-      - $ref: '#/components/parameters/FileIdPath'
-    delete:
-      operationId: deleteDriverRegistrationFile
-      tags: [driver-registration]
-      summary: Remove an extra vehicle photo
-      description: |
-        Only current `vehicle_extra` photos of the caller's vehicle can be removed (`404` for an
-        unknown file); required photos are replaced by uploading a new one (`409 conflict` with
-        `details.reason = not_removable`). Only while the registration is editable (`409
-        conflict` with `details.reason = registration_locked`); in `changes_requested` only when
-        `vehicle_photos` is flagged (`422 fields.vehicle_photos = not_editable`,
-        `details.reason = field_locked`).
-      x-jantaxi-app: [driver]
-      security: [{appToken: []}]
-      responses:
-        '204':
-          description: Removed.
-        '401': {$ref: '#/components/responses/AppUnauthorized'}
-        '403': {$ref: '#/components/responses/DriverForbidden'}
-        '404': {$ref: '#/components/responses/NotFound'}
-        '409': {$ref: '#/components/responses/RegistrationConflict'}
-        '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
   /driver/registration/check:
     post:
@@ -1160,18 +1146,28 @@ paths:
     post:
       operationId: submitDriverRegistration
       tags: [driver-registration]
-      summary: Submit for moderation
+      summary: Finish registration (automatic checks and approval)
       description: |
-        Submits (`draft`) or resubmits (`changes_requested`) the application; status becomes
-        `pending` and moderators are notified. Personal-data consent is required on the first
-        submission (`fields.pd_consent = must_be_true`, `fields.pd_consent_version =
-        required | invalid`); a resubmission may omit the body when consent is already recorded,
-        and `pd_consent: false` is always refused. Requires every field and photo
-        (`422 registration_incomplete` with `details.missing_fields`) and a Telegram-verified phone
-        when the setting `driver.require_phone_verification` is on (`422 phone_not_verified`
-        when the phone is the only missing item), and a plate and phone not held by another live
-        driver (`409 plate_taken`, `409 phone_taken`). Any other status →
-        `409 invalid_transition` with `details {from, action: submit}`. The body is optional.
+        «Тіркелуді аяқтау»: finishes the registration (`draft`) or the corrected registration
+        (`changes_requested`). There is no manual review: when the automatic checks pass, the
+        application is recorded (the snapshot keeps the IIN masked) and approved in the same
+        transaction with the system as the actor, so the response already has
+        `status: approved` and the driver may go online at once. The approval runs the same
+        effects as an administrator's: the welcome bonus once per phone and plate (§22.1), the
+        `moderation_approved` message, audit rows and the `moderation.submitted` /
+        `moderation.approved` events. Any failure rolls everything back and the registration
+        stays editable.
+        Checks: personal-data consent on the first submission (`fields.pd_consent =
+        must_be_true`, `fields.pd_consent_version = required | invalid`; a resubmission may omit
+        the body when consent is already recorded, and `pd_consent: false` is always refused);
+        the profile photo, first and last name, a valid IIN, vehicle class, make and model,
+        colour and plate (`422 registration_incomplete` with `details.missing_fields`, in form
+        order) and a Telegram-verified phone while the setting
+        `driver.require_phone_verification` is on (`422 phone_not_verified` when the phone is the
+        only missing item); an IIN, phone and plate not held by another live driver
+        (`409 iin_taken`, `409 phone_taken`, `409 plate_taken`). ID scans and vehicle photos are
+        not required. Any other status → `409 invalid_transition` with
+        `details {from, action: submit}`. The body is optional.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       requestBody:
@@ -1181,7 +1177,7 @@ paths:
             schema: {$ref: '#/components/schemas/DriverSubmitRequest'}
       responses:
         '200':
-          description: 'Submitted registration (`status: pending`).'
+          description: 'Approved registration (`status: approved`).'
           content:
             application/json:
               schema: {$ref: '#/components/schemas/DriverRegistration'}
@@ -1189,13 +1185,15 @@ paths:
         '401': {$ref: '#/components/responses/AppUnauthorized'}
         '403': {$ref: '#/components/responses/DriverForbidden'}
         '409':
-          description: '`invalid_transition`, `plate_taken` or `phone_taken`.'
+          description: '`invalid_transition`, `iin_taken`, `phone_taken` or `plate_taken`.'
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
               examples:
                 status:
-                  value: {error: {code: invalid_transition, message: transition not allowed, details: {from: pending, action: submit}}}
+                  value: {error: {code: invalid_transition, message: transition not allowed, details: {from: approved, action: submit}}}
+                iin:
+                  value: {error: {code: iin_taken, message: IIN is registered to another driver}}
                 plate:
                   value: {error: {code: plate_taken, message: plate is registered to another driver}}
                 phone:
@@ -1212,8 +1210,9 @@ paths:
       tags: [driver-registration]
       summary: Download one of my files
       description: |
-        Any file the caller uploaded (avatar, ID photos, vehicle photos, top-up receipts);
-        `404` for anything else, including deleted files. Works before a driver profile exists.
+        Any file the caller uploaded (avatar, top-up receipts, and ID or vehicle photos uploaded
+        before 31 October 2026); `404` for anything else, including deleted files. Works before
+        a driver profile exists.
         Fetch with the `Authorization` header and display via an object URL.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
@@ -1230,7 +1229,10 @@ paths:
       operationId: getDriverProfile
       tags: [driver]
       summary: My driver profile
-      description: Profile, vehicle, rating, completed trips and status. `403 driver_not_registered` before registration.
+      description: |
+        Profile, vehicle, rating, completed trips and status. The IIN is only shown masked
+        (`iin_masked`, `null` while none is stored). `403 driver_not_registered` before
+        registration.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       responses:
@@ -1248,11 +1250,12 @@ paths:
       summary: Update non-moderated profile fields
       description: |
         No profile field is self-editable in this version. An empty object is a no-op and returns
-        the profile. The moderated keys `first_name`, `last_name`, `phone`, `avatar`,
-        `avatar_file_id`, `vehicle`, `city`, `city_id`, `code`, `status`, `documents` and
-        `language` return `422 validation_failed` with `fields.<name> = not_editable` and
-        `details.reason = field_locked` (language is changed with `PATCH /me/preferences`); any
-        other key is `400 bad_request`, as is a non-object body.
+        the profile. The moderated keys `first_name`, `last_name`, `patronymic`, `iin`, `phone`,
+        `avatar`, `avatar_file_id`, `vehicle`, `city`, `city_id`, `code`, `status`, `documents`
+        and `language` return `422 validation_failed` with `fields.<name> = not_editable` and
+        `details.reason = field_locked` (language is changed with `PATCH /me/preferences`, a
+        missing IIN is added with `PUT /driver/profile/iin`); any other key is
+        `400 bad_request`, as is a non-object body.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
       requestBody:
@@ -1269,6 +1272,49 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/AppUnauthorized'}
         '403': {$ref: '#/components/responses/DriverForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /driver/profile/iin:
+    put:
+      operationId: setDriverProfileIIN
+      tags: [driver]
+      summary: Add my IIN
+      description: |
+        Stores the IIN (ЖСН) of a driver who has none yet, typically one approved before the IIN
+        was asked for (the Profile page's «ЖСН енгізіңіз» row); working never depends on it.
+        The IIN is set once: the same value again is a no-op, a different one is
+        `409 conflict` with `details.reason = iin_already_set` (corrections go through
+        support). White space is dropped; the value must be twelve digits with a valid
+        Kazakhstan check digit (`fields.iin = required | invalid | checksum`) and not held by
+        another live driver (`409 iin_taken`). The response shows it masked.
+      x-jantaxi-app: [driver]
+      security: [{appToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DriverIINRequest'}
+      responses:
+        '200':
+          description: 'Profile with `iin_masked`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DriverProfile'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/DriverForbidden'}
+        '409':
+          description: '`conflict` (`details.reason = iin_already_set`) or `iin_taken`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              examples:
+                set:
+                  value: {error: {code: conflict, message: the IIN is already set, details: {reason: iin_already_set}}}
+                taken:
+                  value: {error: {code: iin_taken, message: IIN is registered to another driver}}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
@@ -2552,22 +2598,6 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
   # ----------------------------------------------------------- admin-drivers
-  /admin/verification/queue:
-    get:
-      operationId: adminGetVerificationQueue
-      tags: [admin-drivers]
-      summary: Document verification queue depth and age
-      x-jantaxi-permission: drivers.moderate
-      security: [{adminSession: []}]
-      responses:
-        '200':
-          description: Bounded OCR queue statistics; no identity data.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/VerificationQueueStats'}
-        '401': {$ref: '#/components/responses/AdminUnauthorized'}
-        '403': {$ref: '#/components/responses/AdminForbidden'}
-        '429': {$ref: '#/components/responses/TooManyRequests'}
   /admin/drivers:
     get:
       operationId: adminListDrivers
@@ -2632,9 +2662,10 @@ paths:
       tags: [admin-drivers]
       summary: Driver detail
       description: |
-        Profile, documents, vehicle and photos, applications, moderation history, wallet, stats
-        and last location. ID document references (`documents`) are `null` unless the admin has
-        `documents.view`.
+        Profile (with the patronymic and the IIN masked as `iin_masked`, e.g. `********1234`),
+        vehicle, applications, moderation history, wallet, stats and last location. ID photos
+        and vehicle photos exist only for drivers who uploaded them before 31 October 2026; ID
+        document references (`documents`) are `null` unless the admin has `documents.view`.
       x-jantaxi-permission: drivers.view
       security: [{adminSession: []}]
       responses:
@@ -2756,9 +2787,12 @@ paths:
       summary: Approve an application
       description: |
         `pending` → `approved` (`409 invalid_transition` with `details {from, action: approve}`
-        otherwise). Re-asserts the plate claim and the phone uniqueness (`409 plate_taken`,
-        `409 phone_taken`), creates the wallet if missing and notifies the driver. The body is
-        optional; `fields.comment` = `too_long | invalid` (≤500). Audit-logged.
+        otherwise). Since 31 October 2026 `POST /driver/register` approves automatically, so
+        only applications still pending from before reach this action. Re-asserts the plate
+        claim and the phone and IIN uniqueness (`409 plate_taken`, `409 phone_taken`,
+        `409 iin_taken`), creates the wallet if missing, grants the welcome bonus once per phone
+        and plate (§22.1) and notifies the driver. The body is optional; `fields.comment` =
+        `too_long | invalid` (≤500). Audit-logged.
       x-jantaxi-permission: drivers.moderate
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -2777,7 +2811,7 @@ paths:
         '403': {$ref: '#/components/responses/AdminForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409':
-          description: '`invalid_transition`, `plate_taken` or `phone_taken`.'
+          description: '`invalid_transition`, `plate_taken`, `phone_taken` or `iin_taken`.'
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -2829,8 +2863,13 @@ paths:
       summary: Request corrections
       description: |
         `pending` → `changes_requested` with per-field items (`409 invalid_transition`
-        otherwise). The driver sees the items in the Mini App (`corrections`), may change only
-        the flagged fields, and gets a notification with a `register` deep link.
+        otherwise; only applications still pending from before automatic approval). The driver
+        sees the items in the Mini App (`corrections`), may change only the flagged fields (and
+        the IIN while none is stored), and gets a notification with a `register` deep link;
+        finishing the corrected registration approves it automatically. `id_front`, `id_back`
+        and `vehicle_photos` are still accepted for old applications, but nothing can be
+        uploaded for them any more: flag `identity` (IIN and patronymic), `avatar` or a vehicle
+        field instead.
         `fields`: `items` = `required | too_few | too_many` (1..10),
         `items.N.field` = `required | invalid | duplicate`, `items.N.reason` = `required | invalid`,
         `items.N.comment` = `required` (when the reason is `other`) `| too_long | invalid` (≤200),
@@ -4598,12 +4637,6 @@ components:
       in: query
       description: Filter by driver profile id.
       schema: {type: string, format: uuid}
-    FileIdPath:
-      name: fileId
-      in: path
-      required: true
-      description: File id (`FileRef.id` / `VehiclePhoto.id`).
-      schema: {type: string, format: uuid}
     FromQuery:
       name: from
       in: query
@@ -4757,13 +4790,15 @@ components:
             expired:
               value: {error: {code: init_data_expired, message: Telegram init data expired}}
     RegistrationConflict:
-      description: 'Registration not editable in its status (`conflict`, `details.reason = registration_locked`), or the phone/plate belongs to another live driver (`phone_taken` / `plate_taken`).'
+      description: 'Registration not editable in its status (`conflict`, `details.reason = registration_locked`), or the IIN/phone/plate belongs to another live driver (`iin_taken` / `phone_taken` / `plate_taken`).'
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorResponse'}
           examples:
             locked:
-              value: {error: {code: conflict, message: registration is not editable in its current status, details: {reason: registration_locked, status: pending}}}
+              value: {error: {code: conflict, message: registration is not editable in its current status, details: {reason: registration_locked, status: approved}}}
+            iin:
+              value: {error: {code: iin_taken, message: IIN is registered to another driver}}
             plate:
               value: {error: {code: plate_taken, message: plate is registered to another driver}}
     SignInBlocked:
@@ -4952,7 +4987,7 @@ components:
                   message: fare not allowed
                   details: {min: 500, max: 1500, step: 50}
     UnprocessableRegistration:
-      description: '`registration_incomplete` (with `details.missing_fields`), `phone_not_verified` or `validation_failed`.'
+      description: '`registration_incomplete` (with `details.missing_fields`), `phone_not_verified` or `validation_failed` (`fields.pd_consent` / `fields.pd_consent_version`).'
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -4962,9 +4997,11 @@ components:
                 error:
                   code: registration_incomplete
                   message: registration incomplete
-                  details: {missing_fields: [id_back, vehicle_photos]}
+                  details: {missing_fields: [identity, vehicle_plate]}
             phone:
-              value: {error: {code: phone_not_verified, message: phone not verified}}
+              value: {error: {code: phone_not_verified, message: a Telegram-verified phone is required}}
+            consent:
+              value: {error: {code: validation_failed, message: validation failed, fields: {pd_consent: must_be_true}}}
     FileTooLarge:
       description: '`file_too_large`: the upload exceeds the limit (`MAX_UPLOAD_BYTES`; 5 MiB for PDF receipts).'
       content:
@@ -5080,20 +5117,16 @@ components:
         reason: {type: string, minLength: 1, maxLength: 500}
     AdminDriverDetail:
       type: object
-      description: Full driver record for moderators and operators. File URLs point to `/api/v1/admin/files/{id}`.
-      required: [id, code, status, first_name, last_name, phone, phone_verified, phone_verified_at, city, is_online, online_since, last_heartbeat_at, user, avatar, documents, vehicle, corrections, applications, moderation_events, wallet, welcome_bonus, bonuses, stats, last_location, active_order, rating, rating_count, completed_trips, submitted_at, approved_at, suspended_at, suspended_reason, pd_consent_at, pd_consent_version, created_at, updated_at]
+      description: Full driver record for moderators and operators. File URLs point to `/api/v1/admin/files/{id}`. The IIN is never sent in full.
+      required: [id, code, status, first_name, last_name, patronymic, iin_masked, phone, phone_verified, phone_verified_at, city, is_online, online_since, last_heartbeat_at, user, avatar, documents, vehicle, corrections, applications, moderation_events, wallet, welcome_bonus, bonuses, stats, last_location, active_order, rating, rating_count, completed_trips, submitted_at, approved_at, suspended_at, suspended_reason, pd_consent_at, pd_consent_version, created_at, updated_at]
       properties:
-        identity: {$ref: '#/components/schemas/IdentityInput'}
-        verification: {$ref: '#/components/schemas/VerificationSummary'}
-        verification_history:
-          type: array
-          description: Protected extracted values are present only for documents.view administrators; sensitive views are audited.
-          items: {$ref: '#/components/schemas/VerificationSummary'}
         id: {type: string, format: uuid}
         code: {type: string, example: EMB001}
         status: {$ref: '#/components/schemas/DriverStatus'}
         first_name: {type: string, example: Ерлан}
         last_name: {type: string, example: Бекенов}
+        patronymic: {type: string, maxLength: 60, description: 'Optional (Әкесінің аты); empty when not given.'}
+        iin_masked: {type: [string, 'null'], pattern: '^\*{8}[0-9]{4}$', description: 'The IIN with all but the last four digits hidden; `null` while the driver has not entered one.', example: '********1234'}
         phone: {type: [string, 'null'], example: '+77071234567'}
         phone_verified: {type: boolean}
         phone_verified_at: {type: [string, 'null'], format: date-time}
@@ -5117,7 +5150,7 @@ components:
             - $ref: '#/components/schemas/FileRef'
             - type: 'null'
         documents:
-          description: Identity card photos; `null` when the admin lacks `documents.view`.
+          description: Identity card photos uploaded before ID scans were retired (31 October 2026; both `null` for later registrations); `null` when the admin lacks `documents.view`.
           oneOf:
             - type: object
               required: [id_front, id_back]
@@ -5153,7 +5186,7 @@ components:
             - $ref: '#/components/schemas/Wallet'
             - type: 'null'
         welcome_bonus:
-          description: The welcome balance granted on the first approval (§22.1), or `null`.
+          description: The welcome balance granted on the first approval (automatic at submission, §22.1), or `null`.
           oneOf:
             - $ref: '#/components/schemas/WelcomeBonus'
             - type: 'null'
@@ -6211,7 +6244,7 @@ components:
           items: {$ref: '#/components/schemas/CorrectionItem'}
         snapshot:
           type: object
-          description: Registration data and file ids as submitted in this round.
+          description: Registration data and file ids as submitted in this round. The IIN appears only masked (`iin_masked`), next to the `patronymic`.
           additionalProperties: true
     DriverApproveRequest:
       type: object
@@ -6237,7 +6270,13 @@ components:
         file:
           type: string
           contentMediaType: application/octet-stream
-          description: JPEG, PNG or WebP image, at most 10 MiB. Identity fronts/backs may also be PDF, at most 5 MiB and two actual pages; no encryption or active content. Avatar and vehicle uploads remain images.
+          description: The profile photo as a JPEG, PNG or WebP image, at most 5 MiB.
+    DriverIINRequest:
+      type: object
+      additionalProperties: false
+      required: [iin]
+      properties:
+        iin: {type: string, description: 'Twelve digits with a valid Kazakhstan check digit; white space is dropped. Leading zeros are kept (an IIN is a string, never a number).'}
     DriverLastLocation:
       type: object
       required: [lat, lon, accuracy_m, heading, speed_mps, source, recorded_at, received_at, age_s]
@@ -6478,13 +6517,15 @@ components:
               items: {$ref: '#/components/schemas/DriverOrderSummary'}
     DriverProfile:
       type: object
-      required: [id, code, status, first_name, last_name, phone, phone_verified, avatar, city, vehicle, rating, rating_count, completed_trips, is_online, online_since, approved_at, suspended_reason, created_at]
+      required: [id, code, status, first_name, last_name, patronymic, iin_masked, phone, phone_verified, avatar, city, vehicle, rating, rating_count, completed_trips, is_online, online_since, approved_at, suspended_reason, created_at]
       properties:
         id: {type: string, format: uuid}
         code: {type: string, pattern: '^[A-Z]{3}[0-9]{3,}$', example: EMB001}
         status: {$ref: '#/components/schemas/DriverStatus'}
         first_name: {type: string, example: Ерлан}
         last_name: {type: string, example: Бекенов}
+        patronymic: {type: string, description: 'Optional (Әкесінің аты); empty when not given.'}
+        iin_masked: {type: [string, 'null'], pattern: '^\*{8}[0-9]{4}$', description: 'Own IIN with all but the last four digits hidden; `null` until entered (`PUT /driver/profile/iin`).', example: '********1234'}
         phone: {type: [string, 'null'], description: Own phone (E.164)., example: '+77071234567'}
         phone_verified: {type: boolean}
         avatar:
@@ -6508,9 +6549,9 @@ components:
       type: object
       description: |
         No field is self-editable in this version: send `{}`. Moderated keys (`first_name`,
-        `last_name`, `phone`, `avatar`, `avatar_file_id`, `vehicle`, `city`, `city_id`, `code`,
-        `status`, `documents`, `language`) are rejected with `422` and
-        `fields.<name> = not_editable`; other keys with `400`.
+        `last_name`, `patronymic`, `iin`, `phone`, `avatar`, `avatar_file_id`, `vehicle`,
+        `city`, `city_id`, `code`, `status`, `documents`, `language`) are rejected with `422`
+        and `fields.<name> = not_editable`; other keys with `400`.
       maxProperties: 0
     DriverRef:
       type: object
@@ -6523,11 +6564,9 @@ components:
         phone: {type: [string, 'null'], example: '+77071234567'}
     DriverRegistration:
       type: object
-      required: [id, status, code, city, first_name, last_name, phone, phone_verified, avatar, documents, vehicle, corrections, correction_comment, rejection_reason, missing_fields, editable, can_submit, submitted_at, history, pd_consent_at, pd_consent_version]
+      description: The driver's own registration; shown only to that driver, so the IIN is not masked here.
+      required: [id, status, code, city, first_name, last_name, patronymic, iin, phone, phone_verified, avatar, documents, vehicle, corrections, correction_comment, rejection_reason, missing_fields, editable, can_submit, submitted_at, history, pd_consent_at, pd_consent_version]
       properties:
-        identity_enabled: {type: boolean, description: Identity input is required for new submissions when verification is enabled; historical approved profiles remain valid.}
-        identity: {$ref: '#/components/schemas/IdentityInput'}
-        verification: {$ref: '#/components/schemas/VerificationSummary'}
         id:
           type: [string, 'null']
           format: uuid
@@ -6540,6 +6579,11 @@ components:
             - type: 'null'
         first_name: {type: string, maxLength: 60}
         last_name: {type: string, maxLength: 60}
+        patronymic: {type: string, maxLength: 60, description: 'Optional (Әкесінің аты); empty when not given.'}
+        iin:
+          type: [string, 'null']
+          pattern: '^[0-9]{12}$'
+          description: The driver's IIN (ЖСН), twelve digits with a valid check digit; `null` until entered.
         phone:
           type: [string, 'null']
           description: Telegram-verified phone (E.164), shared through the driver bot.
@@ -6550,7 +6594,7 @@ components:
             - type: 'null'
         documents:
           type: object
-          description: Identity card photos.
+          description: Identity card photos uploaded before ID scans were retired (31 October 2026); read-only, both `null` for later registrations.
           required: [id_front, id_back]
           properties:
             id_front:
@@ -6580,41 +6624,41 @@ components:
           description: Moderation history, newest first (moderator identity is not shown).
           items: {$ref: '#/components/schemas/RegistrationHistoryItem'}
         pd_consent_at: {type: [string, 'null'], format: date-time, description: When personal-data consent was given on submit.}
-        pd_consent_version: {type: [string, 'null'], description: Consent text version accepted., example: '2026-10'}
+        pd_consent_version: {type: [string, 'null'], description: Consent text version accepted., example: driver-pd-2026-10-v3}
       example:
         id: 3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7
-        status: changes_requested
+        status: draft
         code: EMB001
         city: {id: 5b1c7a2e-0d3f-4e8a-9b6c-1f2e3d4c5b6a, code: EMB, name: {kk: Ембі, ru: Эмба, en: Embi}}
         first_name: Ерлан
         last_name: Бекенов
+        patronymic: ''
+        iin: null
         phone: '+77071234567'
         phone_verified: true
-        avatar: {id: 4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d, kind: avatar, url: /api/v1/driver/files/4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d, width: 1200, height: 1600, created_at: '2026-10-15T08:00:00Z'}
-        documents:
-          id_front: {id: 5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e, kind: id_front, url: /api/v1/driver/files/5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e, width: 2000, height: 1260, created_at: '2026-10-15T08:01:00Z'}
-          id_back: {id: 6c7d8e9f-0a1b-4c2d-9e3f-4a5b6c7d8e9f, kind: id_back, url: /api/v1/driver/files/6c7d8e9f-0a1b-4c2d-9e3f-4a5b6c7d8e9f, width: 2000, height: 1260, created_at: '2026-10-15T08:01:30Z'}
+        avatar: {mime: image/jpeg, id: 4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d, kind: avatar, url: /api/v1/driver/files/4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d, width: 1200, height: 1600, created_at: '2026-10-31T08:00:00Z'}
+        documents: {id_front: null, id_back: null}
         vehicle:
           make: Toyota
           model: Camry
           color: Ақ
-          plate: 123 ABC 04
-          plate_normalized: 123ABC04
-          photos:
-            - {id: 7d8e9f0a-1b2c-4d3e-8f4a-5b6c7d8e9f0a, kind: main, url: /api/v1/driver/files/7d8e9f0a-1b2c-4d3e-8f4a-5b6c7d8e9f0a, width: 2000, height: 1500, created_at: '2026-10-15T08:02:00Z'}
-        corrections:
-          - {field: vehicle_photos, reason: vehicle_photo_unclear, comment: Мемлекеттік нөмір анық көрінбейді}
-        correction_comment: Көліктің артқы жағын қайта суретке түсіріңіз
+          plate: ''
+          plate_normalized: null
+          vehicle_class: sedan
+          vehicle_class_name: {kk: Седан, ru: Седан, en: Sedan}
+          seats: 4
+          cargo_volume_l: 400
+          photos: []
+        corrections: []
+        correction_comment: null
         rejection_reason: null
-        missing_fields: [vehicle_photos]
+        missing_fields: [identity, vehicle_plate]
         editable: true
         can_submit: false
-        submitted_at: '2026-10-15T08:05:00Z'
-        history:
-          - {action: changes_requested, from_status: pending, to_status: changes_requested, comment: Көліктің артқы жағын қайта суретке түсіріңіз, corrections: [{field: vehicle_photos, reason: vehicle_photo_unclear, comment: Мемлекеттік нөмір анық көрінбейді}], created_at: '2026-10-15T10:20:00Z'}
-          - {action: submitted, from_status: draft, to_status: pending, comment: null, corrections: [], created_at: '2026-10-15T08:05:00Z'}
-        pd_consent_at: '2026-10-15T08:05:00Z'
-        pd_consent_version: '2026-10'
+        submitted_at: null
+        history: []
+        pd_consent_at: null
+        pd_consent_version: null
     DriverRegistrationCheckRequest:
       type: object
       additionalProperties: false
@@ -6641,13 +6685,17 @@ components:
     DriverRegistrationUpdateRequest:
       type: object
       additionalProperties: false
-      description: Full replacement of the text fields; every key must be present, empty strings are allowed while drafting.
-      required: [first_name, last_name, vehicle]
+      description: |
+        Partial update: every key is optional and a key that is not sent (or `null`) keeps the
+        stored value; an empty string clears the field while drafting. The Mini App sends `iin`
+        only once twelve digits are typed, so a half-typed number never fails the autosave.
       properties:
-        identity: {$ref: '#/components/schemas/IdentityInput'}
-        first_name: {type: string, maxLength: 60, description: 'Letters, spaces, `-`, `''`, `.`.', example: Ерлан}
-        last_name: {type: string, maxLength: 60, example: Бекенов}
+        first_name: {type: [string, 'null'], maxLength: 60, description: 'Letters, spaces, `-`, `''`, `.`.', example: Ерлан}
+        last_name: {type: [string, 'null'], maxLength: 60, example: Бекенов}
+        patronymic: {type: [string, 'null'], maxLength: 60, description: 'Optional (Әкесінің аты); same characters as the names.'}
+        iin: {type: [string, 'null'], description: 'ЖСН: twelve digits with a valid Kazakhstan check digit (`fields.iin = invalid | checksum`); white space is dropped, `""` clears it while drafting.'}
         vehicle: {$ref: '#/components/schemas/VehicleInput'}
+        identity: {$ref: '#/components/schemas/LegacyIdentityInput'}
         location:
           type: [object, 'null']
           additionalProperties: false
@@ -6675,20 +6723,23 @@ components:
     DriverStatus:
       type: string
       description: |
-        `draft` (filling in), `pending` (submitted, awaiting moderation), `approved` (can work),
-        `changes_requested` (fix and resubmit), `rejected` (final), `suspended` (blocked by an admin).
+        `draft` (filling in), `pending` (only inside the submission transaction, or an
+        application submitted before 31 October 2026 that still awaits an administrator),
+        `approved` (can work; registrations are approved automatically on submission),
+        `changes_requested` (fix and finish again), `rejected` (final), `suspended` (blocked by an
+        admin).
       enum: [draft, pending, approved, changes_requested, rejected, suspended]
     DriverSubmitRequest:
       type: object
       additionalProperties: false
-      description: Personal-data consent given on the review step. Required on the first submission; optional on resubmission when consent is already recorded.
+      description: Personal-data consent given with the checkbox above «Тіркелуді аяқтау». Required on the first submission; optional on resubmission when consent is already recorded.
       properties:
         pd_consent: {type: [boolean, 'null'], description: Must be `true` when sent.}
         pd_consent_version:
           type: [string, 'null']
           pattern: '^[A-Za-z0-9._-]{1,32}$'
           description: Version of the consent text the driver accepted; required with `pd_consent`.
-          example: '2026-10'
+          example: driver-pd-2026-10-v3
     DriverSuspendRequest:
       type: object
       additionalProperties: false
@@ -6758,6 +6809,7 @@ components:
         | `driver_offline` | 409 | The driver must be online to accept. |
         | `phone_taken` | 409 | Phone held by another live driver. |
         | `plate_taken` | 409 | Plate held by another live driver. |
+        | `iin_taken` | 409 | IIN (ЖСН) held by another live driver. |
         | `payment_reference_used` | 409 | Kaspi transaction id already recorded for another top-up. |
         | `default_region_locked` | 409 | The nationwide default region `KAZ` cannot be deactivated and its zone cannot be changed. |
         | `payload_too_large` | 413 | Body over 64 KiB (JSON) / 10 MiB (upload). |
@@ -6792,6 +6844,7 @@ components:
         - fare_not_allowed
         - phone_taken
         - plate_taken
+        - iin_taken
         - phone_not_verified
         - registration_incomplete
         - location_required
@@ -6821,6 +6874,7 @@ components:
         fare_not_allowed: Fare not among the quote's options.
         phone_taken: Phone held by another live driver.
         plate_taken: Plate held by another live driver.
+        iin_taken: IIN held by another live driver.
         phone_not_verified: Telegram-verified phone required.
         registration_incomplete: Required registration data missing.
         location_required: A fresh GPS location is required.
@@ -6896,9 +6950,11 @@ components:
         - mismatch
         - prohibited_content
         - outside_service_area
+        - checksum
+        - not_found
     FileKind:
       type: string
-      description: Upload kinds plus `topup_receipt`.
+      description: '`avatar` (the only registration upload), `topup_receipt`, and the ID and vehicle photo kinds of files uploaded before 31 October 2026.'
       enum: [avatar, id_front, id_back, vehicle_main, vehicle_back, vehicle_side, vehicle_plate, vehicle_extra, topup_receipt]
     FileRef:
       type: object
@@ -8122,38 +8178,26 @@ components:
           items: {$ref: '#/components/schemas/ReconciliationMismatch'}
     RegistrationField:
       type: string
-      description: Registration field addressed by corrections and `missing_fields`.
-      enum: [avatar, first_name, last_name, phone, id_front, id_back, identity, vehicle_class, vehicle_make_model, vehicle_color, vehicle_plate, vehicle_photos]
-    IdentityInput:
+      description: |
+        Registration field addressed by corrections and `missing_fields`, in form order: page 1
+        `avatar`, `first_name`, `last_name`, `identity` (the IIN with the optional patronymic),
+        `phone`; page 2 `vehicle_class` (class, seats and cargo volume), `vehicle_make_model`,
+        `vehicle_color`, `vehicle_plate`. `id_front`, `id_back` and `vehicle_photos` belong to the
+        retired ID-scan and vehicle-photo steps: nothing requires them any more, only corrections
+        made before 31 October 2026 refer to them.
+      enum: [avatar, first_name, last_name, identity, phone, id_front, id_back, vehicle_class, vehicle_make_model, vehicle_color, vehicle_plate, vehicle_photos]
+    LegacyIdentityInput:
       type: object
-      description: Protected identity fields. Names are not unique; verified document ownership is unique by issuer, type and normalized number. Leading zeros are preserved. Uncertain recognition never reserves identity ownership.
+      description: |
+        The object older app versions send. Its non-empty `iin` and `patronymic` stand in for the
+        top-level keys when those are not sent; `document_type` and `document_number` are
+        accepted and ignored (document numbers are no longer collected).
       additionalProperties: false
       properties:
-        document_type: {type: string, enum: [id_card, driving_licence]}
-        iin: {type: string, maxLength: 12, description: Twelve digits with checksum validation on submission; empty while drafting.}
-        document_number: {type: string, maxLength: 20}
-        patronymic: {type: string, maxLength: 60, description: Optional when absent from the document.}
-    VerificationSummary:
-      type: object
-      properties:
-        id: {type: string, format: uuid}
-        status: {type: string, enum: [pending, processing, matched, admin_review, approved, superseded]}
-        confidence: {type: [number, 'null'], minimum: 0, maximum: 100}
-        reasons: {type: array, items: {type: string}}
-        attempts: {type: integer, minimum: 0}
-        created_at: {type: string, format: date-time}
-        finished_at: {type: [string, 'null'], format: date-time}
-        result:
-          type: object
-          description: Extracted identity, per-field confidence and comparisons; only in authorized sensitive responses, never ordinary logs or bot messages.
-          additionalProperties: true
-    VerificationQueueStats:
-      type: object
-      properties:
-        pending: {type: integer, minimum: 0}
-        processing: {type: integer, minimum: 0, maximum: 1}
-        review: {type: integer, minimum: 0}
-        oldest_seconds: {type: number, minimum: 0}
+        document_type: {type: [string, 'null']}
+        iin: {type: [string, 'null']}
+        document_number: {type: [string, 'null']}
+        patronymic: {type: [string, 'null'], maxLength: 60}
     RegistrationHistoryItem:
       type: object
       required: [action, from_status, to_status, comment, corrections, created_at]
@@ -8195,7 +8239,7 @@ components:
         cargo_volume_l: {type: [integer, 'null'], minimum: 0, maximum: 100000, description: Cargo space in litres., example: 400}
         photos:
           type: array
-          description: Current vehicle photos in display order (`main`, `back`, `side`, `plate`, then `extra`).
+          description: Vehicle photos uploaded before vehicle photos were retired (31 October 2026), in display order (`main`, `back`, `side`, `plate`, then `extra`); empty for later registrations.
           items: {$ref: '#/components/schemas/VehiclePhoto'}
     RouteLeg:
       type: object
@@ -8644,7 +8688,8 @@ components:
         note: {type: [string, 'null'], maxLength: 300, example: '10:05-те Kaspi Gold картасынан төледім'}
     UploadKind:
       type: string
-      enum: [avatar, id_front, id_back, vehicle_main, vehicle_back, vehicle_side, vehicle_plate, vehicle_extra]
+      description: The profile photo is the only registration upload; ID scans and vehicle photos are no longer accepted.
+      enum: [avatar]
     ValidationFields:
       type: object
       description: |
@@ -8671,27 +8716,29 @@ components:
     VehicleInput:
       type: object
       additionalProperties: false
-      required: [make, model, color, plate]
+      description: Every key is optional; a key that is not sent (or `null`) keeps the stored value.
       properties:
-        make: {type: string, maxLength: 40, example: Toyota}
-        model: {type: string, maxLength: 40, example: Camry}
-        color: {type: string, maxLength: 30, example: Ақ}
+        make: {type: [string, 'null'], maxLength: 40, example: Toyota}
+        model: {type: [string, 'null'], maxLength: 40, example: Camry}
+        color: {type: [string, 'null'], maxLength: 30, example: Ақ}
         plate:
-          type: string
+          type: [string, 'null']
           maxLength: 20
           description: |
-            Any common spelling; normalised (uppercase, spaces and dashes removed, Cyrillic
-            look-alikes → Latin) and validated against the current format
+            Any common spelling; normalised (uppercase, separators removed, Cyrillic look-alikes
+            → Latin, a leading `KZ` country mark dropped) and validated against the current format
             `^\d{3}[A-Z]{2,3}(0[1-9]|1\d|20)$` or the legacy format `^[A-Z]\d{3}[A-Z]{2,3}$`.
+            `""` clears it while drafting.
           example: 123 АВС 04
         vehicle_class:
           type: string
           pattern: '^[a-z_]{2,20}$'
           description: |
             Active vehicle class code from `GET /public/config` `vehicle_classes` (`422 vehicle.vehicle_class`
-            `not_found` / `not_allowed` for an unknown or deactivated class). Omitted: the stored class is kept.
-            Required before submission (`missing_fields` lists `vehicle_class`). In `changes_requested` the class,
-            seats and cargo volume change only when `vehicle_class` was flagged.
+            `not_found` / `not_allowed` for an unknown or deactivated class). Omitted: the stored class is kept
+            (a new registration starts with the default class `sedan`). Required before submission
+            (`missing_fields` lists `vehicle_class`). In `changes_requested` the class, seats and cargo volume
+            change only when `vehicle_class` was flagged.
           example: minivan
         seats:
           type: integer
@@ -8707,7 +8754,7 @@ components:
           example: 800
     VehiclePhoto:
       type: object
-      description: '`id` is the file id (use it with `DELETE /driver/registration/files/{fileId}` for extra photos).'
+      description: A vehicle photo uploaded before vehicle photos were retired (31 October 2026); `id` is the file id. Read-only.
       required: [id, kind, url, width, height, created_at]
       properties:
         id: {type: string, format: uuid}

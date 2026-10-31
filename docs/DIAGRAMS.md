@@ -14,7 +14,7 @@ Contents:
 3. [Passenger booking flow](#3-passenger-booking-flow)
 4. [Dispatch and atomic acceptance](#4-dispatch-and-atomic-acceptance)
 5. [Order state machine](#5-order-state-machine)
-6. [Driver registration and moderation](#6-driver-registration-and-moderation)
+6. [Driver registration](#6-driver-registration)
 7. [Driver navigation](#7-driver-navigation)
 8. [Wallet and commission flow](#8-wallet-and-commission-flow)
 9. [Kaspi Pay top-up](#9-kaspi-pay-top-up)
@@ -269,10 +269,12 @@ Money attached to the transitions:
 | `in_progress → completed` | charge the commission once |
 | `disputed → cancelled` after completion, with refund | refund the commission |
 
-## 6. Driver registration and moderation
+## 6. Driver registration
 
-ARCHITECTURE §11, §19. The phone number is accepted only when Telegram itself
-delivers the driver's own contact to the driver bot.
+ARCHITECTURE §11, §19. Two pages in the Mini App, no ID scans or vehicle
+photos and no manual review: finishing runs the automatic checks and approves
+the driver in the same transaction. The phone number is accepted only when
+Telegram itself delivers the driver's own contact to the driver bot.
 
 ```mermaid
 sequenceDiagram
@@ -282,49 +284,49 @@ sequenceDiagram
   participant MA as Driver Mini App
   participant API as API
   participant FS as Private files
-  actor M as Moderator
 
   D->>BOT: /start
   BOT->>API: POST /internal/v1/bots/driver/users/sync
   BOT-->>D: welcome with an Open button
   D->>MA: open
   MA->>API: POST /auth/telegram/driver with initData
-  MA->>API: PUT /driver/registration with name and vehicle
-  API-->>MA: profile created as draft, driver code assigned
-  loop avatar, ID front and back, vehicle photos
-    MA->>API: POST /driver/registration/files
-    API->>FS: check type, re-encode JPEG, strip EXIF and GPS
-  end
+  Note over MA: page 1: photo, first name, surname, patronymic, IIN, phone
+  MA->>API: PUT /driver/registration with the names and the device position
+  API-->>MA: profile created as draft with the Sedan body type, driver code assigned
+  MA->>API: POST /driver/registration/files, kind avatar
+  API->>FS: check type, re-encode JPEG, strip EXIF and GPS
   MA->>D: Telegram asks to share the phone number
   D->>BOT: contact message from Telegram
   BOT->>BOT: contact.user_id equals the sender
   BOT->>API: POST /internal/v1/driver/{tg_id}/contact
   API-->>MA: realtime driver.phone_verified
-  D->>MA: accept the personal-data consent and submit
+  Note over MA: page 2: body type, make and model, colour, plate, consent
+  MA->>API: PUT /driver/registration with the IIN and the vehicle (autosave)
+  D->>MA: «Тіркелуді аяқтау» with the consent ticked
   MA->>API: POST /driver/register
-  API-->>M: realtime moderation.submitted in the admin panel
-  M->>API: GET /admin/files/{id}, every ID view is audit-logged
-  alt approve
-    M->>API: POST /admin/drivers/{id}/approve
-  else ask for corrections
-    M->>API: POST /admin/drivers/{id}/request-corrections with items
-  else reject
-    M->>API: POST /admin/drivers/{id}/reject with a reason
+  API->>API: all filled in, IIN check digit, verified phone, IIN, phone and plate free
+  alt checks pass
+    API-->>MA: approved, welcome bonus once per phone and plate
+    API->>BOT: outbox message via the Bot API
+    MA->>API: POST /driver/location, PATCH /driver/availability online
+    MA-->>D: Orders tab
+  else a check fails
+    API-->>MA: 409 iin_taken, phone_taken, plate_taken or 422 with the missing fields
+    MA-->>D: the page with the problem, nothing is approved
   end
-  API->>BOT: outbox message via the Bot API
-  BOT-->>D: result with an Open button
 ```
 
-Driver profile statuses:
+Driver profile statuses (applications submitted before automatic approval
+may still wait in `pending` for an administrator):
 
 ```mermaid
 stateDiagram-v2
   [*] --> draft: first PUT /driver/registration
-  draft --> pending: submit
-  pending --> approved: moderator approves
-  pending --> changes_requested: moderator asks for corrections
-  pending --> rejected: moderator rejects
-  changes_requested --> pending: driver resubmits
+  draft --> approved: finish, automatic checks pass
+  pending --> approved: admin approves an older application
+  pending --> changes_requested: admin asks for corrections
+  pending --> rejected: admin rejects
+  changes_requested --> approved: driver finishes again, checks pass
   approved --> suspended: admin suspends, driver goes offline
   suspended --> approved: admin restores
 ```

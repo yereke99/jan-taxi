@@ -33,9 +33,9 @@ type e2eResponse struct {
 }
 
 // TestDriverOnboardingThroughApp drives the production wiring: Telegram
-// sign-in, registration with uploads, submission, a moderator session with
-// CSRF approving the driver, an audited document view and the first attempt
-// to go online.
+// sign-in, the two-page registration with the profile photo, the submission
+// that approves at once with the welcome bonus, an administrator session with
+// CSRF seeing the masked IIN, and going online after a location report.
 func TestDriverOnboardingThroughApp(t *testing.T) {
 	pool := testutil.NewDB(t)
 	ctx := context.Background()
@@ -95,7 +95,7 @@ func TestDriverOnboardingThroughApp(t *testing.T) {
 		return send(req, hdr)
 	}
 
-	// Driver signs in with Telegram initData and fills in the application.
+	// Driver signs in with Telegram initData and fills in both pages.
 	tgID := testutil.NextTelegramID()
 	signIn := call(http.MethodPost, "/api/v1/auth/telegram/driver",
 		map[string]any{"init_data": testutil.SignInitData(config.TestDriverBotToken, tgID, "Ерлан", time.Now(), "register")}, nil)
@@ -109,17 +109,26 @@ func TestDriverOnboardingThroughApp(t *testing.T) {
 		t.Fatalf("empty registration: %d %v", res.code, res.body)
 	}
 	res := call(http.MethodPut, pathRegistration, map[string]any{
-		"first_name": "Ерлан", "last_name": "Бекенов",
-		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": "777 аве 04", "vehicle_class": "sedan"},
+		"first_name": "Ерлан", "last_name": "Бекенов", "iin": "950101300027",
 	}, bearer)
-	if res.code != http.StatusOK || res.body["code"] != "EMB001" {
-		t.Fatalf("save registration: %d %v", res.code, res.body)
+	if res.code != http.StatusUnprocessableEntity || res.body["error"].(map[string]any)["fields"].(map[string]any)["iin"] != "checksum" {
+		t.Fatalf("IIN with a wrong check digit: %d %v", res.code, res.body)
+	}
+	res = call(http.MethodPut, pathRegistration, map[string]any{
+		"first_name": "Ерлан", "last_name": "Бекенов", "iin": "951212300459",
+	}, bearer)
+	if res.code != http.StatusOK || res.body["code"] != "EMB001" || res.body["iin"] != "951212300459" {
+		t.Fatalf("save page 1: %d %v", res.code, res.body)
 	}
 	driverID := uuid.MustParse(res.body["id"].(string))
-	for i, kind := range []string{"avatar", "id_front", "id_back", "vehicle_main", "vehicle_side"} {
-		if up := upload(kind, uint8(i+1), bearer); up.code != http.StatusCreated {
-			t.Fatalf("upload %s: %d %v", kind, up.code, up.body)
-		}
+	if up := upload("avatar", 1, bearer); up.code != http.StatusCreated {
+		t.Fatalf("upload avatar: %d %v", up.code, up.body)
+	}
+	res = call(http.MethodPut, pathRegistration, map[string]any{
+		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": "777 аве 04", "vehicle_class": "sedan"},
+	}, bearer)
+	if res.code != http.StatusOK || res.body["vehicle"].(map[string]any)["vehicle_class"] != "sedan" || res.body["first_name"] != "Ерлан" {
+		t.Fatalf("save page 2: %d %v", res.code, res.body)
 	}
 	// The driver bot verifies the phone through a Telegram contact.
 	if err := db.WithTx(ctx, pool, func(tx pgx.Tx) error {
@@ -127,12 +136,12 @@ func TestDriverOnboardingThroughApp(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	res = call(http.MethodPost, pathRegister, map[string]any{"pd_consent": true, "pd_consent_version": "2026-10"}, bearer)
-	if res.code != http.StatusOK || res.body["status"] != "pending" {
+	res = call(http.MethodPost, pathRegister, map[string]any{"pd_consent": true, "pd_consent_version": "driver-pd-2026-10-v3"}, bearer)
+	if res.code != http.StatusOK || res.body["status"] != "approved" {
 		t.Fatalf("submit: %d %v", res.code, res.body)
 	}
 
-	// A moderator signs in to the admin panel.
+	// An administrator signs in to the admin panel.
 	const pw = "correct horse battery staple"
 	if _, err := a.Auth.CreateAdmin(ctx, "moderator@jantaxi.test", "Moderator", auth.RoleDriverModerator, pw); err != nil {
 		t.Fatalf("create admin: %v", err)
@@ -145,53 +154,60 @@ func TestDriverOnboardingThroughApp(t *testing.T) {
 		"Cookie":        auth.AdminCookieName + "=" + login.cookie,
 		auth.CSRFHeader: login.body["csrf_token"].(string),
 	}
-	if res := call(http.MethodGet, "/api/v1/admin/drivers?status=pending", nil, nil); res.code != http.StatusUnauthorized {
+	if res := call(http.MethodGet, "/api/v1/admin/drivers?status=approved", nil, nil); res.code != http.StatusUnauthorized {
 		t.Fatalf("list without session: %d", res.code)
 	}
-	res = call(http.MethodGet, "/api/v1/admin/drivers?status=pending&q=777ABE04", nil, session)
+	res = call(http.MethodGet, "/api/v1/admin/drivers?status=approved&q=777ABE04", nil, session)
 	if res.code != http.StatusOK || res.body["total"] != float64(1) {
-		t.Fatalf("pending queue: %d %v", res.code, res.body)
+		t.Fatalf("approved drivers: %d %v", res.code, res.body)
+	}
+	if res := call(http.MethodGet, "/api/v1/admin/drivers?status=pending", nil, session); res.code != http.StatusOK || res.body["total"] != float64(0) {
+		t.Fatalf("nothing waits for a moderator: %d %v", res.code, res.body)
 	}
 	detail := call(http.MethodGet, adminPath(driverID, ""), nil, session)
-	if detail.code != http.StatusOK || detail.body["documents"] == nil {
+	if detail.code != http.StatusOK || detail.body["iin_masked"] != "********0459" || detail.body["approved_at"] == nil {
 		t.Fatalf("detail: %d %v", detail.code, detail.body)
 	}
-	frontURL := detail.body["documents"].(map[string]any)["id_front"].(map[string]any)["url"].(string)
-	if doc := call(http.MethodGet, frontURL, nil, session); doc.code != http.StatusOK || doc.header.Get("Cache-Control") != "private, no-store" {
-		t.Fatalf("document: %d", doc.code)
+	docs := detail.body["documents"].(map[string]any)
+	if docs["id_front"] != nil || docs["id_back"] != nil {
+		t.Fatalf("documents of a new driver: %v", docs)
 	}
-	if n := countRows(t, pool, `SELECT count(*) FROM admin_audit_logs WHERE action = 'document.view' AND entity_id = $1`, driverID.String()); n != 1 {
-		t.Fatalf("document views audited: %d", n)
+	// The first approval credits the welcome bonus (§22.1).
+	if w := detail.body["wallet"].(map[string]any); w["balance"] != float64(500) || w["available"] != float64(500) {
+		t.Fatalf("wallet after approval: %v", w)
 	}
-
+	if b, _ := detail.body["welcome_bonus"].(map[string]any); b == nil || b["amount"] != float64(500) || b["granted_at"] == nil {
+		t.Fatalf("welcome bonus: %v", detail.body["welcome_bonus"])
+	}
 	// State changes need the CSRF token.
 	if res := call(http.MethodPost, adminPath(driverID, "approve"), nil, map[string]string{"Cookie": session["Cookie"]}); res.code != http.StatusForbidden {
 		t.Fatalf("approve without CSRF: %d", res.code)
 	}
-	res = call(http.MethodPost, adminPath(driverID, "approve"), map[string]any{"comment": "Құжаттар тексерілді"}, session)
-	if res.code != http.StatusOK || res.body["status"] != "approved" || res.body["wallet"] == nil {
-		t.Fatalf("approve: %d %v", res.code, res.body)
-	}
-	// The first approval credits the welcome bonus (§22.1).
-	if w := res.body["wallet"].(map[string]any); w["balance"] != float64(500) || w["available"] != float64(500) {
-		t.Fatalf("wallet after approval: %v", w)
-	}
-	if b, _ := res.body["welcome_bonus"].(map[string]any); b == nil || b["amount"] != float64(500) || b["granted_at"] == nil {
-		t.Fatalf("welcome bonus: %v", res.body["welcome_bonus"])
+	if res := call(http.MethodPost, adminPath(driverID, "approve"), nil, session); res.code != http.StatusConflict {
+		t.Fatalf("approve an approved driver: %d %v", res.code, res.body)
 	}
 	if res := call(http.MethodGet, "/api/v1/admin/drivers/locations", nil, session); res.code != http.StatusOK || res.body["items"] == nil {
 		t.Fatalf("live map: %d %v", res.code, res.body)
 	}
 
-	// With the bonus the driver may work at once; going online only needs a
-	// location.
+	// With the bonus the driver works at once; going online only needs a location.
 	res = call(http.MethodPatch, "/api/v1/driver/availability", map[string]any{"online": true}, bearer)
 	if res.code != http.StatusUnprocessableEntity || res.body["error"].(map[string]any)["code"] != "location_required" {
 		t.Fatalf("go online without location: %d %v", res.code, res.body)
 	}
+	if res := call(http.MethodPost, "/api/v1/driver/location", map[string]any{"lat": 48.8264, "lon": 58.1442}, bearer); res.code != http.StatusNoContent {
+		t.Fatalf("location: %d %v", res.code, res.body)
+	}
+	if res := call(http.MethodPatch, "/api/v1/driver/availability", map[string]any{"online": true}, bearer); res.code != http.StatusOK || res.body["is_online"] != true {
+		t.Fatalf("go online: %d %v", res.code, res.body)
+	}
 	res = call(http.MethodGet, "/api/v1/driver/profile", nil, bearer)
-	if res.code != http.StatusOK || res.body["status"] != "approved" || res.body["vehicle"].(map[string]any)["plate"] != "777 ABE 04" {
+	if res.code != http.StatusOK || res.body["status"] != "approved" || res.body["vehicle"].(map[string]any)["plate"] != "777 ABE 04" ||
+		res.body["iin_masked"] != "********0459" {
 		t.Fatalf("profile: %d %v", res.code, res.body)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM files WHERE owner_user_id = $1 AND purpose <> 'driver_avatar'`, userID); n != 0 {
+		t.Fatalf("%d documents or vehicle photos stored", n)
 	}
 }
 

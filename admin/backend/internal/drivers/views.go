@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
@@ -55,7 +54,8 @@ func NewCityRef(c *cities.City) *CityRef {
 	return &CityRef{ID: c.ID, Code: c.Code, Name: c.Name}
 }
 
-// DocumentsView holds the identity card photos.
+// DocumentsView holds the identity card photos uploaded before ID scans were
+// retired (both nil for drivers who registered later).
 type DocumentsView struct {
 	IDFront *FileRef `json:"id_front"`
 	IDBack  *FileRef `json:"id_back"`
@@ -156,16 +156,16 @@ type HistoryItem struct {
 }
 
 // RegistrationView is the driver's registration (OpenAPI DriverRegistration).
+// It is shown only to the driver it belongs to, so the IIN is not masked.
 type RegistrationView struct {
-	IdentityEnabled   bool                    `json:"identity_enabled"`
-	Identity          *verification.Input     `json:"identity,omitempty"`
-	Verification      *verification.Summary   `json:"verification,omitempty"`
 	ID                *uuid.UUID              `json:"id"`
 	Status            string                  `json:"status"`
 	Code              *string                 `json:"code"`
 	City              *CityRef                `json:"city"`
 	FirstName         string                  `json:"first_name"`
 	LastName          string                  `json:"last_name"`
+	Patronymic        string                  `json:"patronymic"`
+	IIN               *string                 `json:"iin"`
 	Phone             *string                 `json:"phone"`
 	PhoneVerified     bool                    `json:"phone_verified"`
 	Avatar            *FileRef                `json:"avatar"`
@@ -207,7 +207,7 @@ func NewRegistrationView(r Registration, requirePhone bool) RegistrationView {
 	if p := r.Profile; p != nil {
 		id, code := p.ID, p.Code
 		v.ID, v.Code = &id, &code
-		v.FirstName, v.LastName = p.FirstName, p.LastName
+		v.FirstName, v.LastName, v.Patronymic, v.IIN = p.FirstName, p.LastName, p.Patronymic, p.IIN
 		v.SubmittedAt = utcPtr(p.SubmittedAt)
 		v.PDConsentAt, v.PDConsentVersion = utcPtr(p.PDConsentAt), p.PDConsentVersion
 	}

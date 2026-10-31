@@ -5,7 +5,7 @@
 
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
-import { getMe, updateLanguage, type Me } from '../api/me'
+import { getMe, updateLanguage, type Me, type MeDriver } from '../api/me'
 import { i18n } from '../i18n'
 import { applyLocale, isLocale, type Locale } from '../i18n/core'
 import { authenticate } from '../services/auth'
@@ -119,6 +119,15 @@ export const useSessionStore = defineStore('session', () => {
     if (me.value?.driver) me.value.driver.is_online = online
   }
 
+  /**
+   * Takes a driver summary the API has just returned (the registration was
+   * finished and approved in that request) before GET /me confirms it, so the
+   * router lets the driver into the approved screens at once.
+   */
+  function adoptDriver(driver: MeDriver): void {
+    if (me.value) me.value = { ...me.value, driver }
+  }
+
   async function refreshConfig(): Promise<void> {
     await loadConfig()
   }
@@ -154,6 +163,7 @@ export const useSessionStore = defineStore('session', () => {
     handleAccessError,
     refreshConfig,
     setOnline,
+    adoptDriver,
     setLanguage,
   }
 })

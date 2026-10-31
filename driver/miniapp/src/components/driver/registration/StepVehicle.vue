@@ -1,3 +1,8 @@
+<!--
+  Registration page 2, the vehicle (§11, §21): the body type row (Sedan
+  preselected), make and model, colour and the state plate with a live
+  availability check. The consent box and «Тіркелуді аяқтау» follow it.
+-->
 <script setup lang="ts">
 import { Check, CircleCheck, CircleX, Lock } from '@lucide/vue'
 import { computed, ref } from 'vue'
@@ -9,6 +14,7 @@ import { useRegistrationStore } from '../../../stores/registration'
 import { haptics } from '../../../telegram'
 import { JListGroup, JListRow, JSpinner, JTextField } from '../../ui'
 import CorrectionNotes from './CorrectionNotes.vue'
+import VehicleClassRow from './VehicleClassRow.vue'
 
 const props = defineProps<{ showErrors: boolean }>()
 
@@ -60,6 +66,7 @@ const plateState = computed<PlateState>(() => {
     const typing = normalizePlateInput(v).length < 7 && !props.showErrors
     return typing ? { tone: 'neutral', text: t('registration.vehicle.plate_hint') } : { tone: 'bad', text: t('registration.vehicle.plate_invalid') }
   }
+  if (reg.taken.plate !== '' && reg.taken.plate === normalizePlateInput(v)) return { tone: 'bad', text: t('registration.vehicle.plate_taken') }
   const res = reg.plate.result
   if (reg.plate.checking || !res || reg.plate.forInput !== normalizePlateInput(v)) {
     return reg.plate.checking ? { tone: 'busy', text: t('registration.vehicle.plate_checking') } : { tone: 'neutral', text: formatPlate(v) ?? '' }
@@ -72,7 +79,9 @@ const plateState = computed<PlateState>(() => {
 <template>
   <div class="step">
     <p class="step__text">{{ t('registration.vehicle.text') }}</p>
-    <CorrectionNotes :items="r.corrections" :fields="['vehicle_make_model', 'vehicle_color', 'vehicle_plate']" />
+    <CorrectionNotes :items="r.corrections" :fields="['vehicle_class', 'vehicle_make_model', 'vehicle_color', 'vehicle_plate', 'vehicle_photos']" />
+
+    <VehicleClassRow :show-errors="showErrors" />
 
     <JListGroup>
       <div class="step__fields">

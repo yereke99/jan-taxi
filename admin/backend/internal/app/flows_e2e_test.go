@@ -3,7 +3,6 @@ package app_test
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -32,7 +31,6 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
 // TestBusinessFlowsNotifyAndPublish drives every money and state transition
@@ -50,48 +48,28 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	e := newFlowEnv(t)
 	ctx := context.Background()
 
-	// Driver A registers through the Mini App, is sent back for corrections,
-	// resubmits and is approved.
+	// Driver A registers through the Mini App; the automatic checks approve
+	// the submission at once.
 	a := e.registerDriver("Ерлан", "+77471234501", "123 abc 02")
-	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+a.driverID+"/request-corrections", map[string]any{
+
+	// D's application was still pending from before automatic approval: a
+	// moderator asks for a correction, D fixes it, adds the IIN that was not
+	// asked for then and is approved on resubmission.
+	d := e.legacyDriver("Дәурен", "+77471234503", "789 ehk 02")
+	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+d.driverID+"/request-corrections", map[string]any{
 		"items":   []map[string]any{{"field": "vehicle_color", "reason": "missing_info", "comment": "Түсін нақтылаңыз"}},
 		"comment": "Көлік түсін тексеріңіз",
 	}, http.StatusOK)
 	e.must(http.StatusOK, e.call(e.h, http.MethodPut, "/api/v1/driver/registration", map[string]any{
-		"first_name": "Ерлан", "last_name": "Бекенов",
-		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Күміс", "plate": "123 abc 02"},
-	}, a.auth), "fix flagged field")
-	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/register", map[string]any{}, a.auth), "resubmit")
-	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+a.driverID+"/approve", map[string]any{"comment": "Құжаттар дұрыс"}, http.StatusOK)
+		"iin": driverstest.NewIIN(), "vehicle": map[string]any{"color": "Күміс"},
+	}, d.auth), "fix flagged field")
+	if r := e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/register", map[string]any{}, d.auth), "resubmit"); r.str("status") != "approved" {
+		t.Fatalf("resubmission not approved: %s", r.raw)
+	}
 
-	// Driver C registers and is rejected.
-	c := e.registerDriver("Нұрлан", "+77471234502", "456 def 02")
-	// An uncertain OCR result leaves the application pending for the existing
-	// moderator, and queues a localized additional-review acknowledgment.
-	identity, err := verification.NewService(e.pool, verification.Options{
-		Enabled: true, Key: base64.StdEncoding.EncodeToString(make([]byte, 32)), MinConfidence: 98,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var identityApp uuid.UUID
-	if err := e.pool.QueryRow(ctx, `SELECT id FROM driver_applications WHERE driver_id=$1 ORDER BY round DESC LIMIT 1`, c.driverID).Scan(&identityApp); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.WithTx(ctx, e.pool, func(tx pgx.Tx) error {
-		if err := identity.SaveInput(ctx, tx, uuid.MustParse(c.driverID), verification.Input{
-			DocumentType: "id_card", IIN: strings.Repeat("1", 11) + "0", DocumentNumber: "123456789",
-		}); err != nil {
-			return err
-		}
-		return identity.Enqueue(ctx, tx, uuid.MustParse(c.driverID), identityApp, "Нұрлан", "Бекенов", []verification.Document{})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if did, err := identity.RunOnce(ctx, uncertainIdentityEngine{}, nil, verification.WorkerOptions{}); err != nil || !did {
-		t.Fatalf("uncertain identity review: did=%v err=%v", did, err)
-	}
-	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+c.driverID+"/reject", map[string]any{"reason": "Құжаттар анық емес"}, http.StatusOK)
+	// C's application, pending from before as well, is rejected.
+	c := e.legacyDriver("Нұрлан", "+77471234502", "456 def 02")
+	e.admin(http.MethodPost, "/api/v1/admin/drivers/"+c.driverID+"/reject", map[string]any{"reason": "Деректер анық емес"}, http.StatusOK)
 
 	// A's approval credited the welcome bonus (§22.1); C was rejected.
 	e.wallet(a, 500, 0)
@@ -250,12 +228,11 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	want := []expect{
 		{notifications.TplPhoneVerified, a.userID, notifications.DriverBot},
 		{notifications.TplPhoneVerified, c.userID, notifications.DriverBot},
-		{notifications.TplModerationSubmitted, a.userID, notifications.DriverBot},
-		{notifications.TplModerationChangesRequested, a.userID, notifications.DriverBot},
 		{notifications.TplModerationApproved, a.userID, notifications.DriverBot},
 		{notifications.TplDriverWelcomeBonus, a.userID, notifications.DriverBot},
+		{notifications.TplModerationChangesRequested, d.userID, notifications.DriverBot},
+		{notifications.TplModerationApproved, d.userID, notifications.DriverBot},
 		{notifications.TplDriverBonusGranted, b.userID, notifications.DriverBot},
-		{notifications.TplModerationSubmitted, c.userID, notifications.DriverBot},
 		{notifications.TplModerationRejected, c.userID, notifications.DriverBot},
 		{notifications.TplTopUpCreated, a.userID, notifications.DriverBot},
 		{notifications.TplTopUpConfirmed, a.userID, notifications.DriverBot},
@@ -334,8 +311,18 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		covered = append(covered, k)
 	}
 	sort.Strings(covered)
-	if !slices.Equal(covered, notifications.Keys()) {
-		t.Errorf("templates enqueued:\n  %v\nregistered:\n  %v", covered, notifications.Keys())
+	// Nothing enqueues the submission and review-required acknowledgements
+	// since registrations are approved on submission; they stay registered so
+	// that messages queued before still deliver.
+	retired := []string{notifications.TplModerationSubmitted, notifications.TplModerationReviewRequired}
+	registered := slices.DeleteFunc(slices.Clone(notifications.Keys()), func(k string) bool { return slices.Contains(retired, k) })
+	if !slices.Equal(covered, registered) {
+		t.Errorf("templates enqueued:\n  %v\nregistered:\n  %v", covered, registered)
+	}
+	for _, k := range retired {
+		if byTemplate[k] {
+			t.Errorf("%s enqueued", k)
+		}
 	}
 	// Every stored message renders in every language with its button.
 	for _, r := range rows {
@@ -377,7 +364,7 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		realtime.TopUpUpdated:              {realtime.DriverScope(uuid.MustParse(a.driverID)), realtime.AdminScope},
 		realtime.TopUpConfirmed:            {realtime.DriverScope(uuid.MustParse(a.driverID)), realtime.UserScope(a.userID)},
 		realtime.ModerationSubmitted:       {realtime.DriverScope(uuid.MustParse(a.driverID)), realtime.UserScope(a.userID), realtime.AdminScope},
-		realtime.ModerationChangesRequired: {realtime.DriverScope(uuid.MustParse(a.driverID)), realtime.UserScope(a.userID)},
+		realtime.ModerationChangesRequired: {realtime.DriverScope(uuid.MustParse(d.driverID)), realtime.UserScope(d.userID)},
 		realtime.ModerationApproved:        {realtime.DriverScope(uuid.MustParse(a.driverID)), realtime.UserScope(a.userID)},
 		realtime.ModerationRejected:        {realtime.DriverScope(uuid.MustParse(c.driverID)), realtime.UserScope(c.userID)},
 		realtime.DriverPhoneVerified:       {realtime.UserScope(a.userID)},
@@ -534,32 +521,71 @@ func (e *flowEnv) passenger() flowUser {
 }
 
 // registerDriver signs a new driver in, verifies the phone through the driver
-// bot's internal endpoint, fills in the registration and submits it.
+// bot's internal endpoint, fills in both registration pages (names and IIN,
+// profile photo, vehicle) and submits it; the automatic checks approve it.
 func (e *flowEnv) registerDriver(name, phone, plate string) flowDriver {
+	e.t.Helper()
+	d := e.draftDriver(name, phone, plate, driverstest.NewIIN())
+	if r := e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/register",
+		map[string]any{"pd_consent": true, "pd_consent_version": "driver-pd-2026-10-v3"}, d.auth), "submit registration"); r.str("status") != "approved" {
+		e.t.Fatalf("registration not approved: %s", r.raw)
+	}
+	return d
+}
+
+// legacyDriver is a driver whose application was still pending from before
+// registrations were approved automatically: registered without an IIN (it
+// was not asked for then) and moved to pending as the old submission did.
+func (e *flowEnv) legacyDriver(name, phone, plate string) flowDriver {
+	e.t.Helper()
+	d := e.draftDriver(name, phone, plate, "")
+	err := db.WithTx(context.Background(), e.pool, func(tx pgx.Tx) error {
+		ctx := context.Background()
+		if _, err := tx.Exec(ctx, `
+			UPDATE driver_profiles SET status = 'pending', submitted_at = now(), pd_consent_at = now(), pd_consent_version = '2026-10'
+			WHERE id = $1`, d.driverID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE vehicles SET status = 'claimed' WHERE driver_id = $1`, d.driverID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO driver_applications (driver_id, round, status, snapshot) VALUES ($1, 1, 'pending', '{"round": 1}')`, d.driverID)
+		return err
+	})
+	if err != nil {
+		e.t.Fatalf("legacy application: %v", err)
+	}
+	return d
+}
+
+// draftDriver signs a driver in, verifies the phone through the driver bot's
+// internal endpoint and saves both registration pages with the profile photo
+// (iin "" leaves the IIN out).
+func (e *flowEnv) draftDriver(name, phone, plate, iin string) flowDriver {
 	e.t.Helper()
 	tg := testutil.NextTelegramID()
 	h := e.signIn("driver", config.TestDriverBotToken, tg)
 	e.must(http.StatusOK, e.call(e.ih, http.MethodPost, fmt.Sprintf("/internal/v1/driver/%d/contact", tg),
 		map[string]any{"phone": phone, "contact_user_id": tg},
 		map[string]string{"Authorization": "Bearer " + config.TestServiceSecret, auth.BotHeader: "driver"}), "verify phone")
-	e.must(http.StatusOK, e.call(e.h, http.MethodPut, "/api/v1/driver/registration", map[string]any{
-		"first_name": name, "last_name": "Бекенов",
-		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": plate, "vehicle_class": "sedan"},
-	}, h), "save registration")
-	for i, kind := range []string{"avatar", "id_front", "id_back", "vehicle_main"} {
-		var buf bytes.Buffer
-		mw := multipart.NewWriter(&buf)
-		_ = mw.WriteField("kind", kind)
-		fw, _ := mw.CreateFormFile("file", "photo.jpg")
-		_, _ = fw.Write(driverstest.JPEG(e.t, 40, 30, uint8(i+1)))
-		_ = mw.Close()
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/driver/registration/files", &buf)
-		req.Header.Set("Content-Type", mw.FormDataContentType())
-		req.Header.Set("Authorization", h["Authorization"])
-		e.must(http.StatusCreated, e.serve(e.h, req), "upload "+kind)
+	page1 := map[string]any{"first_name": name, "last_name": "Бекенов"}
+	if iin != "" {
+		page1["iin"] = iin
 	}
-	e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/register",
-		map[string]any{"pd_consent": true, "pd_consent_version": "2026-10"}, h), "submit registration")
+	e.must(http.StatusOK, e.call(e.h, http.MethodPut, "/api/v1/driver/registration", page1, h), "save personal details")
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("kind", "avatar")
+	fw, _ := mw.CreateFormFile("file", "avatar.jpg")
+	_, _ = fw.Write(driverstest.JPEG(e.t, 40, 30, 1))
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/driver/registration/files", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", h["Authorization"])
+	e.must(http.StatusCreated, e.serve(e.h, req), "upload avatar")
+	e.must(http.StatusOK, e.call(e.h, http.MethodPut, "/api/v1/driver/registration", map[string]any{
+		"vehicle": map[string]any{"make": "Toyota", "model": "Camry", "color": "Ақ", "plate": plate, "vehicle_class": "sedan"},
+	}, h), "save vehicle")
 	uid := e.userID(tg)
 	var driverID uuid.UUID
 	if err := e.pool.QueryRow(context.Background(), `SELECT id FROM driver_profiles WHERE user_id = $1`, uid).Scan(&driverID); err != nil {
@@ -792,11 +818,4 @@ func fakeOSRMRoute(w http.ResponseWriter, r *http.Request) {
 		}},
 		"waypoints": wps,
 	})
-}
-
-// Empty recognition must go to review rather than approve or reject a driver.
-type uncertainIdentityEngine struct{}
-
-func (uncertainIdentityEngine) Read(context.Context, verification.Job) (verification.Result, error) {
-	return verification.Result{}, nil
 }

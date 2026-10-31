@@ -5,7 +5,7 @@
 import { onScopeDispose, ref, shallowRef, type Ref, type ShallowRef } from 'vue'
 import type { UploadProgress } from '../../api/upload'
 import { isAbortError } from '../../services/http'
-import { prepareImage } from './image'
+import { MAX_UPLOAD_BYTES, prepareImage } from './image'
 
 export type UploadState = 'idle' | 'preparing' | 'uploading' | 'error' | 'done'
 
@@ -24,7 +24,8 @@ export interface UploadTask<T> {
 export function useUploadTask<T>(
   upload: (blob: Blob, onProgress: (p: UploadProgress) => void, signal: AbortSignal) => Promise<T>,
   onDone?: (result: T) => void,
-  allowPDF = false,
+  /** Largest prepared photo the API takes for this upload. */
+  maxBytes: number = MAX_UPLOAD_BYTES,
 ): UploadTask<T> {
   const state = ref<UploadState>('idle')
   const progress = ref(0)
@@ -64,15 +65,14 @@ export function useUploadTask<T>(
     state.value = 'preparing'
     error.value = null
     try {
-      if (allowPDF && file.type === 'application/pdf') {if (file.size > 5 * 1024 * 1024) throw new Error('PDF too large');prepared=file}
-      else prepared = await prepareImage(file)
+      prepared = await prepareImage(file, undefined, maxBytes)
     } catch (err) {
       prepared = null
       error.value = err
       state.value = 'error'
       return null
     }
-    setPreview(prepared.type === 'application/pdf' ? null : prepared)
+    setPreview(prepared)
     return send()
   }
 

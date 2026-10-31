@@ -15,7 +15,6 @@ vi.mock('../api/driver', () => ({
   submitRegistration: vi.fn(),
   checkPlate: vi.fn(),
   uploadRegistrationFile: vi.fn(),
-  deleteRegistrationFile: vi.fn(),
 }))
 vi.mock('../telegram', () => ({ requestContact: vi.fn(), getLocation: vi.fn() }))
 
@@ -34,6 +33,10 @@ const MINIVAN: VehicleClassOption = {
   cargo_capable: true,
 }
 
+const SEDAN: VehicleClassOption = { ...MINIVAN, code: 'sedan', name: { kk: 'Седан', ru: 'Седан', en: 'Sedan' }, examples: '', icon: 'sedan', seats_default: 4, seats_max: 4, cargo_volume_l_default: 400 }
+
+const IIN = '900101300017'
+
 function reg(over: Partial<DriverRegistration> = {}): DriverRegistration {
   return {
     id: 'd1',
@@ -42,6 +45,8 @@ function reg(over: Partial<DriverRegistration> = {}): DriverRegistration {
     city: null,
     first_name: 'Әлі',
     last_name: 'Серіков',
+    patronymic: '',
+    iin: null,
     phone: null,
     phone_verified: false,
     avatar: null,
@@ -56,7 +61,6 @@ function reg(over: Partial<DriverRegistration> = {}): DriverRegistration {
       vehicle_class_name: null,
       seats: null,
       cargo_volume_l: null,
-      photos: [],
     },
     corrections: [],
     correction_comment: null,
@@ -167,8 +171,59 @@ describe('registration store', () => {
       expect(mocked.saveRegistration.mock.calls[0]![0]).toEqual({
         first_name: 'Әлихан',
         last_name: 'Серіков',
+        patronymic: '',
         vehicle: { make: '', model: '', color: '', plate: '' },
       })
+    })
+
+    it('sends the IIN only once all twelve digits are valid, and never erases what is half-typed', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg())
+      mocked.saveRegistration.mockImplementation(async (body) => reg({ first_name: body.first_name, iin: body.iin ?? null }))
+      await store.load()
+      store.form.iin = '9001013'
+      store.form.first_name = 'Ерлан'
+      store.touch()
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(mocked.saveRegistration).toHaveBeenCalledTimes(1)
+      expect(mocked.saveRegistration.mock.calls[0]![0]).not.toHaveProperty('iin')
+      // The saved answer (and a later background refresh) leave the unfinished IIN on screen.
+      expect(store.form.iin).toBe('9001013')
+      mocked.getRegistration.mockResolvedValue(reg({ first_name: 'Ерлан' }))
+      await store.refresh()
+      expect(store.form.iin).toBe('9001013')
+      store.form.iin = IIN
+      store.touch()
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(mocked.saveRegistration.mock.calls[1]![0].iin).toBe(IIN)
+    })
+
+    it('does not send again an IIN or a plate the API refused as another driver\'s', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg())
+      mocked.checkPlate.mockResolvedValue(null)
+      mocked.saveRegistration.mockRejectedValueOnce(new ApiError(409, 'iin_taken', 'x'))
+      await store.load()
+      store.form.iin = IIN
+      store.touch()
+      await expect(store.save()).rejects.toMatchObject({ code: 'iin_taken' })
+      expect(store.taken.iin).toBe(IIN)
+      mocked.saveRegistration.mockResolvedValue(reg({ last_name: 'Әлиев' }))
+      store.form.last_name = 'Әлиев'
+      store.touch()
+      await store.save()
+      expect(mocked.saveRegistration.mock.calls[1]![0]).not.toHaveProperty('iin')
+      expect(mocked.saveRegistration.mock.calls[1]![0].last_name).toBe('Әлиев')
+
+      mocked.saveRegistration.mockRejectedValueOnce(new ApiError(409, 'plate_taken', 'x'))
+      store.form.plate = '123 abc 04'
+      store.touch()
+      await expect(store.save()).rejects.toMatchObject({ code: 'plate_taken' })
+      expect(store.taken.plate).toBe('123ABC04')
+      store.form.first_name = 'Ерлан'
+      store.touch()
+      await store.save()
+      expect(mocked.saveRegistration.mock.calls.at(-1)![0].vehicle.plate).toBe('')
     })
 
     it('keeps what was typed while a save was in flight', async () => {
@@ -275,45 +330,42 @@ describe('registration store', () => {
     })
   })
 
-  describe('vehicle class (§21)', () => {
-    it('choosing a class prefills seats and cargo from the class and saves them with the draft', async () => {
+  describe('body type (§21)', () => {
+    it('a new registration starts with Sedan once the classes are known, and saves it', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg())
+      mocked.saveRegistration.mockResolvedValue(reg())
+      await store.load()
+      expect(store.form.vehicle_class).toBe('')
+      useSessionStore().extras.vehicleClasses = [MINIVAN, SEDAN]
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.form.vehicle_class).toBe('sedan')
+      await vi.advanceTimersByTimeAsync(2_000) // autosave
+      expect(mocked.saveRegistration.mock.calls[0]![0].vehicle).toMatchObject({ vehicle_class: 'sedan' })
+    })
+
+    it('choosing a class saves only the class: the API gives it the class seats and cargo space', async () => {
       const store = useRegistrationStore()
       useSessionStore().extras.vehicleClasses = [MINIVAN]
       mocked.getRegistration.mockResolvedValue(reg())
       mocked.saveRegistration.mockResolvedValue(reg())
       await store.load()
       store.chooseClass(MINIVAN)
-      expect(store.form).toMatchObject({ vehicle_class: 'minivan', seats: 7, cargo_volume_l: '800' })
+      expect(store.form.vehicle_class).toBe('minivan')
       await vi.advanceTimersByTimeAsync(2_000) // autosave
       expect(mocked.saveRegistration).toHaveBeenCalledTimes(1)
-      expect(mocked.saveRegistration.mock.calls[0]![0].vehicle).toMatchObject({ vehicle_class: 'minivan', seats: 7, cargo_volume_l: 800 })
+      expect(mocked.saveRegistration.mock.calls[0]![0].vehicle).toEqual({ make: '', model: '', color: '', plate: '', vehicle_class: 'minivan' })
     })
 
-    it('sends no class fields before a class is chosen (the API keeps what it has)', async () => {
+    it('takes the class the API stored with the new profile', async () => {
       const store = useRegistrationStore()
-      mocked.getRegistration.mockResolvedValue(reg())
-      mocked.saveRegistration.mockResolvedValue(reg())
+      const stored = { ...reg().vehicle, vehicle_class: 'sedan', vehicle_class_name: SEDAN.name, seats: 4, cargo_volume_l: 400 }
+      mocked.getRegistration.mockResolvedValue(reg({ vehicle: stored }))
+      mocked.saveRegistration.mockResolvedValue(reg({ vehicle: stored }))
       await store.load()
-      store.form.first_name = 'Ержан'
+      expect(store.form.vehicle_class).toBe('sedan')
       await store.save(true)
-      const body = mocked.saveRegistration.mock.calls[0]![0].vehicle
-      expect(body).not.toHaveProperty('vehicle_class')
-      expect(body).not.toHaveProperty('seats')
-      expect(body).not.toHaveProperty('cargo_volume_l')
-    })
-
-    it('does not send seats above the class maximum', async () => {
-      const store = useRegistrationStore()
-      useSessionStore().extras.vehicleClasses = [MINIVAN]
-      mocked.getRegistration.mockResolvedValue(reg())
-      mocked.saveRegistration.mockResolvedValue(reg())
-      await store.load()
-      store.chooseClass(MINIVAN)
-      store.form.seats = 9
-      await store.save(true)
-      const body = mocked.saveRegistration.mock.calls.at(-1)![0].vehicle
-      expect(body.vehicle_class).toBe('minivan')
-      expect(body).not.toHaveProperty('seats')
+      expect(mocked.saveRegistration.mock.calls[0]![0].vehicle).not.toHaveProperty('vehicle_class')
     })
 
     it('keeps a class the moderator did not flag (corrections)', async () => {
@@ -327,33 +379,62 @@ describe('registration store', () => {
       store.chooseClass(MINIVAN)
       expect(store.form.vehicle_class).toBe('sedan')
     })
+
+    it('keeps an unflagged IIN editable while none is stored (corrections)', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg({ status: 'changes_requested', corrections: [{ field: 'vehicle_color', reason: 'other', comment: null }] }))
+      mocked.saveRegistration.mockResolvedValue(reg())
+      await store.load()
+      expect(store.editable.has('identity')).toBe(true)
+      store.form.iin = IIN
+      store.touch()
+      await store.save()
+      expect(mocked.saveRegistration.mock.calls[0]![0].iin).toBe(IIN)
+    })
   })
 
   describe('submission', () => {
-    it('submits with the consent version', async () => {
+    it('finishes with the consent version; the answer is the approved registration', async () => {
       const store = useRegistrationStore()
       mocked.getRegistration.mockResolvedValue(reg())
       mocked.saveRegistration.mockResolvedValue(reg())
-      mocked.submitRegistration.mockResolvedValue(reg({ status: 'pending', editable: false }))
+      mocked.submitRegistration.mockResolvedValue(reg({ status: 'approved', editable: false, iin: IIN }))
       await store.load()
       const res = await store.submit()
       expect(mocked.submitRegistration).toHaveBeenCalledWith(PD_CONSENT_VERSION)
       expect(res.ok).toBe(true)
-      expect(store.registration?.status).toBe('pending')
+      expect(store.registration?.status).toBe('approved')
+      expect(store.editable.size).toBe(0)
     })
 
-    it('maps server errors back to the steps that need work', () => {
-      const incomplete = new ApiError(422, 'registration_incomplete', 'x', {}, { missing_fields: ['vehicle_photos', 'id_back', 'bogus'] })
-      expect(submitProblem(incomplete, reg())).toMatchObject({ steps: ['documents', 'photos'], fields: ['vehicle_photos', 'id_back'] })
-      expect(submitProblem(new ApiError(422, 'phone_not_verified', 'x'), reg()).steps).toEqual(['phone'])
+    it('remembers a phone the API refused as another driver\'s until a new one is verified', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg({ phone: '+77011234567', phone_verified: true }))
+      mocked.saveRegistration.mockResolvedValue(reg())
+      mocked.submitRegistration.mockRejectedValue(new ApiError(409, 'phone_taken', 'x'))
+      await store.load()
+      const res = await store.submit()
+      expect(res.ok).toBe(false)
+      expect(store.taken.phone).toBe(true)
+      tg.requestContact.mockResolvedValue('sent')
+      await store.requestPhone()
+      mocked.getRegistration.mockResolvedValue(reg({ phone: '+77017654321', phone_verified: true }))
+      await vi.advanceTimersByTimeAsync(PHONE_POLL_MS)
+      expect(store.phoneFlow).toBe('verified')
+      expect(store.taken.phone).toBe(false)
+    })
+
+    it('maps server errors back to the pages that need work', () => {
+      const incomplete = new ApiError(422, 'registration_incomplete', 'x', {}, { missing_fields: ['vehicle_plate', 'identity', 'bogus'] })
+      expect(submitProblem(incomplete, reg())).toMatchObject({ steps: ['personal', 'vehicle'], fields: ['vehicle_plate', 'identity'] })
+      expect(submitProblem(new ApiError(422, 'phone_not_verified', 'x'), reg()).steps).toEqual(['personal'])
+      expect(submitProblem(new ApiError(409, 'iin_taken', 'x'), reg())).toMatchObject({ steps: ['personal'], fields: ['identity'] })
       expect(submitProblem(new ApiError(409, 'plate_taken', 'x'), reg()).steps).toEqual(['vehicle'])
-      expect(submitProblem(new ApiError(409, 'phone_taken', 'x'), reg()).steps).toEqual(['phone'])
-      const invalid = new ApiError(422, 'validation_failed', 'x', { 'vehicle.color': 'too_long', last_name: 'invalid' })
-      expect(submitProblem(invalid, reg()).steps).toEqual(['personal', 'vehicle'])
-      const noClass = new ApiError(422, 'registration_incomplete', 'x', {}, { missing_fields: ['vehicle_plate', 'vehicle_class'] })
-      expect(submitProblem(noClass, reg()).steps).toEqual(['vehicle_class', 'vehicle'])
-      const seats = new ApiError(422, 'validation_failed', 'x', { 'vehicle.seats': 'too_large' }, { seats_max: 8 })
-      expect(submitProblem(seats, reg()).steps).toEqual(['vehicle_class'])
+      expect(submitProblem(new ApiError(409, 'phone_taken', 'x'), reg()).steps).toEqual(['personal'])
+      const invalid = new ApiError(422, 'validation_failed', 'x', { 'vehicle.color': 'too_long', iin: 'checksum' })
+      expect(submitProblem(invalid, reg())).toMatchObject({ steps: ['personal', 'vehicle'], fields: ['vehicle_color', 'identity'] })
+      const consent = new ApiError(422, 'validation_failed', 'x', { pd_consent: 'must_be_true' })
+      expect(submitProblem(consent, reg()).steps).toEqual([])
     })
 
     it('maps request field names to registration fields', () => {
@@ -361,8 +442,9 @@ describe('registration store', () => {
       expect(fieldFromRequestKey('vehicle.plate')).toBe('vehicle_plate')
       expect(fieldFromRequestKey('vehicle.vehicle_class')).toBe('vehicle_class')
       expect(fieldFromRequestKey('vehicle.seats')).toBe('vehicle_class')
-      expect(fieldFromRequestKey('vehicle.cargo_volume_l')).toBe('vehicle_class')
       expect(fieldFromRequestKey('first_name')).toBe('first_name')
+      expect(fieldFromRequestKey('iin')).toBe('identity')
+      expect(fieldFromRequestKey('patronymic')).toBe('identity')
       expect(fieldFromRequestKey('pd_consent')).toBeNull()
     })
   })

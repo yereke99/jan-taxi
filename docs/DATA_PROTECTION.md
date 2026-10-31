@@ -15,13 +15,15 @@ official text on adilet.zan.kz before relying on them.
 | Who | Data | Where | Purpose |
 |---|---|---|---|
 | Passengers | Telegram id, first/last name, username, language; trip addresses and coordinates, comments; for parcels the recipient's phone number; ratings, disputes | PostgreSQL | taking and fulfilling orders, support, disputes |
-| Drivers | everything above plus Telegram-verified phone, ID card photos (front and back), avatar photo (face), vehicle photos, make/model/colour/plate, location and location history, wallet ledger, top-ups, Kaspi payment receipts and transaction numbers, moderation history, consent timestamp and version | PostgreSQL, private `files` volume | registration, moderation, dispatch, settlement of commission |
+| Drivers | everything above plus Telegram-verified phone, IIN (ЖСН), optional patronymic, avatar photo (face), make/model/colour/plate and vehicle class, location and location history, wallet ledger, top-ups, Kaspi payment receipts and transaction numbers, moderation history, consent timestamp and version; ID card photos (front and back) and vehicle photos only for drivers who uploaded them before 31 October 2026 | PostgreSQL, private `files` volume | registration, uniqueness checks (one live driver per IIN, phone and plate), dispatch, settlement of commission |
 | Admins | email, name, password hash, sessions, IP addresses and actions in the audit log | PostgreSQL | access control, accountability |
 | Everyone | IP addresses, user agents, request paths | container logs (rotated) | security, troubleshooting |
 | Everyone | all of the above | `./backups` and off-site copies | recovery |
 
-ID card photos contain the IIN, full name and a face image, which the law lists as
-identifying data. Treat them as **restricted-access** data.
+The IIN identifies a person on its own; ID card photos contain the IIN, full name
+and a face image, which the law lists as identifying data. Treat the IIN and the
+ID card photos kept from before 31 October 2026 as **restricted-access** data.
+New registrations collect the IIN as typed text only, no document scans.
 
 ## 2. Localisation (Art. 12(2))
 
@@ -64,7 +66,12 @@ Status in the software:
 
 - **Drivers**: the time and the version of the accepted consent text are stored
   in `driver_profiles.pd_consent_at` and `pd_consent_version` (migration 00004).
-  Keep every published version of the text with its version identifier.
+  Keep every published version of the text with its version identifier. The text
+  shown with the single consent checkbox above «Тіркелуді аяқтау» (version
+  `driver-pd-2026-10-v3`, 31 October 2026) lists the profile photo, names, IIN,
+  Telegram phone, vehicle data and location; it no longer mentions ID scans,
+  document numbers or automatic document comparison. A driver who accepted an
+  older version accepts the new one when finishing a corrected registration.
 - **Passengers**: the database has no consent record for passengers. The
   operator must decide how passengers are informed and consent (for example a
   notice and confirmation on first launch, recorded with a version) and request
@@ -92,21 +99,24 @@ What the software deletes automatically:
 
 What needs an operator decision:
 
-- [ ] **ID card photos**: Art. 25 requires destroying personal data once the
-      purpose is achieved. Decide how long ID photos are kept after approval or
-      rejection. Files replaced or removed in the app are soft-deleted in the
-      database but stay on disk; there is no purge job yet. Request one from the
-      developers with the chosen period.
+- [ ] **ID card photos and vehicle photos** uploaded before 31 October 2026 (no
+      new ones are collected): Art. 25 requires destroying personal data once the
+      purpose is achieved. Decide how long they are kept. Files replaced or
+      removed in the app are soft-deleted in the database but stay on disk; there
+      is no purge job yet. Request one from the developers with the chosen period.
+- [ ] **IIN**: needed while the driver profile is live (it keeps one driver per
+      IIN). Decide how long it is kept after a driver is rejected or leaves; the
+      value stays in the profile row until removed by request.
+- [ ] Rows written by the retired document check (tables of migration 00011,
+      encrypted with the operator's former verification key) are kept but no
+      longer read by the software. Decide their retention together with the ID
+      photos; destroying the key makes them unreadable.
 - [ ] **Orders and status history**: the taxi rules (order No. 349, p. 402)
       require a dispatch service to keep records of orders and their hand-over to
       drivers, without a stated period. Set a period together with accounting and
       tax requirements.
 - Finished **notification outbox** rows and attempts are pruned after 30 days by
   `notification_retention`; pending/sending messages are preserved for recovery.
-- Protected entered identity data, OCR results and document ownership fingerprints
-  use the operator's verification key. Restrict key access and include key custody
-  in encrypted backup/restore procedures. Do not log identity values or send them
-  in Telegram notifications. Define their retention together with ID images.
 - [ ] Deleted data persists in backups until they expire; state this in the
       privacy policy.
 
@@ -114,10 +124,18 @@ What needs an operator decision:
 
 Implemented:
 
-- ID card photos are stored only in the private `files` volume (mode 700,
-  non-root owner), never served as static files, re-encoded on upload with all
-  EXIF metadata (including GPS) removed, and served with
-  `Cache-Control: private, no-store`.
+- The IIN is a plain column, `driver_profiles.iin` (12 digits, migration 00013),
+  unique among live drivers; it is not encrypted inside the database. The API
+  returns it in full only to the driver it belongs to (their own registration);
+  the driver's profile, the admin panel and application snapshots carry only
+  `iin_masked` (`********1234`). It is never written to audit payloads, logs,
+  bot messages, realtime events, bot offers or passenger payloads, and a
+  duplicate is reported as `iin_taken` without naming the other driver.
+- ID card photos (kept from before 31 October 2026) are stored only in the
+  private `files` volume (mode 700, non-root owner), never served as static
+  files, and served with `Cache-Control: private, no-store`. Images were
+  re-encoded on upload with all EXIF metadata (including GPS) removed; ID PDFs
+  accepted between 29 and 31 October 2026 are kept as uploaded.
 - Only the roles `super_admin` and `driver_moderator` hold `documents.view`;
   every admin view of an ID document is written to the audit log
   (`admin_audit_logs`, visible to roles with `audit.view`).
@@ -138,6 +156,9 @@ Operator checklist:
 - [ ] Server access only with personal SSH keys; the list of people with server
       or `docker` access is documented.
 - [ ] Backup files are copied only over encrypted channels and stored encrypted.
+      Database dumps contain every driver's IIN in clear: restrict who can read
+      the database, `./backups` and the off-site copies to the named people, and
+      never hand out a dump for debugging.
 
 ## 6. Operator duties (Art. 22, Art. 25, Art. 10-1, Art. 25-1)
 

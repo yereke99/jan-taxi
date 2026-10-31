@@ -41,6 +41,8 @@ func TestDriverFileAccess(t *testing.T) {
 	owner, other := env.DriverClient(), env.DriverClient()
 	ownerID := owner.CompleteDraft(driverstest.Registration{Plate: "123ABC04"})
 	other.CompleteDraft(driverstest.Registration{Plate: "124ABC04"})
+	// ID scans and a vehicle photo from before they were retired stay viewable.
+	owner.LegacyEvidence(ownerID)
 
 	reg := owner.Do(http.MethodGet, pathRegistration, nil).Body
 	avatar := fileID(t, reg, "avatar", "id")

@@ -29,10 +29,7 @@ func listCodes(t *testing.T, c *driverstest.Client, query string) []string {
 func TestAdminListFiltersAndSearch(t *testing.T) {
 	env := driverstest.New(t)
 	a := env.DriverClient()
-	aID := a.CompleteDraft(driverstest.Registration{FirstName: "Нұрлан", LastName: "Әбенов", Plate: "456KMH04", Phone: "+77019876543"})
-	if res := a.Submit(); res.Code != http.StatusOK {
-		t.Fatalf("submit: %s", res)
-	}
+	aID := a.LegacyPending(driverstest.Registration{FirstName: "Нұрлан", LastName: "Әбенов", Plate: "456KMH04", Phone: "+77019876543"})
 	approved := testutil.CreateDriver(t, env.Pool, testutil.DriverOptions{Online: true, Balance: 500})
 	var aCode string
 	if err := env.Pool.QueryRow(context.Background(), `SELECT code FROM driver_profiles WHERE id = $1`, aID).Scan(&aCode); err != nil {
@@ -75,11 +72,17 @@ func TestAdminListFiltersAndSearch(t *testing.T) {
 func TestAdminDetailDocumentsNeedPermission(t *testing.T) {
 	env := driverstest.New(t)
 	c := env.DriverClient()
-	id := c.CompleteDraft(driverstest.Registration{Plate: "111ABC04", Phone: "+77001234567"})
+	id := c.CompleteDraft(driverstest.Registration{Plate: "111ABC04", Phone: "+77001234567", IIN: "991231400892", Patronymic: "Әлиұлы"})
+	// ID scans from before they were retired stay viewable with documents.view.
+	c.LegacyEvidence(id)
 
 	res := env.AdminClient(auth.RoleOperator).Do(http.MethodGet, adminPath(id, ""), nil)
 	if res.Code != http.StatusOK || res.Body["documents"] != nil || res.Body["avatar"] == nil {
 		t.Fatalf("operator detail: %s", res)
+	}
+	// Every administrator sees the IIN masked only.
+	if res.Body["iin_masked"] != "********0892" || res.Body["patronymic"] != "Әлиұлы" || contains(string(res.Raw), "991231400892") {
+		t.Fatalf("identity in detail: %s", res)
 	}
 	res = env.AdminClient(auth.RoleDriverModerator).Do(http.MethodGet, adminPath(id, ""), nil)
 	docs, _ := res.Body["documents"].(map[string]any)

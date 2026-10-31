@@ -19,46 +19,26 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/storage"
-	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
 )
 
-// Upload kinds (OpenAPI UploadKind).
-const (
-	KindAvatar       = "avatar"
-	KindIDFront      = "id_front"
-	KindIDBack       = "id_back"
-	KindVehicleMain  = "vehicle_main"
-	KindVehicleBack  = "vehicle_back"
-	KindVehicleSide  = "vehicle_side"
-	KindVehiclePlate = "vehicle_plate"
-	KindVehicleExtra = "vehicle_extra"
-)
+// KindAvatar is the only registration upload (OpenAPI UploadKind): ID scans
+// and vehicle photos are no longer collected. Files uploaded before stay
+// stored and viewable.
+const KindAvatar = "avatar"
 
-type uploadSpec struct {
-	purpose   string // files.purpose
-	field     string // registration field the upload belongs to
-	photoKind string // vehicle_photos.kind for vehicle photos
-}
-
-var uploadKinds = map[string]uploadSpec{
-	KindAvatar:       {storage.PurposeDriverAvatar, FieldAvatar, ""},
-	KindIDFront:      {storage.PurposeIDFront, FieldIDFront, ""},
-	KindIDBack:       {storage.PurposeIDBack, FieldIDBack, ""},
-	KindVehicleMain:  {storage.PurposeVehiclePhoto, FieldVehiclePhotos, vehicles.PhotoMain},
-	KindVehicleBack:  {storage.PurposeVehiclePhoto, FieldVehiclePhotos, vehicles.PhotoBack},
-	KindVehicleSide:  {storage.PurposeVehiclePhoto, FieldVehiclePhotos, vehicles.PhotoSide},
-	KindVehiclePlate: {storage.PurposeVehiclePhoto, FieldVehiclePhotos, vehicles.PhotoPlate},
-	KindVehicleExtra: {storage.PurposeVehiclePhoto, FieldVehiclePhotos, vehicles.PhotoExtra},
-}
+// MaxAvatarBytes caps one profile photo (the Mini App downscales before
+// uploading, so real photos are far smaller).
+const MaxAvatarBytes int64 = 5 << 20
 
 // multipartOverhead is allowed on top of the file size for headers and the kind field.
 const multipartOverhead = 64 << 10
 
 var errPayloadTooLarge = httpx.NewError(http.StatusRequestEntityTooLarge, "payload_too_large", "request body too large")
 
-// uploadFile stores one registration photo. The image is decoded and saved
-// before the transaction (so no row lock is held while it is processed) and
-// linked inside it after the editability checks are repeated under lock.
+// uploadFile stores the profile photo. The image is sniffed by its magic
+// bytes (JPEG, PNG or WebP), decoded and saved as JPEG before the transaction
+// (so no row lock is held while it is processed) and linked inside it after
+// the editability checks are repeated under lock.
 func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 	p, err := auth.RequirePrincipal(r)
 	if err != nil {
@@ -72,7 +52,7 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 		return errNotMultipart
 	}
 	ctx := r.Context()
-	// Cheap checks first so a locked registration does not upload 10 MiB in vain.
+	// Cheap checks first so a locked registration does not upload in vain.
 	prof, err := GetProfile(ctx, h.pool, d.ID)
 	if err != nil {
 		return err
@@ -81,25 +61,20 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 		return ErrRegistrationLocked(prof.Status)
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.opt.MaxUploadBytes+multipartOverhead)
-	kind, data, err := readUpload(r, h.opt.MaxUploadBytes)
+	limit := min(h.opt.MaxUploadBytes, MaxAvatarBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, limit+multipartOverhead)
+	kind, data, err := readUpload(r, limit)
 	if err != nil {
 		return err
 	}
-	spec, ok := uploadKinds[kind]
-	if !ok {
+	if kind != KindAvatar {
 		return httpx.Validation(map[string]string{"kind": "invalid"})
 	}
-	if err := checkUploadAllowed(ctx, h.pool, prof, spec); err != nil {
+	if err := checkAvatarEditable(ctx, h.pool, prof); err != nil {
 		return err
 	}
 
-	var f storage.File
-	if (spec.purpose == storage.PurposeIDFront || spec.purpose == storage.PurposeIDBack) && bytes.HasPrefix(data, []byte("%PDF-")) {
-		f, err = h.store.SavePDF(ctx, h.pool, p.UserID, spec.purpose, data)
-	} else {
-		f, err = h.store.SaveImage(ctx, h.pool, p.UserID, spec.purpose, bytes.NewReader(data))
-	}
+	f, err := h.store.SaveImage(ctx, h.pool, p.UserID, storage.PurposeDriverAvatar, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -108,10 +83,14 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if err := checkUploadAllowed(ctx, tx, locked, spec); err != nil {
+		if err := checkAvatarEditable(ctx, tx, locked); err != nil {
 			return err
 		}
-		return linkUpload(ctx, tx, locked, spec, f.ID)
+		// The previous photo stays as history.
+		if _, err := tx.Exec(ctx, `UPDATE driver_profiles SET avatar_file_id = $2 WHERE id = $1`, locked.ID, f.ID); err != nil {
+			return fmt.Errorf("drivers: set avatar: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		// The stored image is not referenced by anything; stop serving it.
@@ -125,68 +104,20 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
-// checkUploadAllowed enforces editability and, for extra photos, the limit.
-func checkUploadAllowed(ctx context.Context, q db.Querier, prof Profile, spec uploadSpec) error {
+// checkAvatarEditable enforces editability: any draft, and changes_requested
+// only when the moderator flagged the photo.
+func checkAvatarEditable(ctx context.Context, q db.Querier, prof Profile) error {
 	if !prof.Editable() {
 		return ErrRegistrationLocked(prof.Status)
 	}
-	if prof.Status == StatusChangesRequested {
-		flagged, err := FlaggedFields(ctx, q, prof.ID)
-		if err != nil {
-			return err
-		}
-		if !flagged[spec.field] {
-			return ErrFieldLocked(map[string]string{"kind": "not_editable"}, flagged)
-		}
-	}
-	if spec.photoKind == vehicles.PhotoExtra {
-		v, err := vehicles.Current(ctx, q, prof.ID)
-		if errors.Is(err, vehicles.ErrNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		var n int
-		if err := q.QueryRow(ctx, `SELECT count(*) FROM vehicle_photos WHERE vehicle_id = $1 AND kind = 'extra' AND is_current`, v.ID).
-			Scan(&n); err != nil {
-			return fmt.Errorf("drivers: count photos: %w", err)
-		}
-		if n >= vehicles.MaxExtraPhotos {
-			return vehicles.ErrTooManyPhotos
-		}
-	}
-	return nil
-}
-
-// linkUpload makes fileID the current file of its kind (the previous one is
-// kept as history).
-func linkUpload(ctx context.Context, tx pgx.Tx, prof Profile, spec uploadSpec, fileID uuid.UUID) error {
-	switch spec.purpose {
-	case storage.PurposeDriverAvatar:
-		if _, err := tx.Exec(ctx, `UPDATE driver_profiles SET avatar_file_id = $2 WHERE id = $1`, prof.ID, fileID); err != nil {
-			return fmt.Errorf("drivers: set avatar: %w", err)
-		}
-		return nil
-	case storage.PurposeIDFront, storage.PurposeIDBack:
-		if _, err := tx.Exec(ctx, `UPDATE driver_documents SET is_current = false WHERE driver_id = $1 AND kind = $2 AND is_current`,
-			prof.ID, spec.purpose); err != nil {
-			return fmt.Errorf("drivers: replace document: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO driver_documents (driver_id, kind, file_id) VALUES ($1, $2, $3)`,
-			prof.ID, spec.purpose, fileID); err != nil {
-			return fmt.Errorf("drivers: add document: %w", err)
-		}
-		return nil
-	}
-	v, err := vehicles.CurrentForUpdate(ctx, tx, prof.ID)
-	if errors.Is(err, vehicles.ErrNotFound) {
-		v, err = vehicles.Create(ctx, tx, prof.ID, vehicles.Details{})
-	}
+	editable, err := editableFieldsOf(ctx, q, prof)
 	if err != nil {
 		return err
 	}
-	return vehicles.AddPhoto(ctx, tx, v.ID, spec.photoKind, fileID)
+	if !editable[FieldAvatar] {
+		return ErrFieldLocked(map[string]string{"kind": "not_editable"}, editable)
+	}
+	return nil
 }
 
 // readUpload reads the "kind" and "file" parts of a multipart body.
@@ -254,67 +185,6 @@ func multipartError(err error) error {
 		return errPayloadTooLarge
 	}
 	return httpx.BadRequest("invalid multipart body").WithCause(err)
-}
-
-// deleteFile removes an extra vehicle photo while the registration is editable.
-func (h *Handler) deleteFile(w http.ResponseWriter, r *http.Request) error {
-	d, err := auth.RequireDriver(r)
-	if err != nil {
-		return err
-	}
-	fileID, err := httpx.UUIDParam(r, "fileId")
-	if err != nil {
-		return err
-	}
-	ctx := r.Context()
-	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		prof, err := LockProfile(ctx, tx, d.ID)
-		if err != nil {
-			return err
-		}
-		if !prof.Editable() {
-			return ErrRegistrationLocked(prof.Status)
-		}
-		if prof.Status == StatusChangesRequested {
-			flagged, err := FlaggedFields(ctx, tx, prof.ID)
-			if err != nil {
-				return err
-			}
-			if !flagged[FieldVehiclePhotos] {
-				return ErrFieldLocked(map[string]string{FieldVehiclePhotos: "not_editable"}, flagged)
-			}
-		}
-		v, err := vehicles.CurrentForUpdate(ctx, tx, prof.ID)
-		if err != nil {
-			return err
-		}
-		kind, err := vehicles.PhotoKindOf(ctx, tx, v.ID, fileID)
-		if err != nil {
-			return err
-		}
-		if kind != vehicles.PhotoExtra {
-			return httpx.Conflict("conflict", "required photos are replaced by uploading a new one").
-				WithDetails(map[string]any{"reason": "not_removable"})
-		}
-		if err := vehicles.RemoveExtraPhoto(ctx, tx, v.ID, fileID); err != nil {
-			return err
-		}
-		// Files that were part of a submitted application stay as evidence.
-		var submitted bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM driver_applications WHERE driver_id = $1 AND snapshot->'file_ids' ? $2)`,
-			prof.ID, fileID.String()).Scan(&submitted); err != nil {
-			return fmt.Errorf("drivers: snapshot lookup: %w", err)
-		}
-		if !submitted {
-			return h.store.SoftDelete(ctx, tx, fileID)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return httpx.NoContent(w)
 }
 
 // getOwnFile serves one of the caller's own files; anything else is 404.

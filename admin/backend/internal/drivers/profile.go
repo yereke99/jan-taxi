@@ -12,13 +12,17 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 )
 
-// ProfileView is the driver's own profile (OpenAPI DriverProfile).
+// ProfileView is the driver's own profile (OpenAPI DriverProfile). The IIN is
+// only shown masked; IINMasked is nil while the driver has not entered one
+// (PUT /driver/profile/iin).
 type ProfileView struct {
 	ID              uuid.UUID    `json:"id"`
 	Code            string       `json:"code"`
 	Status          string       `json:"status"`
 	FirstName       string       `json:"first_name"`
 	LastName        string       `json:"last_name"`
+	Patronymic      string       `json:"patronymic"`
+	IINMasked       *string      `json:"iin_masked"`
 	Phone           *string      `json:"phone"`
 	PhoneVerified   bool         `json:"phone_verified"`
 	Avatar          *FileRef     `json:"avatar"`
@@ -40,6 +44,7 @@ func NewProfileView(r Registration) ProfileView {
 	phoneNum, _ := r.Phone()
 	return ProfileView{
 		ID: p.ID, Code: p.Code, Status: p.Status, FirstName: p.FirstName, LastName: p.LastName,
+		Patronymic: p.Patronymic, IINMasked: p.IINMasked(),
 		Phone: phoneNum, PhoneVerified: r.PhoneVerified(),
 		Avatar:  NewFileRef(r.Avatar, FieldAvatar, DriverFileURL),
 		City:    NewCityRef(r.City),
@@ -62,10 +67,12 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) error {
 	return httpx.OK(w, NewProfileView(reg))
 }
 
-// moderatedFields are profile fields that only change through registration
-// corrections; sending them to PATCH /driver/profile is refused.
+// moderatedFields are profile fields that only change through the
+// registration (or, for a missing IIN, PUT /driver/profile/iin); sending them
+// to PATCH /driver/profile is refused.
 var moderatedFields = map[string]bool{
-	"first_name": true, "last_name": true, "phone": true, "avatar": true, "avatar_file_id": true, "vehicle": true,
+	"first_name": true, "last_name": true, "patronymic": true, "iin": true,
+	"phone": true, "avatar": true, "avatar_file_id": true, "vehicle": true,
 	"city": true, "city_id": true, "code": true, "status": true, "documents": true, "language": true,
 }
 

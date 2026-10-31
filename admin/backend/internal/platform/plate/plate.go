@@ -11,9 +11,9 @@
 //
 // Decision on legacy plates: plates issued in 1993–2012 remain legally valid
 // and replacement is not mandatory, so drivers in small towns such as Embi still
-// drive with them. Rejecting them would block legitimate drivers; every
-// registration is reviewed by a moderator anyway, so legacy plates are accepted
-// and reported with Kind == KindLegacy for the moderator to double-check.
+// drive with them. Rejecting them would block legitimate drivers, so legacy
+// plates are accepted and reported with Kind == KindLegacy, which the admin
+// panel shows next to the plate for a later check.
 // Diplomatic, foreign-owner and special-service series use other layouts and
 // are rejected (they are not eligible for taxi work).
 package plate

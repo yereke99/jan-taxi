@@ -41,6 +41,7 @@ admin/backend/internal/
   platform/textutil            NFC normalisation, 120-code-point limits, control-char stripping
   platform/phone               KZ phone normalisation (E.164)
   platform/plate               KZ plate normalisation and validation
+  platform/iin                 IIN (ЖСН) normalisation, check digit and masking
   platform/geo                 Kazakhstan boundary check, Point type, haversine
   platform/storage             private file storage (local volume) + image sanitising
   platform/testutil            test DB creation from template, fixtures, initData signer
@@ -53,9 +54,10 @@ admin/backend/internal/
   orders                       order lifecycle state machine, passenger + driver order endpoints, ratings, disputes
   stops                        stop validation/normalisation helpers (2–5 points, ordering)
   dispatch                     eligibility queries, offers, atomic accept, search expiry job
-  drivers                      driver profiles, registration drafts, availability, locations
-  vehicles                     vehicles + photos, plate uniqueness
-  moderation                   applications, approve/reject/corrections/suspend/restore
+  drivers                      driver profiles, registration drafts, IIN, availability, locations
+  vehicles                     vehicles, plate uniqueness, photos uploaded before 2026-10-31
+  moderation                   applications, automatic approval at submission, approve/reject/corrections
+                               of older pending applications, suspend/restore
   wallets                      ledger: reserve/settle/release/credit/adjust, balances
   payments                     top-up requests, provider abstraction (kaspi_manual), admin verification
   notifications                transactional outbox, worker, templates (kk/ru/en), Telegram rendering
@@ -499,8 +501,8 @@ additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode
   `conflict`, `invalid_transition`, `order_already_taken`, `driver_has_active_order`,
   `insufficient_balance`, `driver_not_approved`, `driver_offline`, `outside_service_area`,
   `route_unavailable`, `quote_expired`, `fare_not_allowed`, `phone_taken`, `plate_taken`,
-  `phone_not_verified`, `registration_incomplete`, `too_many_requests`, `payment_reference_used`,
-  `internal`.
+  `iin_taken`, `phone_not_verified`, `registration_incomplete`, `too_many_requests`,
+  `payment_reference_used`, `internal`.
 * Lists for Mini Apps: `?limit=20&before=<cursor>` → `{"items":[...],"next_cursor":"..."|null}`.
   Admin lists: `?page=1&page_size=25` → `{"items":[...],"page":1,"page_size":25,"total":123}`.
 * Idempotency: `POST /orders`, `POST /driver/wallet/topups`, admin adjustments take an
@@ -515,18 +517,80 @@ additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode
   collapse runs of spaces, max **120 Unicode code points** after normalisation. The Mini Apps
   count with the same rule (`[...s.normalize('NFC')].length`). Output is always escaped
   (Vue text interpolation; Telegram HTML parse mode with `html.EscapeString`).
+* Names (`first_name`, `last_name`, optional `patronymic`): cleaned like free text, at most 60 code
+  points, letters of any script with spaces, `-`, `'` and `.` between them («Әлі-Ахмет», «O'Connor»).
 * Phone: KZ mobile only, E.164 `+77XXXXXXXXX`; accepts `8 7xx…`, `+7 7xx…`, `7xx…`.
-* Plate: uppercase, strip spaces/dashes, map Cyrillic look-alikes to Latin, validate
-  `^\d{3}[A-Z]{2,3}(0[1-9]|1\d|20)$` (current format) — see `platform/plate`.
+* Plate: uppercase, strip separators (spaces, dashes, dots, …), map Cyrillic look-alikes to Latin,
+  drop a leading `KZ` country mark, validate `^\d{3}[A-Z]{2,3}(0[1-9]|1\d|20)$` (current format) or
+  `^[A-Z]\d{3}[A-Z]{2,3}$` (1993–2012 format, still legal) — see `platform/plate`. The driver Mini
+  App checks the same formats before saving.
+* IIN (ЖСН, `platform/iin`): white space dropped, then exactly 12 digits, kept as a string (leading
+  zeros matter). Check digit: the sum of the first 11 digits weighted 1…11, modulo 11; when that is
+  10, the sum again with weights 3…11, 1, 2, modulo 11, and a second 10 means the number is never
+  issued; the 12th digit must equal the result. Reasons `invalid` (not 12 digits) and `checksum`.
+  The driver Mini App validates live with the same rule.
 * Driver registration requires a Telegram-verified phone: the Mini App calls
   `WebApp.requestContact()`, Telegram sends the contact to the driver bot, the bot verifies
   `contact.user_id == from.id` and posts it to the API.
+
+### 11.1 Driver registration
+
+Customer assignment «ТЕХНИКАЛЫҚ ТАПСЫРМА» (30.10.2026) and the owner's decision of 31.10.2026: two
+pages, no document scans, no manual approval.
+
+* Driver Mini App, `/register?step=…` (the Telegram BackButton goes from page 2 back to page 1):
+  1. `personal` — profile photo (camera or gallery, JPEG/PNG/WebP, downscaled on the device), Аты,
+     Тегі, optional Әкесінің аты under the surname, ЖСН (digits only, numeric keyboard, live
+     check-digit validation) and the phone shared through Telegram (above). «Келесі» opens page 2
+     once everything required on page 1 is valid.
+  2. `vehicle` — one body-type row preset to Sedan (icon and name; a tap lists the active classes,
+     §21, and seats and cargo volume take the chosen class's defaults), make and model, colour,
+     plate, and one personal-data consent checkbox above «Тіркелуді аяқтау» (consent text version
+     `driver-pd-2026-10-v3`).
+
+  Fields autosave (`PUT /driver/registration`); `iin` is sent only once all 12 digits are typed and
+  the check digit is right (an invalid patronymic is held back the same way), so a half-typed value
+  never fails a save and is never overwritten by the saved answer.
+* Required at submission (`missing_fields`, in this order): `avatar`, `first_name`, `last_name`,
+  `identity` (a valid IIN; the patronymic is optional), `phone` (while
+  `driver.require_phone_verification` is on), `vehicle_class`, `vehicle_make_model`,
+  `vehicle_color`, `vehicle_plate`. ID scans and vehicle photos are no longer collected (§12).
+* `POST /driver/register` runs the automatic checks — everything required, the consent, the IIN,
+  phone and plate not held by another live driver (`409 iin_taken` / `phone_taken` /
+  `plate_taken`; the partial unique indexes decide simultaneous claims) — and approves in the same
+  transaction with the system as the actor: the application round is recorded, then the same path
+  as an administrator's approval runs (welcome bonus §22.1, `moderation_approved` message, audit,
+  events). After success the app opens the Orders tab at once (the session takes the approved
+  status from the answer, so the realtime `moderation.approved` hint cannot send the driver to Home
+  first) and meanwhile reads a fresh GPS fix, sends it and goes online
+  (`PATCH /driver/availability`); with a denied location or a refused "online" the driver stays on
+  Orders, where the usual location and online prompts take over. A refused submission jumps to the
+  page of the first missing field. Administrators can still suspend, restore and change the city.
+* Applications from before: a `pending` one can still be approved, rejected or sent back for
+  corrections by an administrator. In `changes_requested` the app shows only the pages with flagged
+  fields (unflagged fields locked); the IIN and patronymic stay editable while no IIN is stored;
+  finishing the corrected registration approves it automatically. `id_front`, `id_back` and
+  `vehicle_photos` remarks are shown, but nothing can be uploaded for them any more.
+* Approved drivers without an IIN keep working; the Profile page shows a non-blocking «ЖСН
+  енгізіңіз» row that stores it once (`PUT /driver/profile/iin`). A stored IIN is shown masked.
+* Data (migration 00013): `driver_profiles.iin` — plain `text`, `CHECK (iin ~ '^[0-9]{12}$')`,
+  `NULL` until entered, unique among live profiles (partial unique index
+  `driver_profiles_iin_unique` over `pending`, `approved`, `changes_requested`, `suspended`; drafts
+  and rejected profiles never hold one); `driver_profiles.patronymic` — `text NOT NULL DEFAULT ''`,
+  ≤ 60. Only the driver's own registration returns the IIN in full; the driver's profile, the admin
+  panel and application snapshots carry `iin_masked` (`********1234`); it never goes into audit
+  payloads, logs, notifications, realtime events, bot offers or passenger payloads
+  ([DATA_PROTECTION.md](DATA_PROTECTION.md)).
 
 ## 12. Files
 
 * Private volume `FILE_STORAGE_DIR` (default `/data/files`), never served statically.
 * Uploads: max 10 MiB, magic-byte sniffing (JPEG/PNG/WebP), decoded and re-encoded to JPEG
   (strips EXIF incl. GPS), longest side ≤ 2000px, SHA-256 stored.
+* Driver registration uploads only the profile photo (`kind=avatar`, ≤ 5 MiB; a new one replaces
+  the current one, the old file stays as history). ID scans and vehicle photos are no longer
+  accepted (§11.1); the ones uploaded before 31.10.2026 stay stored and appear read-only in the
+  driver's registration and the admin panel, with the access rules below.
 * Kaspi receipt PDFs (§6.1): `%PDF-` magic, ≤ 5 MiB, encrypted or active-content files refused,
   stored byte for byte (the evidence, mode 0600), served only to finance admins
   (`/admin/topups/{id}/receipt`, `/admin/files/{id}`) as `application/pdf` inline.
@@ -725,15 +789,15 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 ### Driver
 | Method | Path | Auth | Owner pkg | Notes |
 |---|---|---|---|---|
-| GET | /driver/registration | D | drivers | draft/current data, files, status, `corrections[]`, `phone_verified` |
-| PUT | /driver/registration | D | drivers | `{first_name,last_name,vehicle:{make,model,color,plate}}` creates the profile on first call (code assigned) |
-| POST | /driver/registration/files | D | drivers | multipart `kind` ∈ avatar,id_front,id_back,vehicle_main,vehicle_back,vehicle_side,vehicle_plate,vehicle_extra + `file` |
-| DELETE | /driver/registration/files/{fileId} | D | drivers | only extra vehicle photos while editable |
+| GET | /driver/registration | D | drivers | draft/current data (names, patronymic, own IIN unmasked, avatar, vehicle and class), status, `corrections[]`, `missing_fields`, `can_submit`, `phone_verified`, consent; ID photos and vehicle photos uploaded before 31.10.2026 read-only (§11.1) |
+| PUT | /driver/registration | D | drivers | `{first_name?, last_name?, patronymic?, iin?, vehicle?:{make?, model?, color?, plate?, vehicle_class?, seats?, cargo_volume_l?}, location?}`: a key not sent keeps its value (the legacy `identity` object is still accepted); the first call creates the profile (code assigned, vehicle preset to `sedan`); `409 iin_taken` / `plate_taken`, `422 fields.iin = invalid\|checksum` |
+| POST | /driver/registration/files | D | drivers | multipart `kind=avatar` + `file` (the only registration upload, ≤ 5 MiB) |
 | POST | /driver/registration/check | D | drivers | `{plate?}` advisory availability |
-| POST | /driver/register | D | moderation | submit / resubmit → `pending` |
+| POST | /driver/register | D | moderation | automatic checks, then approval in the same transaction → `approved` (§11.1); `409 iin_taken\|phone_taken\|plate_taken`, `422 registration_incomplete` (`details.missing_fields`), `phone_not_verified`, `validation_failed` (`pd_consent*`) |
 | GET | /driver/files/{id} | D | drivers | own files only |
-| GET | /driver/profile | D | drivers | profile, vehicle, rating, trips, status |
+| GET | /driver/profile | D | drivers | profile (patronymic, `iin_masked`), vehicle, rating, trips, status |
 | PATCH | /driver/profile | D | drivers | non-moderated fields only (none in MVP besides language via /me) → 422 for moderated fields |
+| PUT | /driver/profile/iin | D | drivers | `{iin}` once for a driver without one (Profile «ЖСН енгізіңіз»); the same value again is a no-op; `409 conflict` (`details.reason = iin_already_set`), `409 iin_taken`; → profile with `iin_masked` |
 | PATCH | /driver/availability | D | drivers | `{online}`; checks approved, not suspended, available ≥ `driver.min_online_balance`, fresh location (`422 location_required`, `details.max_age_s`) |
 | POST | /driver/location | D | drivers | `{lat,lon,accuracy_m?,heading?,speed_mps?,recorded_at?}`; must be inside KZ; rate-limited 1/2s |
 | GET | /driver/orders | D | dispatch | available orders within the effective radius, nearest first (cards with `distance_to_pickup_m`) + `eligibility` |
@@ -777,14 +841,14 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /admin/disputes?status= | orders.view | orders |
 | POST | /admin/disputes/{id}/resolve `{outcome, resolution, refund_commission}` | orders.manage | orders |
 | GET | /admin/drivers?status=&city_id=&online=&q=&page= | drivers.view | moderation |
-| GET | /admin/drivers/{id} | drivers.view | moderation |
+| GET | /admin/drivers/{id} (patronymic, `iin_masked`; legacy ID photos only with documents.view) | drivers.view | moderation |
 | GET | /admin/drivers/{id}/orders | drivers.view | orders |
 | GET | /admin/drivers/{id}/ledger | finance.view | payments |
 | GET | /admin/drivers/locations?city_id= | drivers.view | drivers |
 | GET | /admin/files/{id} | documents.view (ID docs) / drivers.view (others) | drivers |
-| POST | /admin/drivers/{id}/approve `{comment?}` | drivers.moderate | moderation |
-| POST | /admin/drivers/{id}/reject `{reason, comment?}` | drivers.moderate | moderation |
-| POST | /admin/drivers/{id}/request-corrections `{items:[{field,reason,comment?}], comment?}` | drivers.moderate | moderation |
+| POST | /admin/drivers/{id}/approve `{comment?}` (applications still pending from before 31.10.2026) | drivers.moderate | moderation |
+| POST | /admin/drivers/{id}/reject `{reason, comment?}` (older `pending` / `changes_requested` applications) | drivers.moderate | moderation |
+| POST | /admin/drivers/{id}/request-corrections `{items:[{field,reason,comment?}], comment?}` (older `pending` applications) | drivers.moderate | moderation |
 | POST | /admin/drivers/{id}/suspend `{reason}` | drivers.manage | moderation |
 | POST | /admin/drivers/{id}/restore | drivers.manage | moderation |
 | PATCH | /admin/drivers/{id} `{city_id}` | drivers.manage | moderation |
@@ -980,8 +1044,9 @@ Eligibility (§7) additionally requires the driver's current vehicle to serve th
 `vehicle.cargo_volume_l ≥ order.cargo_volume_l`.
 
 ### 21.5 UI
-- Driver registration: a "Көлік түрі" step with class cards (icon, name, examples), seat stepper
-  bounded by the class, cargo volume prefilled from the class default (editable).
+- Driver registration (§11.1, page 2): one «Көлік түрі» row preset to Sedan with the class icon and
+  name; a tap lists the active classes (icon, name, examples, capacity) and seats and cargo volume
+  take the chosen class's defaults.
 - Passenger: after the route, a compact iOS list of class options (icon, name, "4 орын", price),
   a passenger-count stepper for taxi and a cargo-size segmented control for parcels; changing them
   re-quotes. The existing passenger flow stays as it is otherwise.
@@ -994,8 +1059,10 @@ offers) where they conflict.
 
 ### 22.1 Welcome balance for new drivers
 - Setting `driver.welcome_bonus` (KZT, default **500**; 0 disables).
-- Granted automatically **once**, when an admin approves a driver for the first time, and only if
-  neither the driver's phone (E.164) nor the vehicle plate (normalised) has ever received it:
+- Granted automatically **once**, when a driver is approved for the first time — at submission,
+  by the automatic approval (§11.1), or by an administrator approving an application still pending
+  from before — and only if neither the driver's phone (E.164) nor the vehicle plate (normalised)
+  has ever received it:
   table `welcome_bonus_grants` with `UNIQUE(driver_id)`, `UNIQUE(phone_e164)`, `UNIQUE(plate_normalized)`.
 - Ledger entry type `bonus_credit`, idempotency key `welcome_bonus:<driver_id>`; audited;
   notification `driver_welcome_bonus`.

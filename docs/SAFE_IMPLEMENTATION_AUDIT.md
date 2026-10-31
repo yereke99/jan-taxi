@@ -268,6 +268,8 @@ memory or demonstrate full-stack performance on the production 4-CPU/6-GB host.
    resource metrics. Disable new feature writes/autoapproval/worker claims to
    fall back to existing manual review; retain schema, keys and history.
 
+Steps 4 and 5 are retired since 31 October 2026 (see the last note).
+
 Production activation and destructive actions require the operator's explicit
 deployment instruction. Do not run Down against feature data or invent missing
 destination coordinates to fit an old reader.
@@ -330,3 +332,14 @@ call button in the sheet header no longer starts a sheet drag. At the owner's
 request the driver's contact row shows WhatsApp in place of the Telegram chat
 when the passenger shared a phone; passengers without one keep the chat button.
 Device checks: [TESTING.md §6](TESTING.md#6-contact-actions-on-real-devices-calls-whatsapp-telegram-chat).
+
+Document verification retired, 31 October 2026: following the customer's
+assignment, the owner removed ID scans, vehicle photos and OCR from driver
+registration. The `verification` package, the `ocr-worker` command,
+`Dockerfile.ocr-worker`, `deploy/ocr`, the `ocr` Compose profile, the
+`VERIFICATION_*` / `OCR_*` settings and `GET /admin/verification/queue` were
+removed. Registration now takes a typed IIN (check digit, unique among live
+drivers) and approves automatically at submission (ARCHITECTURE §11.1). Nothing
+was deleted: rows in the migration 00011 tables and the stored ID and vehicle
+files are kept, and old files stay viewable in the admin panel; migration 00013
+only adds `driver_profiles.iin` and `patronymic`.

@@ -70,8 +70,34 @@ func TestRegistrationRules(t *testing.T) {
 	if empty.Status() != StatusDraft || !empty.Editable() {
 		t.Fatal("registration without a profile is an editable draft")
 	}
-	if got := empty.MissingFields(false); fmt.Sprint(got) != "[avatar first_name last_name id_front id_back vehicle_class vehicle_make_model vehicle_color vehicle_plate vehicle_photos]" {
+	if got := empty.MissingFields(false); fmt.Sprint(got) != "[avatar first_name last_name identity vehicle_class vehicle_make_model vehicle_color vehicle_plate]" {
 		t.Fatalf("missing without phone requirement = %v", got)
+	}
+	if got := empty.MissingFields(true); fmt.Sprint(got) != "[avatar first_name last_name identity phone vehicle_class vehicle_make_model vehicle_color vehicle_plate]" {
+		t.Fatalf("missing with phone requirement = %v", got)
+	}
+	// Only a valid IIN counts.
+	bad := "900101300018"
+	if got := (Registration{Profile: &Profile{Status: StatusDraft, IIN: &bad}}).MissingFields(false); got[3] != FieldIdentity {
+		t.Fatalf("IIN with a wrong check digit not missing: %v", got)
+	}
+	// Corrections of an application from before the IIN: the flagged fields
+	// and the IIN while none is stored.
+	flagged := []byte(`[{"field":"vehicle_color","reason":"missing_info"}]`)
+	corr := Registration{Profile: &Profile{Status: StatusChangesRequested}, Applications: []Application{
+		{Status: StatusChangesRequested, Corrections: ParseCorrections(flagged)},
+	}}
+	if got := corr.EditableFields(); len(got) != 2 || !got[FieldVehicleColor] || !got[FieldIdentity] {
+		t.Fatalf("editable in corrections without IIN = %v", got)
+	}
+	stored := "900101300017"
+	corr.Profile.IIN = &stored
+	if got := corr.EditableFields(); len(got) != 1 || !got[FieldVehicleColor] {
+		t.Fatalf("editable in corrections with IIN = %v", got)
+	}
+	// Legacy correction fields are kept rather than dropped.
+	if got := CorrectionFields(ParseCorrections([]byte(`[{"field":"vehicle_photos","reason":"other"},{"field":"id_front","reason":"id_unreadable"}]`))); fmt.Sprint(got) != "[id_front vehicle_photos]" {
+		t.Fatalf("legacy correction fields = %v", got)
 	}
 	for _, s := range []string{StatusPending, StatusApproved, StatusRejected, StatusSuspended} {
 		r := Registration{Profile: &Profile{Status: s}}

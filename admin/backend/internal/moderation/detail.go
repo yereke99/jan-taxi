@@ -10,44 +10,42 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yereke99/jantaxi/admin/backend/internal/audit"
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/drivers"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
 )
 
 // DriverDetail is the full driver record for administrators (OpenAPI
-// AdminDriverDetail). Documents is nil without documents.view.
+// AdminDriverDetail). The IIN is masked (IINMasked, nil while the driver has
+// not entered one). Documents (ID scans of drivers registered before they
+// were retired) is nil without documents.view.
 type DriverDetail struct {
-	IdentityConflicts   []verification.Conflict          `json:"identity_conflicts,omitempty"`
-	Identity            *verification.Input              `json:"identity,omitempty"`
-	Verification        *verification.Summary            `json:"verification,omitempty"`
-	VerificationHistory []verification.Summary           `json:"verification_history,omitempty"`
-	ID                  uuid.UUID                        `json:"id"`
-	Code                string                           `json:"code"`
-	Status              string                           `json:"status"`
-	FirstName           string                           `json:"first_name"`
-	LastName            string                           `json:"last_name"`
-	Phone               *string                          `json:"phone"`
-	PhoneVerified       bool                             `json:"phone_verified"`
-	PhoneVerifiedAt     *time.Time                       `json:"phone_verified_at"`
-	City                *drivers.CityRef                 `json:"city"`
-	IsOnline            bool                             `json:"is_online"`
-	OnlineSince         *time.Time                       `json:"online_since"`
-	LastHeartbeatAt     *time.Time                       `json:"last_heartbeat_at"`
-	User                UserView                         `json:"user"`
-	Avatar              *drivers.FileRef                 `json:"avatar"`
-	Documents           *drivers.DocumentsView           `json:"documents"`
-	Vehicle             *drivers.RegistrationVehicleView `json:"vehicle"`
-	Corrections         []drivers.CorrectionItem         `json:"corrections"`
-	Applications        []ApplicationView                `json:"applications"`
-	ModerationEvents    []EventView                      `json:"moderation_events"`
-	Wallet              *WalletView                      `json:"wallet"`
-	WelcomeBonus        *WelcomeBonusView                `json:"welcome_bonus"`
+	ID               uuid.UUID                        `json:"id"`
+	Code             string                           `json:"code"`
+	Status           string                           `json:"status"`
+	FirstName        string                           `json:"first_name"`
+	LastName         string                           `json:"last_name"`
+	Patronymic       string                           `json:"patronymic"`
+	IINMasked        *string                          `json:"iin_masked"`
+	Phone            *string                          `json:"phone"`
+	PhoneVerified    bool                             `json:"phone_verified"`
+	PhoneVerifiedAt  *time.Time                       `json:"phone_verified_at"`
+	City             *drivers.CityRef                 `json:"city"`
+	IsOnline         bool                             `json:"is_online"`
+	OnlineSince      *time.Time                       `json:"online_since"`
+	LastHeartbeatAt  *time.Time                       `json:"last_heartbeat_at"`
+	User             UserView                         `json:"user"`
+	Avatar           *drivers.FileRef                 `json:"avatar"`
+	Documents        *drivers.DocumentsView           `json:"documents"`
+	Vehicle          *drivers.RegistrationVehicleView `json:"vehicle"`
+	Corrections      []drivers.CorrectionItem         `json:"corrections"`
+	Applications     []ApplicationView                `json:"applications"`
+	ModerationEvents []EventView                      `json:"moderation_events"`
+	Wallet           *WalletView                      `json:"wallet"`
+	WelcomeBonus     *WelcomeBonusView                `json:"welcome_bonus"`
 	// Bonuses is the driver's bonus history, newest first (§22.7).
 	Bonuses          []BonusView           `json:"bonuses"`
 	Stats            Stats                 `json:"stats"`
@@ -126,7 +124,7 @@ type Stats struct {
 
 // LoadDetail assembles the admin view of a driver. ID document references are
 // included only for admins with documents.view.
-func LoadDetail(ctx context.Context, q db.Querier, driverID uuid.UUID, admin auth.AdminPrincipal, services ...*verification.Service) (DriverDetail, error) {
+func LoadDetail(ctx context.Context, q db.Querier, driverID uuid.UUID, admin auth.AdminPrincipal) (DriverDetail, error) {
 	reg, err := drivers.LoadRegistration(ctx, q, driverID)
 	if err != nil {
 		return DriverDetail{}, err
@@ -135,6 +133,7 @@ func LoadDetail(ctx context.Context, q db.Querier, driverID uuid.UUID, admin aut
 	phoneNum, phoneAt := reg.Phone()
 	d := DriverDetail{
 		ID: p.ID, Code: p.Code, Status: p.Status, FirstName: p.FirstName, LastName: p.LastName,
+		Patronymic: p.Patronymic, IINMasked: p.IINMasked(),
 		Phone: phoneNum, PhoneVerified: reg.PhoneVerified(), PhoneVerifiedAt: drivers.UTCPtr(phoneAt),
 		City: drivers.NewCityRef(reg.City), IsOnline: p.IsOnline, OnlineSince: drivers.UTCPtr(p.OnlineSince),
 		LastHeartbeatAt: drivers.UTCPtr(p.LastHeartbeatAt),
@@ -151,27 +150,6 @@ func LoadDetail(ctx context.Context, q db.Querier, driverID uuid.UUID, admin aut
 		SuspendedAt: drivers.UTCPtr(p.SuspendedAt), SuspendedReason: p.SuspendedReason,
 		PDConsentAt: drivers.UTCPtr(p.PDConsentAt), PDConsentVersion: p.PDConsentVersion,
 		CreatedAt: p.CreatedAt.UTC(), UpdatedAt: p.UpdatedAt.UTC(),
-	}
-	if len(services) > 0 && services[0].Enabled() {
-		s := services[0]
-		var err error
-		d.Verification, err = s.Summary(ctx, q, driverID, admin.Can(auth.PermDocumentsView))
-		if err != nil {
-			return d, err
-		}
-		if admin.Can(auth.PermDocumentsView) {
-			d.VerificationHistory, err = s.History(ctx, q, driverID)
-			if err != nil {
-				return d, err
-			}
-			d.Identity, _, err = s.LoadInput(ctx, q, driverID)
-			if err == nil && d.Identity != nil {
-				d.IdentityConflicts, err = s.Conflicts(ctx, q, driverID, *d.Identity)
-			}
-			if err != nil {
-				return d, err
-			}
-		}
 	}
 	d.Corrections, _ = reg.OpenCorrections()
 	if admin.Can(auth.PermDocumentsView) {
@@ -254,14 +232,9 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	d, err := LoadDetail(r.Context(), h.pool, id, admin, h.verification)
+	d, err := LoadDetail(r.Context(), h.pool, id, admin)
 	if err != nil {
 		return err
-	}
-	if d.Identity != nil {
-		if err := audit.Log(r.Context(), h.pool, r, audit.Entry{Action: "driver.identity_view", EntityType: "driver", EntityID: id.String()}); err != nil {
-			return err
-		}
 	}
 	return httpx.OK(w, d)
 }

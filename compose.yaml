@@ -80,11 +80,6 @@ x-api-env: &api-env
   DRIVER_ONLINE_IDLE_TIMEOUT: ${DRIVER_ONLINE_IDLE_TIMEOUT:-}
   NOTIFICATION_WORKER_ENABLED: ${NOTIFICATION_WORKER_ENABLED:-}
   JOBS_ENABLED: ${JOBS_ENABLED:-}
-  VERIFICATION_ENABLED: ${VERIFICATION_ENABLED:-false}
-  VERIFICATION_KEY: ${VERIFICATION_KEY:-}
-  VERIFICATION_AUTO_APPROVE: ${VERIFICATION_AUTO_APPROVE:-true}
-  VERIFICATION_MIN_CONFIDENCE: ${VERIFICATION_MIN_CONFIDENCE:-98}
-  VERIFICATION_QUEUE_LIMIT: ${VERIFICATION_QUEUE_LIMIT:-1000}
   TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
   CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -198,41 +193,6 @@ services:
         limits:
           memory: ${API_MEM_LIMIT:-1g}
           cpus: "${API_CPUS:-2}"
-    logging: *logging
-
-  ocr-worker:
-    <<: *hardening
-    profiles: ["ocr"]
-    image: ${IMAGE_REGISTRY:-jantaxi}/ocr-worker:${IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.ocr-worker
-    restart: unless-stopped
-    init: true
-    environment:
-      <<: *api-env
-      GOMEMLIMIT: 256MiB
-      OMP_THREAD_LIMIT: "1"
-      OMP_NUM_THREADS: "1"
-      OCR_TIMEOUT: ${OCR_TIMEOUT:-60s}
-      OCR_POLL_INTERVAL: ${OCR_POLL_INTERVAL:-2s}
-      OCR_MAX_ATTEMPTS: ${OCR_MAX_ATTEMPTS:-3}
-    volumes:
-      - files:/data/files:ro
-    tmpfs:
-      - /tmp:size=128m,mode=1777
-    pids_limit: 64
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    networks: [backend]
-    stop_grace_period: 70s
-    deploy:
-      resources:
-        limits:
-          memory: ${OCR_MEM_LIMIT:-768m}
-          cpus: "${OCR_CPUS:-1}"
-          pids: 64
     logging: *logging
 
   passenger-bot:

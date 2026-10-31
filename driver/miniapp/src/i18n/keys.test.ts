@@ -48,6 +48,7 @@ describe('i18n keys', () => {
       ...REGISTRATION_FIELDS.map((f) => `registration.field.${f}`),
       ...CORRECTION_REASONS.map((r) => `registration.reason.${r}`),
       ...['required', 'too_long', 'invalid'].map((e) => `registration.form_errors.${e}`),
+      ...['required', 'length', 'checksum', 'taken'].map((e) => `registration.personal.iin_errors.${e}`),
       ...['unsupported', 'too_large'].map((e) => `registration.upload.${e}`),
       ...CONSENT_SECTIONS.flatMap((s) => [`registration.consent.sections.${s}.title`, `registration.consent.sections.${s}.text`]),
       ...ORDER_STATUSES.map((s) => `trip.status.${s}`),

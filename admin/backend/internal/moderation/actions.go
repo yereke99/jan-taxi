@@ -54,15 +54,12 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, fn actionFunc) err
 		if err != nil {
 			return err
 		}
-		if err := fn(ctx, tx, admin, p); err != nil {
-			return err
-		}
-		return h.verification.AdminDecision(ctx, tx, p.ID)
+		return fn(ctx, tx, admin, p)
 	})
 	if err != nil {
 		return err
 	}
-	d, err := LoadDetail(ctx, h.pool, id, admin, h.verification)
+	d, err := LoadDetail(ctx, h.pool, id, admin)
 	if err != nil {
 		return err
 	}
@@ -161,7 +158,9 @@ type approveRequest struct {
 	Comment *string `json:"comment"`
 }
 
-func (h *Handler) approve(w http.ResponseWriter, r *http.Request) error {
+// approveByAdmin approves an application that is still pending from before
+// registrations were approved automatically on submission.
+func (h *Handler) approveByAdmin(w http.ResponseWriter, r *http.Request) error {
 	var req approveRequest
 	if err := decodeOptionalJSON(w, r, &req); err != nil {
 		return err
@@ -182,7 +181,7 @@ func (h *Handler) approve(w http.ResponseWriter, r *http.Request) error {
 		if !ok {
 			return invalidTransition(p.Status, "approve")
 		}
-		return h.approveApplication(ctx, tx, p, appID, admin, comment, r)
+		return approve(ctx, tx, r, p, appID, admin, comment)
 	})
 }
 
@@ -534,23 +533,13 @@ func (h *Handler) updateCity(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
-// AutoApprove is used only after a current, fully matched OCR result is fenced
-// by the verification worker transaction. All existing approval effects run.
-func (h *Handler) AutoApprove(ctx context.Context, tx pgx.Tx, driverID, applicationID uuid.UUID) error {
-	p, err := drivers.LockProfile(ctx, tx, driverID)
-	if err != nil {
-		return err
-	}
-	appID, ok, err := openApplication(ctx, tx, p.ID, drivers.StatusPending)
-	if err != nil {
-		return err
-	}
-	if !ok || p.Status != drivers.StatusPending || appID != applicationID {
-		return invalidTransition(p.Status, "approve")
-	}
-	return h.approveApplication(ctx, tx, p, appID, auth.AdminPrincipal{}, nil, nil)
-}
-func (h *Handler) approveApplication(ctx context.Context, tx pgx.Tx, p drivers.Profile, appID uuid.UUID, admin auth.AdminPrincipal, comment *string, r *http.Request) error {
+// approve approves the pending application appID of the locked profile p: an
+// administrator's decision (admin set, r the request) or the automatic one at
+// submission (zero admin, r nil; the actor is the system). Both run the same
+// effects: plate claim, status, the reviewed application and its event, the
+// wallet, the audit row, the moderation_approved message, the welcome bonus
+// once per phone and plate (§22.1) and the realtime events.
+func approve(ctx context.Context, tx pgx.Tx, r *http.Request, p drivers.Profile, appID uuid.UUID, admin auth.AdminPrincipal, comment *string) error {
 	actorType := "admin"
 	var actorID *uuid.UUID
 	if admin.AdminID == uuid.Nil {
@@ -560,25 +549,11 @@ func (h *Handler) approveApplication(ctx context.Context, tx pgx.Tx, p drivers.P
 		actorID = &id
 	}
 	var blocked bool
-	if err := tx.QueryRow(ctx, `SELECT is_blocked FROM users WHERE id=$1`, p.UserID).Scan(&blocked); err != nil {
-		return err
+	if err := tx.QueryRow(ctx, `SELECT is_blocked FROM users WHERE id = $1`, p.UserID).Scan(&blocked); err != nil {
+		return fmt.Errorf("moderation: user state: %w", err)
 	}
 	if blocked {
 		return httpx.Forbidden()
-	}
-	if h.verification.Enabled() {
-		in, err := h.verification.ApplicationInput(ctx, tx, appID)
-		if err != nil {
-			return err
-		}
-		if in != nil && !in.Complete() {
-			return httpx.Validation(map[string]string{"identity": "required"})
-		}
-		if in != nil {
-			if err = h.verification.Claim(ctx, tx, p.ID, appID, *in); err != nil {
-				return err
-			}
-		}
 	}
 	// The plate and phone claims were taken on submission; re-assert the
 	// plate claim in case the vehicle row was changed since.
@@ -592,8 +567,11 @@ func (h *Handler) approveApplication(ctx context.Context, tx pgx.Tx, p drivers.P
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE driver_profiles SET status = 'approved', approved_at = now() WHERE id = $1`, p.ID); err != nil {
-		if db.IsUniqueViolation(err, drivers.PhoneUniqueIndex) {
+		switch {
+		case db.IsUniqueViolation(err, drivers.PhoneUniqueIndex):
 			return drivers.ErrPhoneTaken
+		case db.IsUniqueViolation(err, drivers.IINUniqueIndex):
+			return drivers.ErrIINTaken
 		}
 		return fmt.Errorf("moderation: approve: %w", err)
 	}

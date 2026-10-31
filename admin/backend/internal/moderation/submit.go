@@ -11,18 +11,17 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/drivers"
-	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
-	"github.com/yereke99/jantaxi/admin/backend/internal/verification"
 )
 
-// submitRequest carries the personal-data consent given on the review step.
-// Consent is required on the first submission; a resubmission may omit it
-// when it was given before.
+// submitRequest carries the personal-data consent given with «Тіркелуді
+// аяқтау». Consent is required on the first submission; a resubmission may
+// omit it when it was given before. The Mini App asks again whenever the
+// version of its consent text changes.
 type submitRequest struct {
 	PDConsent        *bool   `json:"pd_consent"`
 	PDConsentVersion *string `json:"pd_consent_version"`
@@ -39,13 +38,16 @@ func errIncomplete(missing []string) error {
 		WithDetails(map[string]any{"missing_fields": missing})
 }
 
-// snapshot is the application data as submitted in one round.
+// snapshot is the application data as submitted in one round. The IIN is only
+// kept masked: snapshots are shown to administrators as they are.
 type snapshot struct {
 	Round            int               `json:"round"`
 	Code             string            `json:"code"`
 	CityID           uuid.UUID         `json:"city_id"`
 	FirstName        string            `json:"first_name"`
 	LastName         string            `json:"last_name"`
+	Patronymic       string            `json:"patronymic"`
+	IINMasked        *string           `json:"iin_masked"`
 	Phone            *string           `json:"phone"`
 	AvatarFileID     *uuid.UUID        `json:"avatar_file_id"`
 	Documents        snapshotDocuments `json:"documents"`
@@ -54,6 +56,7 @@ type snapshot struct {
 	FileIDs          []uuid.UUID       `json:"file_ids"`
 }
 
+// snapshotDocuments are ID scans uploaded before they were retired (nil since).
 type snapshotDocuments struct {
 	IDFront *uuid.UUID `json:"id_front"`
 	IDBack  *uuid.UUID `json:"id_back"`
@@ -89,7 +92,8 @@ func buildSnapshot(reg drivers.Registration, round int, consentVersion *string) 
 	p := reg.Profile
 	phoneNum, _ := reg.Phone()
 	s := snapshot{
-		Round: round, Code: p.Code, CityID: p.CityID, FirstName: p.FirstName, LastName: p.LastName, Phone: phoneNum,
+		Round: round, Code: p.Code, CityID: p.CityID, FirstName: p.FirstName, LastName: p.LastName,
+		Patronymic: p.Patronymic, IINMasked: p.IINMasked(), Phone: phoneNum,
 		AvatarFileID:     fileID(reg.Avatar),
 		Documents:        snapshotDocuments{IDFront: fileID(reg.IDFront), IDBack: fileID(reg.IDBack)},
 		PDConsentVersion: consentVersion,
@@ -109,8 +113,9 @@ func buildSnapshot(reg drivers.Registration, round int, consentVersion *string) 
 	return s
 }
 
-// submit sends the registration (draft) or the corrected registration
-// (changes_requested) for moderation.
+// submit finishes the registration (draft) or the corrected registration
+// (changes_requested): when the automatic checks pass the driver is approved
+// at once and may go online.
 func (h *Handler) submit(w http.ResponseWriter, r *http.Request) error {
 	p, err := auth.RequirePrincipal(r)
 	if err != nil {
@@ -127,24 +132,40 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	requirePhone := settings.RequirePhoneVerification(ctx, h.pool)
 	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		return Submit(ctx, tx, d.ID, p.UserID, req.PDConsent, req.PDConsentVersion, requirePhone, h.verification)
+		return Submit(ctx, tx, d.ID, p.UserID, req.PDConsent, req.PDConsentVersion, requirePhone)
 	})
 	if err != nil {
 		return err
 	}
-	v, err := drivers.RegistrationResponse(ctx, h.pool, p.UserID, h.verification)
+	v, err := drivers.RegistrationResponse(ctx, h.pool, p.UserID)
 	if err != nil {
 		return err
 	}
 	return httpx.OK(w, v)
 }
 
-// Submit moves a draft or changes_requested registration to pending inside tx:
-// completeness and phone checks, consent, phone and plate claims (the unique
-// indexes make two simultaneous claims of one plate or phone end with exactly
-// one winner), a new application round with a snapshot, the moderation event,
-// the realtime hint for moderators and the driver's notification.
-func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent *bool, consentVersion *string, requirePhone bool, services ...*verification.Service) error {
+// Submit runs the automatic checks on a draft or changes_requested
+// registration inside tx and, when they pass, approves it in the same
+// transaction (owner decision 2026-10-31: no manual review):
+//
+//   - everything required is there: profile photo, names, a valid IIN,
+//     vehicle class, make and model, colour and plate (422
+//     registration_incomplete with details.missing_fields), and a
+//     Telegram-verified phone while driver.require_phone_verification is on
+//     (422 phone_not_verified when it is the only gap);
+//   - the personal-data consent (422 validation_failed, fields.pd_consent*);
+//   - the IIN, the phone and the plate are not held by another live driver
+//     (409 iin_taken, phone_taken, plate_taken). The partial unique indexes
+//     make simultaneous claims end with exactly one winner; one profile per
+//     Telegram account is the unique users key of driver_profiles.
+//
+// It records the application round (the snapshot keeps the IIN masked) and
+// the submission event, then approves through the path administrators use
+// (approve) with the system as the actor: the welcome bonus once per phone and
+// plate, the approval event, audit rows, the moderation_approved message and
+// the realtime events. Any failure rolls everything back and the registration
+// stays editable.
+func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent *bool, consentVersion *string, requirePhone bool) error {
 	prof, err := drivers.LockProfile(ctx, tx, driverID)
 	if err != nil {
 		return err
@@ -172,6 +193,13 @@ func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent 
 	if len(missing) > 0 {
 		return errIncomplete(missing)
 	}
+	held, err := drivers.IINHeldByOther(ctx, tx, reg.IIN(), driverID)
+	if err != nil {
+		return err
+	}
+	if held {
+		return drivers.ErrIINTaken
+	}
 
 	phoneNum, phoneAt := reg.Phone()
 	_, err = tx.Exec(ctx, `
@@ -180,10 +208,12 @@ func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent 
 		    pd_consent_at = CASE WHEN $4 THEN now() ELSE pd_consent_at END,
 		    pd_consent_version = CASE WHEN $4 THEN $5 ELSE pd_consent_version END
 		WHERE id = $1`, driverID, phoneNum, phoneAt, giveConsent, version)
-	if db.IsUniqueViolation(err, drivers.PhoneUniqueIndex) {
+	switch {
+	case db.IsUniqueViolation(err, drivers.PhoneUniqueIndex):
 		return drivers.ErrPhoneTaken
-	}
-	if err != nil {
+	case db.IsUniqueViolation(err, drivers.IINUniqueIndex):
+		return drivers.ErrIINTaken
+	case err != nil:
 		return fmt.Errorf("moderation: submit: %w", err)
 	}
 	if err := vehicles.SetStatus(ctx, tx, reg.Vehicle.ID, vehicles.StatusClaimed); err != nil {
@@ -206,22 +236,6 @@ func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent 
 		return fmt.Errorf("moderation: create application: %w", err)
 	}
 
-	if len(services) > 0 && services[0].Enabled() {
-		docs := []verification.Document{}
-		for _, f := range []*drivers.FileMeta{reg.IDFront, reg.IDBack} {
-			if f != nil {
-				var hash, kind string
-				if err := tx.QueryRow(ctx, `SELECT sha256,purpose FROM files WHERE id=$1`, f.ID).Scan(&hash, &kind); err != nil {
-					return err
-				}
-				docs = append(docs, verification.Document{ID: f.ID, SHA256: hash, Kind: kind})
-			}
-		}
-		if err := services[0].Enqueue(ctx, tx, driverID, appID, prof.FirstName, prof.LastName, docs); err != nil {
-			return err
-		}
-	}
-
 	action := drivers.ActionSubmitted
 	if from == drivers.StatusChangesRequested {
 		action = drivers.ActionResubmitted
@@ -234,20 +248,11 @@ func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent 
 	}
 	prof.Status = drivers.StatusPending
 	if err := publish(ctx, tx, realtime.ModerationSubmitted, prof, map[string]any{
-		"application_id": appID, "round": round, "status": drivers.StatusPending,
+		"application_id": appID, "round": round,
 	}); err != nil {
 		return err
 	}
-	if err := notifications.Enqueue(ctx, tx, notifications.Notification{
-		Bot: notifications.DriverBot, UserID: userID, Template: notifications.TplModerationSubmitted,
-		DedupeKey: "moderation_submitted:" + appID.String(),
-	}); err != nil {
-		return err
-	}
-	if len(services) > 0 {
-		return services[0].NotifyReviewIfNeeded(ctx, tx, driverID, appID)
-	}
-	return nil
+	return approve(ctx, tx, nil, prof, appID, auth.AdminPrincipal{}, nil)
 }
 
 // checkConsent validates the personal-data consent. It returns whether a new

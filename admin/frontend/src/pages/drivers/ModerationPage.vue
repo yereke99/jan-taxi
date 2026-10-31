@@ -1,6 +1,8 @@
 <!--
   Moderation queue: pending applications, oldest first, with a side-by-side
-  review of declared data and evidence. Shortcuts: J/K next/previous,
+  review of declared data and evidence. Registrations that pass the
+  automatic checks are approved on submission, so only applications
+  submitted before that wait here. Shortcuts: J/K next/previous,
   A approve, C request corrections, R reject.
 -->
 <script setup lang="ts">
