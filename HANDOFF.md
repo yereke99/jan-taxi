@@ -1,11 +1,34 @@
-# Jan Taxi — Handoff (status as of 2026-10-31, Asia/Aqtobe)
+# Jan Taxi — Handoff (status as of 2026-11-01, Asia/Aqtobe)
 
 This file tells the next engineer exactly what is done, what is verified,
 and what is left. Read `docs/ARCHITECTURE.md` first — it is the binding design contract
 (module boundaries, order state machine, money model, auth, realtime, endpoint catalogue §19,
 cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 
-## 0. Latest status (2026-10-31)
+## 0. Latest status (2026-11-01)
+
+Passenger-written addresses and village commissions (owner, 01.11.2026); details in
+ARCHITECTURE §5 and §22.9, findings and checks in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md) §8.
+
+- Pickup A and B (and intermediate stops) may both be the passenger's own words, e.g. an order for
+  another person at a place known only locally. A keeps the passenger's GPS position or pin, so
+  dispatch by radius is unchanged. A typed A is stored with `order_stops.address_typed` (migration
+  **00014**); the text survives map zoom and pin refinements until the passenger replaces it.
+- Drivers see such text verbatim and marked everywhere: «Место указано пассажиром» in the Mini App,
+  «✍️ Адрес написан пассажиром» / «✍️ — место указано пассажиром, точки на карте нет; маршрут не
+  рассчитан» in the bot offer, trip card, `/orders` and `/trip`; «12, 5» is no longer hidden as a
+  map point; three long intermediate stops are never cut; `/orders` stays within Telegram's limit.
+- Village commissions (migration **00015**, package `commissionareas`): admins draw villages as
+  circles (radius proposed from OpenStreetMap: the village outline and half the distance to the
+  nearest neighbour) or boundaries and set a percentage of the fare; an order whose pickup A lies
+  in a village gets that percentage at creation (nearest centre wins on overlaps), charged at
+  acceptance; outside every village the general commission applies. Admin page «Сёла и комиссия»;
+  the order view shows the village; `orders.csv` gains `via_addresses`, `passenger_written_stops`
+  and `commission_area`, and its formula guard also covers `;`-separated cells.
+- Deploy as before: `make build` and `make up` (the migrate service applies 00014 and 00015; no
+  `.env` change).
+
+### 2026-10-31
 
 Driver system overhaul after the customer's assignment of 30.10.2026; findings, root causes and
 changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
@@ -129,14 +152,16 @@ changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
 
 ## 2. Verified state (commands actually run, all green)
 
-- Go (2026-10-31): `gofmt -l`, `go vet ./...`, `go test -race -count=1 ./...` → **43 packages ok, 0 failures**
+- Go (2026-11-01): `gofmt -l`, `go vet ./...`, `go test -race -count=1 ./...` → **44 packages ok, 0 failures**
   (needs a PostGIS on `localhost:55432`; see §5). Includes:
   - 50 drivers accepting one order concurrently over real HTTP → exactly one winner, 49 × `409 order_already_taken`,
     one reservation, one ledger reserve row (`admin/backend/internal/orders/concurrency_test.go`).
   - Commission charged exactly once under concurrent completes; wallet ledger reconciliation; idempotent top-up credit;
     duplicate Kaspi transaction id rejected; phone/plate uniqueness; geofence (Kazakhstan in, Orenburg/Tashkent/Bishkek out).
-- Frontend (2026-10-31): `vue-tsc` clean, lint and `vite build` ok; vitest → driver 516, passenger 374, admin 115
-  tests passing; `verify-shared` → 85 identical shared files.
+- Frontend (2026-11-01): `vue-tsc` clean, lint and `vite build` ok; vitest → driver 546, passenger 398, admin 146
+  tests passing; `verify-shared` → shared core identical (87 files).
+- Upgrade (2026-11-01): the previous release `5070b9c` with orders, updated through `make preflight`, `make config`,
+  `make build`, `make up`, `make health` → migrations 13 → 15, API ready, both bots healthy and answering `/start`.
 - Migrations apply cleanly on PostGIS 3.5 / PostgreSQL 17.
 
 ## 3. In progress when this file was written

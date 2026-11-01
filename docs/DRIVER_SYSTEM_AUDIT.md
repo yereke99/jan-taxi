@@ -136,3 +136,33 @@ Upgrade check, run the way the server is updated: the previous release (`3e12d4d
 
 Not covered here: real Telegram clients (iOS, Android, Desktop). For calls, see the device checklist
 in docs/TESTING.md §6; registration checks on a phone are listed in the completion report.
+
+## 8. Follow-up, 1 November 2026: passenger-written addresses and village commissions
+
+Owner's requests: (1) A and B may both be written by the passenger (a local name, an order for another
+person); the order still goes to the nearest drivers by radius from the creator's geolocation, and
+drivers must see the texts; (2) each village has its own driver commission as a percentage of the fare
+(5, 7, 10 %…), drawn by the admin on a map, applied by pickup A. Rules: ARCHITECTURE §3, §5, §22.9.
+
+| # | Found | Change |
+|---|---|---|
+| T1 | Zooming the home map moved pickup A (MapLibre zooms around the fingers), and any move replaced a typed A's text with a street name; «Картадан таңдау» did the same without moving. | Zoom keeps the point under the pin (shared `maps/centerZoom.ts`); moving A's point keeps the passenger's text (`setPickupPoint`); only an edit, a search result, a recent place or «my location» replaces it. |
+| T2 | A typed A could be attached to the default map centre named after a failed GPS attempt, so drivers around Embi got an order from another village. | The text needs a real point: GPS, a pin the passenger dragged (`pinPlaced`, kept across screens; a zoom does not count) or a chosen place; otherwise the search asks to mark A first. |
+| T3 | Manual B disappeared for the whole session when the public config failed at launch. | The search sheet reloads the config. |
+| T4 | Nothing marked a typed A as the passenger's words. | `order_stops.address_typed` (migration 00014, `StopInput.address_typed`), echoed on every stop; «Место указано пассажиром» in the driver app, the passenger's own order and the admin panel. |
+| T5 | The driver bot never said an address was written by the passenger or that the route was not calculated; numbers such as «12, 5» became «Точка на карте»; a third long intermediate stop was cut; five long cards could push `/orders` over Telegram's limit (nothing sent). | Offer and trip card: «✍️ Адрес написан пассажиром», ✍️ after stops without a map point and «✍️ — место указано пассажиром, точки на карте нет; маршрут не рассчитан»; `/orders` and `/trip` the same; only coordinates with decimals are hidden (Go and both Mini Apps); `via` holds 640 code points; `/orders` keeps within 3 800 UTF-16 units and leaves the rest to the Mini App. |
+| T6 | Driver app: map letters shifted after a stop without coordinates; the "no map point" note vanished while heading to that stop; the order screen showed dash chips. | Letters by seq; the note stays; unknown metrics give one «Маршрут не рассчитан» chip. |
+| T7 | Preview: `outside_service_area` named the wrong stop when a manual stop came first; the confirm screen never showed the passenger's texts. | Index mapped back to the request; the confirm screen lists the written stops. |
+| T8 | CSV: intermediate stops missing; a `;` inside a passenger text could start a formula cell in Russian/Kazakh Excel. | Columns `via_addresses`, `passenger_written_stops`, `commission_area`; the formula guard also covers triggers after `;` and `,`. |
+| C1 | Commission was one global policy (fixed 50 ₸ or the tariff's percentage). | Table `commission_areas` (migration 00015, package `commissionareas`), admin page «Сёла и комиссия»: search a village (geocoder), radius proposed from OpenStreetMap (outline size, half the distance to the nearest neighbour), circle or drawn boundary, percentage, «проверить точку». Order creation snapshots the village of pickup A (nearest centre on overlaps; `commission_area_id/_name`), charged at acceptance; the admin order view and the CSV show it; the audit log names the entity. |
+| C2 | The driver wallet and home screens presented the general fixed amount as every order's charge. | Public config `commission.by_area`: with active villages the app names no amount and computes no "orders paused"; the server's per-order checks decide. |
+
+Verification (1.11.2026): see the release notes in the completion report — `go test -race ./...`
+with PostGIS, OpenAPI route checks, all three apps (types, unit tests, lint, build), `verify-shared`,
+and an upgrade of the running previous release (`5070b9c`, schema 13, with orders) through
+`make preflight`, `make config`, `make build`, `make up`, `make health`: migrations 13 → 15 applied by
+the migrate service, existing orders unchanged (`address_typed` false, no village), API ready at
+schema 15, both bots healthy and answering `/start` (Telegram stand-in), the Mini Apps and the admin
+panel served by Caddy. Not covered: real Telegram clients and a live Photon instance for the radius
+proposal (covered by unit tests with fixed settlements).
+

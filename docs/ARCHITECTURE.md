@@ -116,9 +116,14 @@ fails if the copies drift.
   енгізіңіз» button as the other stops (e.g. «Мешіттің жанында, көк қақпа»). The text replaces only A's
   address (same cleaning and 200-code-point limit as every stop address); A stays an ordinary stop at
   its coordinates (`mode` `geocoded`; a `manual` pickup is refused with `pickup_coordinates_required`),
-  and the driver bot offer, the driver Mini App and the admin panel show the text as the pickup. Moving
-  the pin or choosing another place for A replaces the text. Without a pin or GPS position the app does
-  not offer the typed pickup. Stops after A may instead be `manual`, without coordinates (§5).
+  and the driver bot offer, the driver Mini App and the admin panel show the text as the pickup. The
+  text stays until the passenger replaces it: moving the home screen's pin, confirming «Картадан
+  таңдау» or dragging marker A moves only A's point (coordinates, locality line, Kazakhstan check);
+  editing the text or choosing a search result, a recent place or «Менің орнымды пайдалану» for A
+  replaces it. The typed pickup needs a real point — the GPS position, a pin the passenger placed or a
+  place they chose, never the default map centre the home screen names after a failed GPS attempt;
+  without one the place search offers no typed pickup and asks to mark A on the map or turn on
+  location first. Stops after A may instead be `manual`, without coordinates (§5).
 
 ## 4. Identity and authentication
 
@@ -188,6 +193,19 @@ passenger's words with `NULL` coordinates — while `orders.manual_destination_e
 `orders.manual_destination_pricing` is `passenger_tariff_bounds`; such a route gets no OSRM route or
 metrics, and each class's quote offers the administrator's tariff range (`fare.recommended: null`,
 `pricing_mode: passenger_tariff_bounds`).
+
+Passenger-written addresses (owner, 2026-11-01): A and B may both be the passenger's own words, e.g.
+an order for another person at a place known only by a local name. The order is still offered by
+radius from A's coordinates — the passenger's GPS position or the pin they placed (§7). A typed A is
+stored with `order_stops.address_typed = true` (`StopInput.address_typed`, echoed on every `Stop`,
+`StopSummary` and `QuoteStop`); a manual stop is the passenger's words by definition and keeps
+`false`. Every channel shows such text verbatim (never as «Point on the map»; only coordinate labels
+with decimals are hidden) and marks it: the driver Mini App, the passenger app and the admin panel
+with «Место указано пассажиром», the driver bot offer and trip card with the lines «✍️ Адрес написан
+пассажиром» under A and, for stops without a map point, a ✍️ after their address plus «✍️ — место
+указано пассажиром, точки на карте нет; маршрут не рассчитан»; `/orders` and `/trip` the same. The
+bot `via` line holds up to three 200-character stops uncut; `/orders` leaves cards that would pass
+Telegram's 4096-character limit to the Mini App list.
 
 Fare: `POST /orders` accepts any of the quote's `fare.options` (`min_fare..max_fare` on the
 `fare_step` grid; otherwise `422 fare_not_allowed`). The passenger app (customer decision, 2026-10-31):
@@ -865,6 +883,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET/POST | /admin/cities ; PATCH /admin/cities/{id} | dashboard.view (GET) / config.manage | cities |
 | GET/POST | /admin/cities/{id}/zones ; PATCH/DELETE /admin/zones/{id} | config.manage | cities |
 | GET/POST | /admin/places ; PATCH/DELETE /admin/places/{id} | config.manage | cities |
+| GET/POST | /admin/commission-areas ; PATCH/DELETE /admin/commission-areas/{id} ; GET …/resolve, …/suggest, …/search (§22.9) | config.manage | commissionareas |
 | GET | /admin/tariffs?city_id=&vehicle_class= ; POST /admin/tariffs (new version, `vehicle_class`) | dashboard.view / config.manage | pricing |
 | GET/POST | /admin/vehicle-classes ; PATCH /admin/vehicle-classes/{code} (§21) | config.manage | vehicleclasses |
 | GET/PATCH | /admin/settings | config.manage | settings |
@@ -1183,3 +1202,34 @@ offers) where they conflict.
   with 7+ seats for a party of ≤ 4 asks first with an iOS action sheet. A taxi is ordered at exactly
   that price, with no fare field to fill in (§5).
 - Tariff region and locality: see §3 (KAZ default region, `orders.locality`, driver code prefix).
+
+### 22.9 Village commissions (owner, 2026-11-01)
+- Each rural village can have its own driver commission, a **percentage of the fare** (e.g. 5 %, 7 %,
+  10 %), set by an administrator (`config.manage`) in «Сёла и комиссия» (`/admin/commission-areas`,
+  table `commission_areas`). Passenger prices are unchanged (tariffs per region, §3); drivers never
+  see the commission (§22.2).
+- **Which village:** the one whose area covers **pickup A** — A's coordinates, i.e. the passenger's
+  GPS position or pin, also when A's address was typed (§5). An area is a circle (`radius_m`
+  200–50 000 around the village `center`) or a drawn boundary (`polygon`, the service-zone geometry
+  rules); where areas overlap, the village whose **centre is nearest** to A wins (equal distances: by
+  name). Inactive areas are ignored. Outside every area the general policy applies (`commission.mode`,
+  `commission.fixed_amount`, the tariff's `commission_bps`).
+- **When:** resolved in the order-creation transaction and snapshotted on the order
+  (`commission_mode = percent`, `commission_bps` = the village's rate, `commission_amount` = the
+  rounded percentage of the fare, `commission_area_id`, `commission_area_name`); charged at
+  acceptance exactly like any commission (§22.2). Changing or deleting an area never touches orders
+  already created; a deleted area leaves its name on its orders (`commission_area.id` becomes
+  `null`). The admin order view shows the village (`commission_area`), `orders.csv` the column
+  `commission_area`.
+- **Radius proposal** (`GET /admin/commission-areas/suggest`): from OpenStreetMap through the
+  geocoder (Photon's city layer lists the settlements around the centre with their outlines):
+  the settlement whose outline covers the centre → the half-diagonal of its outline box plus the
+  centre's offset, × 1.2 for the outskirts (`osm_extent`); a settlement mapped as a point within 3 km
+  → a typical reach of its kind (city 8 km, town 4 km, village 2 km, hamlet 1 km; `osm_type`);
+  otherwise 2.5 km (`default`). The radius is then at most **half the distance to the nearest other
+  village** (another active area or a settlement of the map data), so neighbouring circles meet
+  halfway instead of overlapping, kept within 0.5–15 km (less only between villages closer than a
+  kilometre) and rounded to 100 m. The administrator can change it (drag the edge, type km) or draw
+  the exact boundary instead. `GET /admin/commission-areas/resolve` answers which village (if any) a
+  point belongs to; `GET /admin/commission-areas/search` finds a village by name.
+- Audit: `commission_area.create`, `commission_area.update`, `commission_area.delete`.

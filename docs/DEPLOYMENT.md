@@ -229,7 +229,7 @@ make up
 make health
 ```
 
-This applies the pending migrations (such as 12 and 13) before API startup and
+This applies the pending migrations (such as 12–15) before API startup and
 preserves database, uploads, `.env` and backups. Reopen the Mini Apps after
 updating their JavaScript. Check the admin manual-address setting if it was
 explicitly disabled.
@@ -241,9 +241,19 @@ container (`--remove-orphans`), and a leftover `ocr` in `COMPOSE_PROFILES` or
 `VERIFICATION_*` / `OCR_*` lines are ignored (delete them whenever convenient).
 Stored ID scans stay in the private volume and remain viewable in the admin panel.
 
+The release of 1 November 2026 (passenger-written addresses and village commissions,
+ARCHITECTURE §5 and §22.9) is updated the same way and needs no change to `.env`.
+`make up` applies migrations 14 (`order_stops.address_typed`) and 15 (table
+`commission_areas`, two nullable `orders` columns) before the API starts; both only
+add columns and a table. Orders keep the general commission until an administrator
+adds villages in «Сёла и комиссия». The radius proposal uses OpenStreetMap
+settlements when the geocoder is Photon (public or self-hosted); with 2GIS or `none`
+it proposes 2.5 km and the distance to the villages already configured.
+
 ## 7. Rollback
 
-If the new release misbehaves and its migrations were backward compatible:
+If the new release misbehaves and its migrations were backward compatible (all
+migrations up to 15 are: the previous release reads named columns only):
 
 ```sh
 export IMAGE_TAG=<previous tag>
