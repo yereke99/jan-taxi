@@ -3,7 +3,8 @@
   Fixed pin over the map's visual centre for "move the map beneath the pin"
   point selection. Place it inside <MapView>; it lifts while the map moves and
   drops when the camera settles. The tip sits exactly on the padded centre
-  (map.getCenter()), so pass the same padding the map uses.
+  (map.getCenter()), so pass the same padding the map uses. While the pin is
+  shown, zoom gestures keep the point under it (centerZoom.ts).
 
   `callout` adds the white bubble above the pin: a small grey caption, the
   address in bold (a loading bar while the map moves or the address is being
@@ -12,6 +13,7 @@
 <script setup lang="ts">
 import { ChevronRight } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
+import { zoomAroundCenter } from './centerZoom'
 import { useMap } from './context'
 
 export interface PinCallout {
@@ -50,9 +52,11 @@ watch(
     }
     m.on('movestart', start)
     m.on('moveend', end)
+    const restoreZoom = zoomAroundCenter(m)
     onCleanup(() => {
       m.off('movestart', start)
       m.off('moveend', end)
+      restoreZoom()
     })
   },
   { immediate: true },

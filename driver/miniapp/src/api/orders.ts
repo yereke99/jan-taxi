@@ -3,25 +3,27 @@
 // a driver with a problem contacts support, and operators cancel or reassign.
 
 import { http, type RequestOptions } from '../services/http'
-import { normalizeOrderLoad, normalizeOrderPlace, normalizePassenger, num, rec } from './normalize'
-import type { AvailableOrders, CursorList, DriverOrderCard, DriverOrderDetail, DriverOrderSummary } from './types'
+import { normalizeOrderLoad, normalizeOrderPlace, normalizePassenger, normalizeStop, normalizeStops, num, rec } from './normalize'
+import type { AvailableOrders, CursorList, DriverOrderCard, DriverOrderDetail, DriverOrderSummary, Stop } from './types'
 
 function id(orderId: string): string {
   return encodeURIComponent(orderId)
 }
 
-/** An available order card with its load (§21) and place always present. */
+/** An available order card with its load (§21), place and stops always present. */
 export function normalizeCard(raw: unknown): DriverOrderCard {
-  return { ...(rec(raw) as unknown as DriverOrderCard), ...normalizeOrderLoad(raw), ...normalizeOrderPlace(raw) }
+  const r = rec(raw)
+  return { ...(r as unknown as DriverOrderCard), ...normalizeOrderLoad(r), ...normalizeOrderPlace(r), stops: normalizeStops(r.stops) }
 }
 
-/** A driver order view with its load and the passenger contact normalised. */
+/** A driver order view with its load, stops and the passenger contact normalised. */
 export function normalizeDetail(raw: unknown): DriverOrderDetail {
   const r = rec(raw)
   return {
     ...(r as unknown as DriverOrderDetail),
     ...normalizeOrderLoad(r),
     ...normalizeOrderPlace(r),
+    stops: normalizeStops<Stop>(r.stops),
     passenger: normalizePassenger(r.passenger),
     commission_charged: num(r.commission_charged),
     // Drivers cannot cancel (§22.3), whatever an older API says.
@@ -31,7 +33,14 @@ export function normalizeDetail(raw: unknown): DriverOrderDetail {
 
 export function normalizeSummary(raw: unknown): DriverOrderSummary {
   const r = rec(raw)
-  return { ...(r as unknown as DriverOrderSummary), ...normalizeOrderLoad(r), ...normalizeOrderPlace(r), commission_charged: num(r.commission_charged) }
+  return {
+    ...(r as unknown as DriverOrderSummary),
+    ...normalizeOrderLoad(r),
+    ...normalizeOrderPlace(r),
+    pickup: normalizeStop(r.pickup),
+    destination: normalizeStop(r.destination),
+    commission_charged: num(r.commission_charged),
+  }
 }
 
 export async function listAvailable(opts?: RequestOptions): Promise<AvailableOrders> {

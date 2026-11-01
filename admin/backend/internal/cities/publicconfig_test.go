@@ -141,6 +141,18 @@ func TestPublicConfigDriverAndAdmin(t *testing.T) {
 	if _, ok := cfg["fare"]; ok {
 		t.Error("driver config has fare")
 	}
+	if c := cfg["commission"].(map[string]any); c["mode"] != "fixed" || c["fixed_amount"] != float64(50) || c["by_area"] != false {
+		t.Errorf("commission = %v", c)
+	}
+	// With an active village commission the app must not treat the general
+	// fixed amount as every order's (§22.9).
+	if _, err := pool.Exec(ctx, `INSERT INTO commission_areas (name, commission_bps, shape, center_lat, center_lon, radius_m)
+		VALUES ('Ауыл', 700, 'circle', 48.83, 58.15, 2000)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, cfg := getConfig(t, NewPublicConfig(pool, testOptions), "?app=driver"); cfg["commission"].(map[string]any)["by_area"] != true {
+		t.Errorf("by_area with a village = %v", cfg["commission"])
+	}
 
 	_, cfg = getConfig(t, s, "?app=admin")
 	for _, k := range []string{"fare", "kaspi", "topup"} {

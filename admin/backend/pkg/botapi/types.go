@@ -56,6 +56,10 @@ type OrderSummary struct {
 	Currency           string    `json:"currency"`
 	PickupAddress      string    `json:"pickup_address"`
 	DestinationAddress string    `json:"destination_address"`
+	// PickupTyped: A's address is the passenger's own words (A keeps its
+	// map point); DestinationManual: B is the passenger's words without one.
+	PickupTyped       bool `json:"pickup_typed"`
+	DestinationManual bool `json:"destination_manual"`
 	// Locality is the settlement of the pickup (nil when unknown).
 	Locality     *string       `json:"locality"`
 	TariffRegion *TariffRegion `json:"tariff_region"`
@@ -165,7 +169,14 @@ type StopSummary struct {
 	Lat     float64 `json:"lat"`
 	Lon     float64 `json:"lon"`
 	Address string  `json:"address"`
+	// Mode is "manual" for the passenger's words without a map point;
+	// AddressTyped marks a point whose address the passenger wrote.
+	Mode         string `json:"mode"`
+	AddressTyped bool   `json:"address_typed"`
 }
+
+// PassengerWritten reports whether the stop's address is the passenger's own words.
+func (s StopSummary) PassengerWritten() bool { return s.Mode == "manual" || s.AddressTyped }
 
 // OrderCard is an available order as listed to an eligible driver.
 type OrderCard struct {

@@ -222,17 +222,42 @@ func (b *Bot) orders(ctx context.Context, s *session) error {
 	if len(res.Items) == 0 {
 		return b.send(ctx, s, s.t("orders_empty"), b.keyboard(s))
 	}
-	blocks := []string{s.t("orders_title")}
+	text := s.t("orders_title")
 	var rows [][]telegram.InlineKeyboardButton
 	for _, o := range res.Items {
-		blocks = append(blocks, orderCard(s, o))
+		card := orderCard(s, o)
+		// Cards that would push the message over Telegram's limit are left to
+		// «Барлық тапсырыстар» in the Mini App; the first one always fits.
+		if len(rows) > 0 && utf16Len(text)+2+utf16Len(card) > ordersTextBudget {
+			break
+		}
+		text += "\n\n" + card
 		rows = append(rows, []telegram.InlineKeyboardButton{
 			runtime.CallbackButton(s.t("btn_take_order", o.Number), takePrefix+o.ID),
 			runtime.WebAppButton(s.t("btn_map"), b.miniAppURL(ctx, "order_"+o.ID)),
 		})
 	}
 	rows = append(rows, b.appButton(ctx, s, "btn_all_orders", "orders"))
-	return b.send(ctx, s, strings.Join(blocks, "\n\n"), runtime.Inline(rows...))
+	return b.send(ctx, s, text, runtime.Inline(rows...))
+}
+
+// ordersTextBudget bounds the /orders message below Telegram's 4096
+// characters, counted in UTF-16 units of the HTML source (the parsed text is
+// shorter, as tags and entities collapse).
+const ordersTextBudget = 3800
+
+// utf16Len is the length of s in UTF-16 code units, the unit of Telegram's
+// message limit.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= 0x10000 {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // notEligible explains the first reason the driver cannot take orders.
@@ -270,11 +295,18 @@ func orderCard(s *session, o botapi.OrderCard) string {
 		lines = append(lines, l)
 	}
 	if len(o.Stops) > 0 {
-		lines = append(lines, s.t("order_from", runtime.Esc(stopLabel(s, o.Stops[0]))))
-		lines = append(lines, s.t("order_to", runtime.Esc(stopLabel(s, o.Stops[len(o.Stops)-1]))))
+		pickup, dest := o.Stops[0], o.Stops[len(o.Stops)-1]
+		lines = append(lines, s.t("order_from", runtime.Esc(stopLabel(s, pickup))))
+		if pickup.AddressTyped {
+			lines = append(lines, s.t("order_typed"))
+		}
+		lines = append(lines, s.t("order_to", runtime.Esc(stopLabel(s, dest)+manualMark(dest.Mode == "manual"))))
 	}
 	if o.StopCount > 2 {
 		lines = append(lines, s.t("order_stops", o.StopCount-2))
+	}
+	if hasManualStop(o.Stops) {
+		lines = append(lines, s.t("order_manual"))
 	}
 	if o.DistanceToPickupM != nil {
 		lines = append(lines, s.t("order_pickup_dist", runtime.Esc(runtime.FormatDistance(*o.DistanceToPickupM, s.lang))))
@@ -301,9 +333,32 @@ func localityLine(l *string) string {
 }
 
 // stopLabel is the stop address, or "point on the map" when it has none
-// (coordinates are never shown).
+// (coordinates are never shown). A manual stop is the passenger's words and
+// is shown as written.
 func stopLabel(s *session, st botapi.StopSummary) string {
+	if st.Mode == "manual" && strings.TrimSpace(st.Address) != "" {
+		return strings.TrimSpace(st.Address)
+	}
 	return runtime.PlaceLabel(st.Address, s.t("map_point"))
+}
+
+// manualMark ends the address of a stop the passenger described in words
+// without a map point; the order_manual line explains it.
+func manualMark(manual bool) string {
+	if manual {
+		return " ✍️"
+	}
+	return ""
+}
+
+// hasManualStop reports whether any stop of the route has no map point.
+func hasManualStop(list []botapi.StopSummary) bool {
+	for _, st := range list {
+		if st.Mode == "manual" {
+			return true
+		}
+	}
+	return false
 }
 
 // summary loads the driver summary, answering with an error message on failure.
@@ -338,11 +393,19 @@ func (b *Bot) trip(ctx context.Context, s *session) error {
 	if l := localityLine(o.Locality); l != "" {
 		lines = append(lines, l)
 	}
-	lines = append(lines,
-		s.t("order_from", runtime.Esc(runtime.PlaceLabel(o.PickupAddress, s.t("map_point")))),
-		s.t("order_to", runtime.Esc(runtime.PlaceLabel(o.DestinationAddress, s.t("map_point")))),
-		s.t("trip_fare", runtime.Esc(runtime.FormatMoney(o.Fare))),
-	)
+	lines = append(lines, s.t("order_from", runtime.Esc(runtime.PlaceLabel(o.PickupAddress, s.t("map_point")))))
+	if o.PickupTyped {
+		lines = append(lines, s.t("order_typed"))
+	}
+	dest := runtime.PlaceLabel(o.DestinationAddress, s.t("map_point"))
+	if o.DestinationManual && strings.TrimSpace(o.DestinationAddress) != "" {
+		dest = strings.TrimSpace(o.DestinationAddress)
+	}
+	lines = append(lines, s.t("order_to", runtime.Esc(dest+manualMark(o.DestinationManual))))
+	if o.DestinationManual {
+		lines = append(lines, s.t("order_manual"))
+	}
+	lines = append(lines, s.t("trip_fare", runtime.Esc(runtime.FormatMoney(o.Fare))))
 	return b.send(ctx, s, strings.Join(lines, "\n"), runtime.Inline(b.appButton(ctx, s, "btn_trip", "trip")))
 }
 

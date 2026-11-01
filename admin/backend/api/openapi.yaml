@@ -2214,12 +2214,17 @@ paths:
         One row per non-draft order created in `[from, to)`. Columns: `number, id, created_at,
         city, locality, category, status, fare, commission, currency, payment_method, distance_m,
         duration_s, stops, pickup_address, destination_address, driver_code, accepted_at,
-        started_at, completed_at, cancelled_at, cancelled_by, cancel_reason` (`city` is the
-        tariff region code, `locality` the settlement of the pickup, empty when unknown).
+        started_at, completed_at, cancelled_at, cancelled_by, cancel_reason, via_addresses,
+        passenger_written_stops, commission_area` (`city` is the tariff region code, `locality`
+        the settlement of the pickup, empty when unknown; `via_addresses` the intermediate stops
+        joined with " → "; `passenger_written_stops` the letters (A = seq 0) of the stops whose
+        address the passenger wrote: manual stops and a typed pickup; `commission_area` the
+        village whose commission the order got, empty for the general commission).
         Defaults to the last 30 local days; at most 366 days (`fields.to = too_large` with
         `details.max_days`). UTF-8 with BOM, CRLF line ends (RFC 4180), streamed; text cells
-        starting with `=`, `+`, `-`, `@`, tab or CR are prefixed with `'` against formula
-        injection. Times are local (the city's zone with `city_id`, else Asia/Aqtobe). Audit-logged (`report.export`) before streaming.
+        starting with `=`, `+`, `-`, `@`, tab or CR, and such a character after `;` or `,`
+        inside a cell (Excel in Russian and Kazakh locales splits on `;`), are prefixed with
+        `'` against formula injection. Times are local (the city's zone with `city_id`, else Asia/Aqtobe). Audit-logged (`report.export`) before streaming.
         `fields`: `city_id` / `status` / `from` / `to` = `invalid`.
       x-jantaxi-permission: reports.export
       security: [{adminSession: []}]
@@ -3629,6 +3634,187 @@ paths:
       tags: [admin-cities]
       summary: Delete a curated place
       description: Audit-logged.
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      responses:
+        '204':
+          description: Deleted.
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /admin/commission-areas:
+    get:
+      operationId: adminListCommissionAreas
+      tags: [admin-cities]
+      summary: List the villages with their own driver commission
+      description: |
+        Every area, active or not, by name (§22.9). An order whose pickup A lies inside an
+        active area is snapshotted at creation with the area's percentage of the fare
+        (`commission_mode: percent`) and charged when a driver takes it; where areas overlap,
+        the village whose centre is nearest to A wins; outside every area the general
+        commission (`commission.*` settings) applies. Passenger prices are not affected.
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: All areas.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommissionAreaList'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      operationId: adminCreateCommissionArea
+      tags: [admin-cities]
+      summary: Add a village with its own driver commission
+      description: |
+        A circle (`shape: circle`, `radius_m` 200–50 000 around `center`) or a drawn boundary
+        (`shape: polygon`, `boundary` with the service-zone geometry rules); `center` is the
+        village point, inside Kazakhstan, and decides overlaps. `fields`: `name` =
+        `required | too_long | invalid | duplicate` (≤120, case-insensitively unique),
+        `commission_bps` = `required | out_of_range` (0–5000, 700 = 7 %), `shape` =
+        `required | invalid`, `center` = `required | invalid | outside_service_area`,
+        `radius_m` = `required | out_of_range`, `boundary` = `required` or a zone-geometry reason
+        (`invalid`, `unsupported_type`, `empty`, `out_of_range`, `too_complex`,
+        `invalid_geometry`, `outside_service_area`). Audit-logged (`commission_area.create`).
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommissionAreaCreateRequest'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommissionArea'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/commission-areas/resolve:
+    get:
+      operationId: adminResolveCommissionArea
+      tags: [admin-cities]
+      summary: Which village commission applies at a point
+      description: |
+        The village an order picked up at `lat`/`lon` belongs to, by the same rule as order
+        creation, with the distance from the point to its centre; `area: null` means the
+        general commission. `fields`: `lat` / `lon` = `required | invalid`.
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: []}]
+      parameters:
+        - {name: lat, in: query, required: true, schema: {type: number, minimum: -90, maximum: 90}}
+        - {name: lon, in: query, required: true, schema: {type: number, minimum: -180, maximum: 180}}
+      responses:
+        '200':
+          description: The village, or none.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommissionAreaResolution'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/commission-areas/suggest:
+    get:
+      operationId: adminSuggestCommissionAreaRadius
+      tags: [admin-cities]
+      summary: Propose a circle radius for a village centre
+      description: |
+        Computed from the map data (OpenStreetMap through the configured geocoder, when it can
+        list settlements): the settlement whose outline covers the centre gives its size
+        (`basis: osm_extent`: the half-diagonal of its outline box plus the centre's offset,
+        widened by 20 % for the outskirts), a settlement mapped as a point gives a typical size
+        of its kind (`osm_type`), else 2.5 km (`default`); the radius is then at most half the
+        distance to the nearest other village (an active area other than `exclude_id`, or a
+        settlement of the map data), so neighbouring circles meet halfway, kept within
+        0.5–15 km (less only between villages closer than a kilometre) and rounded to 100 m.
+        `fields`: `lat` / `lon` = `required | invalid`, `exclude_id` = `invalid`.
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: []}]
+      parameters:
+        - {name: lat, in: query, required: true, schema: {type: number, minimum: -90, maximum: 90}}
+        - {name: lon, in: query, required: true, schema: {type: number, minimum: -180, maximum: 180}}
+        - {name: exclude_id, in: query, description: The area being edited (not its own neighbour)., schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: The proposal.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommissionAreaSuggestion'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/commission-areas/search:
+    get:
+      operationId: adminSearchCommissionAreaPlaces
+      tags: [admin-cities]
+      summary: Find a village or place by name
+      description: |
+        Curated places first, then the configured geocoder, only inside Kazakhstan (up to 8).
+        `fields`: `q` = `too_short` (fewer than 2 characters) `| too_long` (more than 120).
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: []}]
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string, minLength: 2, maxLength: 120}}
+        - {name: lang, in: query, description: Language of the place names (default ru)., schema: {$ref: '#/components/schemas/Language'}}
+      responses:
+        '200':
+          description: Matches.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommissionAreaPlaceList'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/commission-areas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    patch:
+      operationId: adminUpdateCommissionArea
+      tags: [admin-cities]
+      summary: Update a village commission
+      description: |
+        Partial update with the creation rules; switching `shape` needs the matching `radius_m`
+        or `boundary` in the same request. Orders already created keep their snapshotted
+        commission. Audit-logged (`commission_area.update`).
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommissionAreaUpdateRequest'}
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommissionArea'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    delete:
+      operationId: adminDeleteCommissionArea
+      tags: [admin-cities]
+      summary: Delete a village commission
+      description: Orders keep the village name and commission they got. Audit-logged (`commission_area.delete`).
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       responses:
@@ -5291,7 +5477,7 @@ components:
     AdminOrder:
       type: object
       description: Complete order for operators, including commission and money trail.
-      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, prohibited_items_ack, comment, fare, currency, commission_bps, commission_amount, commission_mode, payment_method, tariff_id, quote_id, distance_m, duration_s, stop_count, city, stops, route, passenger, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, offers, events, reservation, ledger, dispute, rating, cancel_reason, cancel_reason_code, cancelled_by, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
+      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, prohibited_items_ack, comment, fare, currency, commission_bps, commission_amount, commission_mode, commission_area, payment_method, tariff_id, quote_id, distance_m, duration_s, stop_count, city, stops, route, passenger, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, offers, events, reservation, ledger, dispute, rating, cancel_reason, cancel_reason_code, cancelled_by, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
@@ -5321,7 +5507,12 @@ components:
         commission_mode:
           type: string
           enum: [fixed, percent]
-          description: '`fixed` (`commission.fixed_amount`, default) or `percent` (`commission_bps` of the fare) at creation; orders before v2 are `percent`.'
+          description: '`fixed` (`commission.fixed_amount`, default) or `percent` (`commission_bps` of the fare) at creation; orders before v2 are `percent`. An order picked up inside a village with its own commission is `percent` with the village''s rate (§22.9).'
+        commission_area:
+          description: The village whose commission the order got (§22.9); `null` for the general commission.
+          oneOf:
+            - $ref: '#/components/schemas/CommissionAreaOrderRef'
+            - type: 'null'
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
         tariff_id: {type: string, format: uuid}
         quote_id: {type: [string, 'null'], format: uuid}
@@ -5898,8 +6089,10 @@ components:
           items: {$ref: '#/components/schemas/BotOrderSummary'}
     BotOrderSummary:
       type: object
-      required: [id, number, status, category, fare, currency, pickup_address, destination_address, created_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, locality, tariff_region]
+      required: [id, number, status, category, fare, currency, pickup_address, destination_address, pickup_typed, destination_manual, created_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, locality, tariff_region]
       properties:
+        pickup_typed: {type: boolean, description: 'Pickup A''s address is the passenger''s own words; A keeps its map point (§3).'}
+        destination_manual: {type: boolean, description: The destination is the passenger's words without a map point (a manual stop).}
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
         id: {type: string, format: uuid}
@@ -6033,6 +6226,125 @@ components:
     CorrectionReason:
       type: string
       enum: [invalid_plate, plate_mismatch, duplicate_plate, duplicate_phone, id_unreadable, vehicle_photo_unclear, missing_info, other]
+    CommissionArea:
+      type: object
+      description: A village with its own driver commission (§22.9).
+      required: [id, name, commission_bps, shape, center, radius_m, boundary, is_active, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 120, example: Шұбарқұдық}
+        commission_bps: {type: integer, minimum: 0, maximum: 5000, description: 'Percentage of the fare in basis points (700 = 7 %).', example: 700}
+        shape: {type: string, enum: [circle, polygon]}
+        center: {$ref: '#/components/schemas/LatLon'}
+        radius_m: {type: [integer, 'null'], minimum: 200, maximum: 50000, description: Circle radius; `null` for a boundary.}
+        boundary:
+          description: Drawn boundary; `null` for a circle.
+          oneOf:
+            - $ref: '#/components/schemas/GeoJsonMultiPolygon'
+            - type: 'null'
+        is_active: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    CommissionAreaCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, commission_bps, shape, center]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        commission_bps: {type: integer, minimum: 0, maximum: 5000}
+        shape: {type: string, enum: [circle, polygon]}
+        center: {$ref: '#/components/schemas/LatLon'}
+        radius_m: {type: integer, minimum: 200, maximum: 50000, description: Required for a circle.}
+        boundary:
+          description: Required for a polygon.
+          oneOf:
+            - $ref: '#/components/schemas/GeoJsonPolygon'
+            - $ref: '#/components/schemas/GeoJsonMultiPolygon'
+        is_active: {type: boolean, default: true}
+    CommissionAreaList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/CommissionArea'}
+    CommissionAreaOrderRef:
+      type: object
+      description: The village whose commission an order got, by its name at that moment.
+      required: [id, name]
+      properties:
+        id: {type: [string, 'null'], format: uuid, description: '`null` once the area was deleted.'}
+        name: {type: string, minLength: 1, maxLength: 120}
+    CommissionAreaPlaceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [title, subtitle, lat, lon]
+            properties:
+              title: {type: string, example: Шұбарқұдық}
+              subtitle: {type: string, example: 'Темір ауданы, Ақтөбе облысы'}
+              lat: {type: number}
+              lon: {type: number}
+    CommissionAreaRef:
+      type: object
+      required: [id, name, commission_bps]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        commission_bps: {type: integer, minimum: 0, maximum: 5000}
+    CommissionAreaResolution:
+      type: object
+      required: [area, distance_m]
+      properties:
+        area:
+          oneOf:
+            - $ref: '#/components/schemas/CommissionAreaRef'
+            - type: 'null'
+        distance_m: {type: [integer, 'null'], minimum: 0, description: From the point to the village centre.}
+    CommissionAreaSuggestion:
+      type: object
+      required: [radius_m, basis, settlement, neighbor]
+      properties:
+        radius_m: {type: integer, minimum: 200, maximum: 50000, example: 2800}
+        basis: {type: string, enum: [osm_extent, osm_type, default]}
+        settlement:
+          description: The settlement of the map data the centre lies in.
+          oneOf:
+            - type: object
+              required: [name, kind]
+              properties:
+                name: {type: string}
+                kind: {type: [string, 'null'], description: 'OpenStreetMap place kind (city, town, village, hamlet…).'}
+            - type: 'null'
+        neighbor:
+          description: The nearest other village.
+          oneOf:
+            - type: object
+              required: [name, distance_m, source]
+              properties:
+                name: {type: string}
+                distance_m: {type: integer, minimum: 0}
+                source: {type: string, enum: [area, osm]}
+            - type: 'null'
+    CommissionAreaUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: Partial update; omitted fields keep their value.
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        commission_bps: {type: integer, minimum: 0, maximum: 5000}
+        shape: {type: string, enum: [circle, polygon]}
+        center: {$ref: '#/components/schemas/LatLon'}
+        radius_m: {type: integer, minimum: 200, maximum: 50000}
+        boundary:
+          oneOf:
+            - $ref: '#/components/schemas/GeoJsonPolygon'
+            - $ref: '#/components/schemas/GeoJsonMultiPolygon'
+        is_active: {type: boolean}
     Currency:
       type: string
       const: KZT
@@ -7939,15 +8251,16 @@ components:
         commission:
           type: object
           description: The commission charged when a driver takes an order (`app=driver` only, §22.2).
-          required: [mode, fixed_amount]
+          required: [mode, fixed_amount, by_area]
           properties:
             mode: {type: string, enum: [fixed, percent]}
             fixed_amount: {type: integer, format: int64, description: KZT per order in `fixed` mode (within 50..100)., example: 50}
+            by_area: {type: boolean, description: 'Villages have their own percentage (§22.9): what an order costs is known only from the order, so apps must not present `fixed_amount` as the charge of every order.'}
         welcome_bonus: {type: integer, format: int64, description: 'Welcome balance a new driver gets on the first approval (`app=driver` only, §22.1; 0 when off).', example: 500}
     QuoteStop:
       type: object
       description: Normalised stop echoed in a quote.
-      required: [seq, kind, lat, lon, address, address_details]
+      required: [seq, kind, lat, lon, address, address_typed, address_details]
       properties:
         mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
         seq: {type: integer, minimum: 0, maximum: 4}
@@ -7955,6 +8268,7 @@ components:
         lat: {type: [number, 'null']}
         lon: {type: [number, 'null']}
         address: {type: string, maxLength: 200}
+        address_typed: {type: boolean, description: 'The address is the passenger''s own words for a point that keeps its coordinates (a typed pickup A, §3); shown as written by the passenger. Manual stops are always the passenger''s words and keep `false`.'}
         address_details: {type: [string, 'null'], maxLength: 120}
     ReadinessStatus:
       type: object
@@ -8290,8 +8604,16 @@ components:
           type: array
           description: One leg per pair of consecutive stops.
           items: {$ref: '#/components/schemas/RouteLeg'}
-        geometry: {$ref: '#/components/schemas/GeoJsonLineString'}
-        bbox: {$ref: '#/components/schemas/BBox'}
+        geometry:
+          description: '`null` when a stop is manual (no route is built).'
+          oneOf:
+            - $ref: '#/components/schemas/GeoJsonLineString'
+            - type: 'null'
+        bbox:
+          description: '`null` when a stop is manual.'
+          oneOf:
+            - $ref: '#/components/schemas/BBox'
+            - type: 'null'
         fare: {$ref: '#/components/schemas/FareOptions'}
         currency: {$ref: '#/components/schemas/Currency'}
         commission_bps: {type: integer, minimum: 0, maximum: 5000, example: 1000}
@@ -8331,7 +8653,7 @@ components:
         payment_methods: [cash, bank_transfer]
     RouteSnapshot:
       type: object
-      description: Route stored with the order (immutable). `geometry` and `bbox` are `null` only if the snapshot row is missing.
+      description: Route stored with the order (immutable). `geometry` and `bbox` are `null` when a stop is manual (no route was built) or the snapshot row is missing.
       required: [geometry, legs, bbox, distance_m, duration_s]
       properties:
         geometry:
@@ -8407,8 +8729,9 @@ components:
       example: {topup.min_amount: 1000, support.phone: '+77001234567', support.hours: null}
     Stop:
       type: object
-      required: [id, seq, kind, lat, lon, address, address_details, completed_at]
+      required: [id, seq, kind, lat, lon, address, address_typed, address_details, completed_at]
       properties:
+        address_typed: {type: boolean, description: 'The address is the passenger''s own words for a point that keeps its coordinates (a typed pickup A, §3); shown as written by the passenger. Manual stops are always the passenger''s words and keep `false`.'}
         mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
         id: {type: string, format: uuid}
         seq: {type: integer, minimum: 0, maximum: 4, description: 0 is the pickup.}
@@ -8432,6 +8755,7 @@ components:
           minLength: 1
           maxLength: 200
           example: 'Жиенқали Тілепбергенов көшесі, 12'
+        address_typed: {type: boolean, default: false, description: 'The passenger wrote `address` in their own words for this point, which keeps its coordinates (a typed pickup A, §3); drivers, admins and the passenger see it marked as written by the passenger. Ignored for a manual stop.'}
         address_details: {type: [string, 'null'], maxLength: 120, description: 'Entrance, floor or landmark; free-text rules apply. Empty or `null` means none.', example: 2-кіреберіс}
       allOf:
         - if:
@@ -8451,8 +8775,9 @@ components:
       enum: [pickup, intermediate, destination]
     StopSummary:
       type: object
-      required: [seq, kind, lat, lon, address]
+      required: [seq, kind, lat, lon, address, address_typed]
       properties:
+        address_typed: {type: boolean, description: 'The address is the passenger''s own words for a point that keeps its coordinates (a typed pickup A, §3); shown as written by the passenger. Manual stops are always the passenger''s words and keep `false`.'}
         mode: {type: string, enum: [geocoded, manual], default: geocoded, description: Any stop after pickup A may be manual; manual coordinates are both null.}
         seq: {type: integer, minimum: 0, maximum: 4}
         kind: {$ref: '#/components/schemas/StopKind'}

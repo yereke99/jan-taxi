@@ -36,10 +36,14 @@ describe('vehicle classes from the public config', () => {
 
   it('reads the commission policy and the welcome bonus (driver app)', () => {
     const x = normalizeDriverExtras({ vehicle_classes: [SEDAN], commission: { mode: 'fixed', fixed_amount: 50 }, welcome_bonus: 500 })
-    expect(x.commission).toEqual({ mode: 'fixed', fixed_amount: 50 })
+    expect(x.commission).toEqual({ mode: 'fixed', fixed_amount: 50, by_area: false })
     expect(x.welcomeBonus).toBe(500)
     expect(fixedCommission(x.commission)).toBe(50)
-    expect(fixedCommission({ mode: 'percent', fixed_amount: 50 })).toBeNull()
+    expect(fixedCommission({ mode: 'percent', fixed_amount: 50, by_area: false })).toBeNull()
+    // Villages with their own percentage (§22.9): no amount is known in advance.
+    const byArea = normalizeDriverExtras({ commission: { mode: 'fixed', fixed_amount: 50, by_area: true } }).commission
+    expect(byArea).toEqual({ mode: 'fixed', fixed_amount: 50, by_area: true })
+    expect(fixedCommission(byArea)).toBeNull()
     expect(normalizeDriverExtras({ welcome_bonus: 0 }).welcomeBonus).toBe(0)
     expect(normalizeDriverExtras({})).toEqual({ vehicleClasses: [], commission: null, welcomeBonus: null })
     expect(findClass(x.vehicleClasses, 'sedan')?.examples).toBe('Toyota Camry')

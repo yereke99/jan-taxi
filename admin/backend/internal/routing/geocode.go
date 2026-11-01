@@ -44,6 +44,23 @@ type SettlementFinder interface {
 	Settlement(ctx context.Context, p geo.Point, lang string) (string, error)
 }
 
+// Settlement is a city, town, village or hamlet of the map data near a
+// point. Extent is its bounding box as the provider reports it (four numbers,
+// any corner order), nil for a settlement mapped as a single point.
+type Settlement struct {
+	Name   string
+	Kind   string // OSM place value (city, town, village, hamlet…), "" when unknown
+	Point  geo.Point
+	Extent []float64
+}
+
+// SettlementLister is implemented by geocoders that list the settlements
+// around a point with their outline when the map data has one; the village
+// commission editor proposes a circle radius from them.
+type SettlementLister interface {
+	Settlements(ctx context.Context, p geo.Point, radiusKm float64, limit int) ([]Settlement, error)
+}
+
 // Provider source names (Place.Source).
 const (
 	SourcePlace       = "place"

@@ -18,6 +18,7 @@ import {
   type OrderPlace,
   type RegistrationField,
   type RegistrationHistoryItem,
+  type StopSummary,
   type TopUp,
   type TopUpReceipt,
   type VehicleClassFields,
@@ -158,6 +159,21 @@ export function normalizeOrderPlace(v: unknown): OrderPlace {
     locality: localityOrNull(r.locality),
     tariff_region: str(region.code) && name ? { code: str(region.code), name } : null,
   }
+}
+
+/**
+ * A stop of an order view with address_typed always present: true only when
+ * the API marks the address as the passenger's own words (a typed pickup A,
+ * §3); older data without the field reads false.
+ */
+export function normalizeStop<T extends StopSummary>(v: unknown): T {
+  const r = rec(v)
+  return { ...(r as unknown as T), address_typed: r.address_typed === true }
+}
+
+/** The stops of an order view; a missing list reads as none. */
+export function normalizeStops<T extends StopSummary>(v: unknown): T[] {
+  return arr(v).map((s) => normalizeStop<T>(s))
 }
 
 const TG_USER_RE = /^tg:\/\/user\?id=\d{1,20}$/

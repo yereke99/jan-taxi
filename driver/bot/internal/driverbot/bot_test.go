@@ -104,6 +104,67 @@ func TestOrdersListManualRoute(t *testing.T) {
 	}
 }
 
+// A pickup the passenger wrote is said to be theirs; a destination without a
+// map point is marked ✍️ and explained; their «12, 5» stays an address.
+func TestOrdersListPassengerWritten(t *testing.T) {
+	e := newEnv(t)
+	e.approved(true)
+	e.api.Handle("GET "+tgPath+"/orders", func(map[string]any, string) (int, any) {
+		return 200, map[string]any{"eligibility": map[string]any{"eligible": true, "reason": nil}, "items": []any{
+			map[string]any{"id": orderID, "number": 1044, "category": "taxi", "fare": 400, "currency": "KZT",
+				"distance_m": nil, "duration_s": nil, "distance_to_pickup_m": 300, "stop_count": 2,
+				"stops": []any{
+					map[string]any{"seq": 0, "kind": "pickup", "mode": "geocoded", "address_typed": true, "lat": 48.8, "lon": 58.1, "address": "Мешіттің жанында"},
+					map[string]any{"seq": 1, "kind": "destination", "mode": "manual", "address_typed": false, "lat": nil, "lon": nil, "address": "12, 5"},
+				}},
+		}}
+	})
+	text := msgText(e.text(t, "📋 Тапсырыстар")[0])
+	for _, want := range []string{
+		"Қайдан: Мешіттің жанында\n✍️ Мекенжайды жолаушы өзі жазды",
+		"Қайда: 12, 5 ✍️",
+		"✍️ — орынды жолаушы жазды, картада нүктесі жоқ; маршрут есептелмеген",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("%q missing in %q", want, text)
+		}
+	}
+}
+
+// Five orders with the longest texts never push /orders over Telegram's
+// limit: cards that do not fit are left to the Mini App's full list.
+func TestOrdersListStaysWithinTelegramLimit(t *testing.T) {
+	e := newEnv(t)
+	e.approved(true)
+	long := strings.Repeat("😀", 200)
+	items := []any{}
+	for i := range 5 {
+		items = append(items, map[string]any{"id": orderID, "number": 2000 + i, "category": "parcel", "fare": 400, "currency": "KZT",
+			"distance_m": 1500, "duration_s": 300, "distance_to_pickup_m": 300, "stop_count": 2,
+			"locality": strings.Repeat("Л", 120), "cargo_description": strings.Repeat("😀", 120), "comment": strings.Repeat("😀", 120),
+			"stops": []any{
+				map[string]any{"seq": 0, "kind": "pickup", "lat": 48.8, "lon": 58.1, "address": long},
+				map[string]any{"seq": 1, "kind": "destination", "lat": 48.9, "lon": 58.1, "address": long},
+			}})
+	}
+	e.api.Handle("GET "+tgPath+"/orders", func(map[string]any, string) (int, any) {
+		return 200, map[string]any{"eligibility": map[string]any{"eligible": true, "reason": nil}, "items": items}
+	})
+	msg := e.text(t, "📋 Тапсырыстар")[0]
+	text := bottest.Text(msg)
+	if n := utf16Len(text); n > 4096 {
+		t.Fatalf("message is %d UTF-16 units", n)
+	}
+	cards := strings.Count(text, "<b>№")
+	if cards < 1 || cards > 4 {
+		t.Fatalf("%d cards in %q", cards, text)
+	}
+	// One take/open row per card plus «Барлық тапсырыстар».
+	if b := bottest.InlineButtons(msg); len(b) != 2*cards+1 {
+		t.Fatalf("%d buttons for %d cards", len(b), cards)
+	}
+}
+
 // plain spaces.
 func msgText(m map[string]any) string { return strings.ReplaceAll(bottest.Text(m), "\u00a0", " ") }
 

@@ -2,7 +2,9 @@
   Route editor: 2..max_points stops (A pickup, up to three intermediate, the
   destination). Every change re-quotes the route (booking store); markers can
   be dragged on the map; the map frames all stops and the route above the
-  sheet. Points outside Kazakhstan block the "Continue" button.
+  sheet. Points outside Kazakhstan block the "Continue" button. Dragging
+  marker A of a pickup written in the passenger's own words moves only its
+  point; the text stays.
 -->
 <script setup lang="ts">
 import { TriangleAlert } from '@lucide/vue'
@@ -13,12 +15,13 @@ import { reverseGeocode } from '../../api/geo'
 import FarePreview from '../../components/booking/FarePreview.vue'
 import RouteStopList from '../../components/booking/RouteStopList.vue'
 import { JButton, JSheet } from '../../components/ui'
+import type { PlaceValue } from '../../domain/route'
 import { loadProblem } from '../../domain/vehicleClass'
 import { useErrorText } from '../../i18n/core'
 import { STOP_LETTERS } from '../../maps'
 import { ROUTE } from '../../router/names'
 import { useAutoFit, useStageScreen } from '../../stage/mapStage'
-import { useBookingStore } from '../../stores/booking'
+import { MANUAL_DISABLED, useBookingStore } from '../../stores/booking'
 import { POOR_ACCURACY_M, useLocationStore } from '../../stores/location'
 import { useSessionStore } from '../../stores/session'
 import { haptics } from '../../telegram'
@@ -42,7 +45,7 @@ const lowAccuracy = computed(
   () => booking.stops[0]?.place?.source === 'gps' && (booking.pickupAccuracy ?? 0) > POOR_ACCURACY_M,
 )
 
-/** Inline message per stop: outside Kazakhstan, duplicates, other API reasons. */
+/** Inline message per stop: outside Kazakhstan, duplicates, manual stops switched off, other API reasons. */
 const stopErrorTexts = computed(() => {
   const out: Record<number, string> = {}
   booking.stops.forEach((s, i) => {
@@ -51,7 +54,13 @@ const stopErrorTexts = computed(() => {
   for (const [k, reason] of Object.entries(booking.stopErrors)) {
     const i = Number(k)
     out[i] =
-      reason === 'outside_service_area' ? t('booking.outside') : reason === 'duplicate' ? t('booking.duplicate') : t('booking.stop_invalid')
+      reason === 'outside_service_area'
+        ? t('booking.outside')
+        : reason === 'duplicate'
+          ? t('booking.duplicate')
+          : reason === MANUAL_DISABLED
+            ? t('booking.manual_disabled')
+            : t('booking.stop_invalid')
   }
   return out
 })
@@ -82,6 +91,12 @@ function syncMarkers(): void {
 let markerIndex: number[] = []
 const dragControllers = new Map<number, AbortController>()
 
+/** A dragged marker's new place; pickup A keeps a text the passenger wrote. */
+function setDragged(index: number, place: PlaceValue): void {
+  if (index === 0) booking.setPickupPoint(place)
+  else booking.setStopPlace(index, place)
+}
+
 async function onMarkerDrag(markerPos: number, point: LatLon): Promise<void> {
   const index = markerIndex[markerPos]
   if (index === undefined) return
@@ -89,11 +104,11 @@ async function onMarkerDrag(markerPos: number, point: LatLon): Promise<void> {
   const ctrl = new AbortController()
   dragControllers.set(index, ctrl)
   // A pin is usable even while the optional street-name provider is offline.
-  booking.setStopPlace(index, { lat: roundCoord(point.lat), lon: roundCoord(point.lon), address: '', subtitle: null, source: 'map', inServiceArea: null })
+  setDragged(index, { lat: roundCoord(point.lat), lon: roundCoord(point.lon), address: '', subtitle: null, source: 'map', inServiceArea: null })
   try {
     const r = await reverseGeocode(point, { lang: session.language, signal: ctrl.signal })
     if (ctrl.signal.aborted) return
-    booking.setStopPlace(index, {
+    setDragged(index, {
       lat: roundCoord(point.lat),
       lon: roundCoord(point.lon),
       address: r.title,

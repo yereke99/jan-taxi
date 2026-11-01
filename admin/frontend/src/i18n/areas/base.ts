@@ -29,6 +29,7 @@ const kk = {
     driver_detail: 'Жүргізуші',
     topup_detail: 'Толтыру өтінімі',
     vehicle_classes: 'Көлік кластары',
+    commission_areas: 'Ауылдар және комиссия',
   },
   auth: {
     title: 'Басқару панеліне кіру',
@@ -255,6 +256,8 @@ const kk = {
     less_than_min: 'Ең аз мәннен кем болмауы керек.',
     one_required: 'Кемінде біреуін таңдаңыз.',
     read_only: 'Бұл баптау өзгертілмейді.',
+    self_intersection: 'Шекара өзін-өзі қиып өтеді.',
+    too_many_vertices: 'Нүкте тым көп.',
   },
   order_status: {
     draft: 'Жоба',
@@ -456,6 +459,7 @@ const ru: BaseMessages = {
     driver_detail: 'Водитель',
     topup_detail: 'Заявка на пополнение',
     vehicle_classes: 'Классы автомобилей',
+    commission_areas: 'Сёла и комиссия',
   },
   auth: {
     title: 'Вход в панель управления',
@@ -682,6 +686,8 @@ const ru: BaseMessages = {
     less_than_min: 'Не может быть меньше минимального значения.',
     one_required: 'Выберите хотя бы одно.',
     read_only: 'Эта настройка не меняется.',
+    self_intersection: 'Граница пересекает сама себя.',
+    too_many_vertices: 'Слишком много точек.',
   },
   order_status: {
     draft: 'Черновик',
@@ -881,6 +887,7 @@ const en: BaseMessages = {
     driver_detail: 'Driver',
     topup_detail: 'Top-up request',
     vehicle_classes: 'Vehicle classes',
+    commission_areas: 'Villages and commission',
   },
   auth: {
     title: 'Sign in to the admin panel',
@@ -1107,6 +1114,8 @@ const en: BaseMessages = {
     less_than_min: 'Cannot be less than the minimum.',
     one_required: 'Choose at least one.',
     read_only: 'This setting cannot be changed.',
+    self_intersection: 'The boundary crosses itself.',
+    too_many_vertices: 'Too many points.',
   },
   order_status: {
     draft: 'Draft',

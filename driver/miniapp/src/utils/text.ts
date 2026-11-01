@@ -46,8 +46,12 @@ export function fitsLimit(s: string, max: number = TEXT_MAX): boolean {
   return cleanedLength(s) <= max
 }
 
-/** "48.826400, 58.144200"-like text: coordinates, never shown as an address. */
-const COORDINATES_RE = /^\s*-?\d{1,3}(?:[.,]\d+)?\s*[,;]\s*-?\d{1,3}(?:[.,]\d+)?\s*$/
+/**
+ * "48.826400, 58.144200"-like text: coordinates, never shown as an address.
+ * Generated coordinate labels always have decimals, so both numbers need a
+ * fractional part: text that merely looks like numbers («12, 5», «3;14») is a name.
+ */
+const COORDINATES_RE = /^\s*-?\d{1,3}[.,]\d+\s*[,;]\s*-?\d{1,3}[.,]\d+\s*$/
 
 /** True for empty text or bare coordinates, i.e. no usable place name. */
 export function isUnnamedPlace(s: string | null | undefined): boolean {

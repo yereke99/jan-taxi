@@ -3,13 +3,13 @@
   destination last. Pickup and destination have fixed roles; intermediate
   stops can be removed and reordered with the drag handle (or the move up /
   move down buttons, which become visible on keyboard focus). Nothing is ever
-  reordered automatically.
+  reordered automatically. An address the passenger wrote is shown as written.
 -->
 <script setup lang="ts">
-import { useAddressText } from '../../i18n/core'
 import { ChevronDown, ChevronUp, Menu, Plus, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useStopText } from '../../composables/useStopText'
 import { isIntermediate, type RouteStop } from '../../domain/route'
 import { STOP_LETTERS } from '../../maps'
 import { haptics } from '../../telegram'
@@ -31,7 +31,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 
 const intermediateCount = computed(() => Math.max(0, props.stops.length - 2))
 const reorderable = computed(() => intermediateCount.value >= 2)
@@ -51,7 +51,7 @@ function roleLabel(index: number): string {
 
 function stopName(index: number): string {
   const place = props.stops[index]?.place
-  return place ? addr(place.address) : placeholder(index)
+  return place ? stopText(place) : placeholder(index)
 }
 
 // --- Drag to reorder ---------------------------------------------------------

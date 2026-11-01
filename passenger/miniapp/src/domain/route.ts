@@ -160,12 +160,12 @@ export function outsideIndices(stops: readonly RouteStop[]): number[] {
  * The API request stops in the user's order, or null while incomplete. A
  * point without a name is sent as `unnamed` ("Point on the map"), never as
  * coordinates text. Text the passenger wrote is sent as written; a typed
- * pickup is an ordinary stop with its coordinates (only manual stops after A
- * have none).
+ * pickup is an ordinary stop with its coordinates marked `address_typed`
+ * (only manual stops after A have no coordinates, and never carry the flag).
  */
 export function toStopInputs(stops: readonly RouteStop[], unnamed = ''): StopInput[] | null {
   if (!isComplete(stops)) return null
-  return stops.map((s) => {
+  return stops.map((s, i) => {
     const typed = isTypedPlace(s.place)
     const address = typed ? s.place!.address.normalize('NFC').trim() : s.place!.address.trim().slice(0, MAX_ADDRESS_LENGTH)
     return {
@@ -173,6 +173,7 @@ export function toStopInputs(stops: readonly RouteStop[], unnamed = ''): StopInp
       lat: s.place!.lat === null ? null : roundCoord(s.place!.lat),
       lon: s.place!.lon === null ? null : roundCoord(s.place!.lon),
       address: typed ? address : isUnnamedPlace(address) ? unnamed || address : address,
+      ...(i === 0 && s.place!.typed === true && s.place!.source !== 'manual' ? { address_typed: true } : {}),
     }
   })
 }
@@ -180,7 +181,7 @@ export function toStopInputs(stops: readonly RouteStop[], unnamed = ''): StopInp
 /** Identity of the routable part of a route (changes trigger a new quote). */
 export function routeFingerprint(stops: readonly RouteStop[]): string {
   return stops
-    .map((s) => (s.place ? `${s.place.source},${s.place.lat === null ? 'null' : roundCoord(s.place.lat)},${s.place.lon === null ? 'null' : roundCoord(s.place.lon)},${s.place.address}` : '-'))
+    .map((s) => (s.place ? `${s.place.source},${s.place.typed === true ? 'typed' : ''},${s.place.lat === null ? 'null' : roundCoord(s.place.lat)},${s.place.lon === null ? 'null' : roundCoord(s.place.lon)},${s.place.address}` : '-'))
     .join('|')
 }
 

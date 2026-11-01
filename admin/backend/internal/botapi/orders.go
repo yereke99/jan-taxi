@@ -28,6 +28,10 @@ type orderSummary struct {
 	Currency           string              `json:"currency"`
 	PickupAddress      string              `json:"pickup_address"`
 	DestinationAddress string              `json:"destination_address"`
+	// PickupTyped: A's address is the passenger's own words (A keeps its
+	// map point); DestinationManual: B is the passenger's words without one.
+	PickupTyped       bool `json:"pickup_typed"`
+	DestinationManual bool `json:"destination_manual"`
 	// Locality is the settlement of the pickup (nil when unknown);
 	// TariffRegion is the region whose tariff priced the order.
 	Locality     *string       `json:"locality"`
@@ -47,13 +51,14 @@ var orderSummarySelect = fmt.Sprintf(`
 	SELECT o.id, o.number, o.status, o.category, o.fare, o.currency,
 	       COALESCE(%s, ''), COALESCE(%s, ''), o.created_at,
 	       o.vehicle_class, ovc.name_kk, ovc.name_ru, ovc.name_en, o.passenger_count, o.cargo_size,
-	       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en
+	       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en,
+	       COALESCE(p.address_typed, false), COALESCE(d.mode = 'manual', false)
 	FROM orders o
 	JOIN vehicle_classes ovc ON ovc.code = o.vehicle_class
 	JOIN cities trc ON trc.id = o.city_id
 	LEFT JOIN order_stops p ON p.order_id = o.id AND p.seq = 0
 	LEFT JOIN LATERAL (
-		SELECT s.address, s.lat, s.lon FROM order_stops s
+		SELECT s.address, s.lat, s.lon, s.mode FROM order_stops s
 		WHERE s.order_id = o.id ORDER BY s.seq DESC LIMIT 1
 	) d ON true`, fmt.Sprintf(stopLabel, "p"), fmt.Sprintf(stopLabel, "d"))
 
@@ -69,7 +74,8 @@ func queryOrderSummaries(ctx context.Context, q db.Querier, where string, args .
 		if err := rows.Scan(&o.ID, &o.Number, &o.Status, &o.Category, &o.Fare, &o.Currency,
 			&o.PickupAddress, &o.DestinationAddress, &o.CreatedAt, &o.VehicleClass, &o.VehicleClassName.KK,
 			&o.VehicleClassName.RU, &o.VehicleClassName.EN, &o.PassengerCount, &o.CargoSize, &o.Locality,
-			&o.TariffRegion.Code, &o.TariffRegion.Name.KK, &o.TariffRegion.Name.RU, &o.TariffRegion.Name.EN); err != nil {
+			&o.TariffRegion.Code, &o.TariffRegion.Name.KK, &o.TariffRegion.Name.RU, &o.TariffRegion.Name.EN,
+			&o.PickupTyped, &o.DestinationManual); err != nil {
 			return nil, fmt.Errorf("scan order summary: %w", err)
 		}
 		out = append(out, o)

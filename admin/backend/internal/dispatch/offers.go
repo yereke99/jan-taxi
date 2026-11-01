@@ -183,19 +183,15 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 		"order_number":   o.Number,
 		"category":       category,
 		"vehicle_class":  map[string]string{"kk": classKK, "ru": classRU, "en": classEN},
-		"pickup":         route.Pickup,
-		"destination":    route.Destination,
 		"route_distance": distanceM,
 		"route_duration": durationS,
 		"fare":           o.Fare,
 		"payment_method": payment,
 	}
+	route.AddressParams(params)
 	if route.HasManualStops {
 		delete(params, "route_distance")
 		delete(params, "route_duration")
-	}
-	if via := route.ViaText("…"); via != "" {
-		params["via"] = via
 	}
 	if locality != nil && *locality != "" {
 		params["locality"] = *locality

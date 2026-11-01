@@ -46,11 +46,15 @@ type previewRequest struct {
 	CargoSize      *string `json:"cargo_size"`
 }
 
+// stopInput is the OpenAPI StopInput. AddressTyped marks a geocoded point
+// whose address the passenger wrote in their own words (a typed pickup A,
+// ARCHITECTURE §3); a manual stop never carries it.
 type stopInput struct {
 	Mode           string   `json:"mode"`
 	Lat            *float64 `json:"lat"`
 	Lon            *float64 `json:"lon"`
 	Address        *string  `json:"address"`
+	AddressTyped   *bool    `json:"address_typed"`
 	AddressDetails *string  `json:"address_details"`
 }
 
@@ -62,6 +66,7 @@ type quoteStop struct {
 	Lat            float64 `json:"lat"`
 	Lon            float64 `json:"lon"`
 	Address        string  `json:"address"`
+	AddressTyped   bool    `json:"address_typed"`
 	AddressDetails *string `json:"address_details"`
 }
 
@@ -169,13 +174,15 @@ func (h *Handler) preview(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Validation(map[string]string{"stops": "manual_destination_disabled"})
 	}
 	pts := make([]geo.Point, 0, len(stops))
-	for _, s := range stops {
+	ptStop := make([]int, 0, len(stops)) // request index of each point
+	for i, s := range stops {
 		if s.Mode != "manual" {
 			pts = append(pts, geo.Point{Lat: s.Lat, Lon: s.Lon})
+			ptStop = append(ptStop, i)
 		}
 	}
 	if err := geo.RequireInServiceArea(ctx, h.pool, "stops", pts...); err != nil {
-		return err
+		return stopIndexError(err, ptStop)
 	}
 	city, err := cities.Resolve(ctx, h.pool, pts[0])
 	if err != nil {
@@ -332,7 +339,7 @@ func buildQuote(q pricing.StoredQuote, city cities.City, fare pricing.Fare) rout
 		Options: []classOption{},
 	}
 	for i, s := range q.Stops {
-		qs := quoteStop{Mode: s.Mode, Seq: i, Kind: StopKind(i, len(q.Stops)), Lat: s.Lat, Lon: s.Lon, Address: s.Address}
+		qs := quoteStop{Mode: s.Mode, Seq: i, Kind: StopKind(i, len(q.Stops)), Lat: s.Lat, Lon: s.Lon, Address: s.Address, AddressTyped: s.AddressTyped}
 		if s.AddressDetails != "" {
 			d := s.AddressDetails
 			qs.AddressDetails = &d
@@ -434,6 +441,9 @@ func (req previewRequest) validateRoute(maxPoints int) (previewInput, error) {
 			}
 			s.Lat = coordinate(fields, p+"lat", in.Lat, 90)
 			s.Lon = coordinate(fields, p+"lon", in.Lon, 180)
+			// A manual stop is the passenger's words by definition; the flag
+			// matters only for a point that keeps its coordinates.
+			s.AddressTyped = in.AddressTyped != nil && *in.AddressTyped
 		}
 		if in.Address == nil {
 			fields[p+"address"] = "required"
@@ -462,6 +472,26 @@ func (req previewRequest) validateRoute(maxPoints int) (previewInput, error) {
 		return previewInput{}, httpx.Validation(fields)
 	}
 	return previewInput{Category: category, Stops: stops}, nil
+}
+
+// stopIndexError maps details.index of a service-area error, counted over the
+// points with coordinates, back to the position in the request's stops (manual
+// stops have no point), as the API documents.
+func stopIndexError(err error, ptStop []int) error {
+	var he *httpx.Error
+	if !errors.As(err, &he) {
+		return err
+	}
+	i, ok := he.Details["index"].(int)
+	if !ok || i < 0 || i >= len(ptStop) || ptStop[i] == i {
+		return err
+	}
+	details := make(map[string]any, len(he.Details))
+	for k, v := range he.Details {
+		details[k] = v
+	}
+	details["index"] = ptStop[i]
+	return he.WithDetails(details)
 }
 
 // coordinate validates one coordinate in [-limit, limit] and rounds it to

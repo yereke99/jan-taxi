@@ -72,4 +72,24 @@ func TestViaTextKeepsOrderAndHidesCoordinates(t *testing.T) {
 	if got := (Route{}).ViaText("…"); got != "" {
 		t.Fatalf("no stops = %q", got)
 	}
+	// A stop the passenger described without a map point is marked, and the
+	// passenger's «12, 5» is an address, not coordinates.
+	r = Route{Via: []string{"Ескі базар", "12, 5"}, ViaManual: []bool{true, false}}
+	if got := r.ViaText("…"); got != "Ескі базар ✍️ → 12, 5" {
+		t.Fatalf("manual via = %q", got)
+	}
+}
+
+// AddressParams carries the route and the notes about the passenger's words.
+func TestAddressParams(t *testing.T) {
+	p := map[string]any{}
+	Route{Pickup: "Мешіт", PickupTyped: true, Destination: "Ескі клуб", DestinationManual: true, HasManualStops: true}.AddressParams(p)
+	if p["pickup"] != "Мешіт" || p["destination"] != "Ескі клуб ✍️" || p["pickup_note"] == nil || p["route_note"] == nil || p["via"] != nil {
+		t.Fatalf("params = %v", p)
+	}
+	p = map[string]any{}
+	Route{Pickup: "Абай 5", Destination: "Вокзал"}.AddressParams(p)
+	if p["destination"] != "Вокзал" || p["pickup_note"] != nil || p["route_note"] != nil {
+		t.Fatalf("geocoded params = %v", p)
+	}
 }

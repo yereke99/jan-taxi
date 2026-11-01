@@ -624,3 +624,47 @@ func TestRenderFullTripCard(t *testing.T) {
 		t.Fatal("commission accepted as a trip card param")
 	}
 }
+
+// Addresses the passenger wrote reach the driver as written: a typed pickup
+// with its note, stops without a map point marked ✍️ and explained, numbers
+// such as «12, 5» kept (only coordinates with decimals are hidden), and three
+// long intermediate stops never cut.
+func TestRenderOfferPassengerWrittenAddresses(t *testing.T) {
+	long := func(c string) string { return strings.Repeat(c, 200) }
+	via := long("а") + ManualMark + " → " + long("б") + " → " + long("в") + ManualMark
+	for _, key := range []string{TplOrderAvailableDriver, TplOrderAcceptedDriver} {
+		tpl, _ := Lookup(key)
+		p := offerParams(uuid.New())
+		if key == TplOrderAcceptedDriver {
+			p["passenger_name"], p["passenger_link"] = "Айгүл", "tg://user?id=42"
+		}
+		p["pickup"], p["destination"], p["via"] = "Мешіттің жанында, көк қақпа", "12, 5"+ManualMark, via
+		p["pickup_note"], p["route_note"] = PickupTypedNote, ManualStopsNote
+		for _, lang := range []string{LangKK, LangRU, LangEN} {
+			msg, err := tpl.Render(lang, tpl.DefaultBody(lang), p, "")
+			if err != nil {
+				t.Fatalf("%s %s: %v", key, lang, err)
+			}
+			for _, want := range []string{
+				"Мешіттің жанында, көк қақпа\n✍️ " + PickupTypedNote[lang],
+				"12, 5 ✍️\n✍️ " + ManualStopsNote[lang],
+				long("в") + " ✍️",
+			} {
+				if !strings.Contains(msg.Text, want) {
+					t.Errorf("%s %s: %q missing in\n%s", key, lang, want, msg.Text)
+				}
+			}
+			if strings.Contains(msg.Text, "…") || strings.Contains(msg.Text, mapPointLabel[lang]) {
+				t.Errorf("%s %s: cut or hidden text\n%s", key, lang, msg.Text)
+			}
+		}
+	}
+	// System coordinates are still never shown.
+	tpl, _ := Lookup(TplOrderAvailableDriver)
+	p := offerParams(uuid.New())
+	p["destination"] = "48.826400, 58.144200"
+	msg, err := tpl.Render(LangRU, tpl.DefaultBody(LangRU), p, "")
+	if err != nil || strings.Contains(msg.Text, "48.82") || !strings.Contains(msg.Text, mapPointLabel[LangRU]) {
+		t.Fatalf("coordinates shown: %v\n%s", err, msg.Text)
+	}
+}

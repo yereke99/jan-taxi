@@ -360,6 +360,24 @@ func (s *Places) addressLocality(ctx context.Context, p geo.Point, timeout time.
 	return CleanLocality(pl.Locality)
 }
 
+// Settlements lists the settlements of the map data around p (see
+// SettlementLister); nil when the provider cannot list them or failed.
+func (s *Places) Settlements(ctx context.Context, p geo.Point, radiusKm float64, limit int) []Settlement {
+	sl, ok := s.provider.(SettlementLister)
+	if !ok {
+		return nil
+	}
+	var out []Settlement
+	if !s.call(ctx, "settlements", func(cctx context.Context) error {
+		var err error
+		out, err = sl.Settlements(cctx, p, radiusKm, limit)
+		return err
+	}) {
+		return nil
+	}
+	return out
+}
+
 // settlement asks the provider for the settlement covering p and caches the
 // answer under key like reverse lookups (also "none"); nil when none covers
 // p or the provider failed.

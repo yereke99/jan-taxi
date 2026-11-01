@@ -1,9 +1,10 @@
 <!--
   Available order card: category with how long ago it was placed and the
   distance from the driver, the fare, then the settlement of pickup A and
-  A → final destination with +N stops, trip distance and duration, the
-  requested vehicle class with the passenger count or cargo size (§21), the
-  comment or cargo preview, and a full-width «Тапсырысты алу» button that
+  A → final destination (an address the passenger wrote is shown as written,
+  with one muted line saying so) with +N stops, trip distance and duration,
+  the requested vehicle class with the passenger count or cargo size (§21),
+  the comment or cargo preview, and a full-width «Тапсырысты алу» button that
   takes the order in one tap (the same atomic acceptance as the order screen
   and the driver bot). The rest of the card opens the order. No passenger
   data (the API withholds it). The card is an <article> holding two sibling
@@ -17,13 +18,13 @@ import { useI18n } from 'vue-i18n'
 import type { DriverOrderCard } from '../../api/types'
 import { useFormat } from '../../composables/useFormat'
 import { sortedStops } from '../../features/trip/sequence'
+import { isPassengerWritten, useStopText } from '../../features/trip/stopText'
 import { findClass } from '../../features/vehicle/classes'
 import { useVehicleText } from '../../features/vehicle/useVehicleText'
 import { useSessionStore } from '../../stores/session'
 import { JSpinner } from '../ui'
 import CategoryIcon from './CategoryIcon.vue'
 import VehicleClassIcon from './VehicleClassIcon.vue'
-import { useAddressText } from '../../i18n/core'
 
 const props = withDefaults(
   defineProps<{
@@ -39,7 +40,7 @@ const props = withDefaults(
 const emit = defineEmits<{ open: [id: string]; accept: [id: string] }>()
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const fmt = useFormat()
 const vt = useVehicleText()
 const session = useSessionStore()
@@ -48,6 +49,8 @@ const stops = computed(() => sortedStops(props.order.stops))
 const pickup = computed(() => stops.value[0] ?? null)
 const destination = computed(() => (stops.value.length > 1 ? stops.value[stops.value.length - 1]! : null))
 const extraStops = computed(() => Math.max(0, props.order.stop_count - 2))
+/** A or the destination is the passenger's own words: one line under the route says so. */
+const written = computed(() => isPassengerWritten(pickup.value) || isPassengerWritten(destination.value))
 const preview = computed(() => props.order.cargo_description || props.order.comment || '')
 const meta = computed(() => {
   // `now` re-evaluates the relative time every tick of the list's clock.
@@ -97,12 +100,13 @@ function accept(): void {
           <span class="ocard__locality-name">{{ order.locality }}</span>
         </p>
         <p class="ocard__route">
-          <span>{{ addr(pickup?.address) }}</span>
+          <span>{{ stopText(pickup) }}</span>
           <template v-if="destination">
             <span class="ocard__arrow" aria-hidden="true"> → </span>
-            <span>{{ addr(destination.address) }}</span>
+            <span>{{ stopText(destination) }}</span>
           </template>
         </p>
+        <p v-if="written" class="ocard__written">{{ t('manual.label') }}</p>
         <p v-if="summary" class="ocard__summary jt-tabular">{{ summary }}</p>
         <p v-if="need" class="ocard__need">
           <VehicleClassIcon v-if="needIcon" :icon="needIcon" :width="30" />
@@ -235,6 +239,7 @@ function accept(): void {
   overflow-wrap: anywhere;
 }
 
+.ocard__written,
 .ocard__summary {
   font: var(--jt-font-subheadline);
   color: var(--jt-color-label-secondary);

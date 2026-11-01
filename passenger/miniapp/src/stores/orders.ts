@@ -6,8 +6,10 @@ import { computed, ref, shallowRef } from 'vue'
 import { listOrders } from '../api/orders'
 import type { OrderSummary } from '../api/types'
 import { recentDestinations, recentPlaces } from '../domain/places'
+import { useSessionStore } from './session'
 
 export const useOrdersStore = defineStore('orders', () => {
+  const session = useSessionStore()
   const active = ref<OrderSummary[]>([])
   const activeLoaded = ref(false)
   const activeError = shallowRef<unknown>(null)
@@ -37,8 +39,9 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   const hasMore = computed(() => nextCursor.value !== null)
-  const destinations = computed(() => recentDestinations(history.value))
-  const places = computed(() => recentPlaces(history.value))
+  // Manual places (no map point) are offered only while manual stops are on.
+  const destinations = computed(() => recentDestinations(history.value, 3, session.manualDestinations))
+  const places = computed(() => recentPlaces(history.value, 6, session.manualDestinations))
 
   async function loadActive(): Promise<void> {
     const id = ++activeRequest

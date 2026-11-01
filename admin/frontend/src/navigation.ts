@@ -2,6 +2,7 @@
 // its permission (route meta.perm) and hidden from operators who lack it.
 
 import {
+  BadgePercent,
   Bell,
   BookOpen,
   Car,
@@ -45,6 +46,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { name: 'topups', path: '/topups', titleKey: 'nav.topups', perm: 'finance.view', icon: Wallet, section: 'finance' },
   { name: 'ledger', path: '/ledger', titleKey: 'nav.ledger', perm: 'finance.view', icon: BookOpen, section: 'finance' },
   { name: 'cities', path: '/cities', titleKey: 'nav.cities', perm: 'config.manage', icon: Map, section: 'config' },
+  { name: 'commission-areas', path: '/commission-areas', titleKey: 'nav.commission_areas', perm: 'config.manage', icon: BadgePercent, section: 'config' },
   { name: 'places', path: '/places', titleKey: 'nav.places', perm: 'config.manage', icon: MapPin, section: 'config' },
   { name: 'vehicle-classes', path: '/vehicle-classes', titleKey: 'nav.vehicle_classes', perm: 'config.manage', icon: Truck, section: 'config' },
   { name: 'tariffs', path: '/tariffs', titleKey: 'nav.tariffs', perm: 'dashboard.view', icon: Tag, section: 'config' },

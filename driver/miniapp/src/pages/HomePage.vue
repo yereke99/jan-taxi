@@ -17,6 +17,7 @@ import PrivateImage from '../components/driver/PrivateImage.vue'
 import { JButton, JListGroup, JListRow } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
 import { currentTarget, stopLetter } from '../features/trip/sequence'
+import { useStopText } from '../features/trip/stopText'
 import { orderFunding } from '../features/wallet/balance'
 import { ROUTE } from '../router/names'
 import { useDutyStore } from '../stores/duty'
@@ -25,10 +26,9 @@ import { useProfileStore } from '../stores/profile'
 import { useSessionStore } from '../stores/session'
 import { useTripStore } from '../stores/trip'
 import { useWalletStore } from '../stores/wallet'
-import { useAddressText } from '../i18n/core'
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const fmt = useFormat()
 const router = useRouter()
 const session = useSessionStore()
@@ -82,7 +82,7 @@ onMounted(() => {
       <Navigation :size="24" :stroke-width="2" class="trip-banner__icon" aria-hidden="true" />
       <span class="trip-banner__text">
         <span class="trip-banner__title">{{ t('home.active_trip') }} · {{ t(`trip.status.${trip.active.status}`) }}</span>
-        <span v-if="activeTarget" class="trip-banner__sub">{{ stopLetter(activeTarget.seq) }} · {{ addr(activeTarget.address) }}</span>
+        <span v-if="activeTarget" class="trip-banner__sub">{{ stopLetter(activeTarget.seq) }} · {{ stopText(activeTarget) }}</span>
       </span>
       <ChevronRight :size="22" :stroke-width="2.25" aria-hidden="true" />
     </button>

@@ -22,7 +22,7 @@ import (
 // typed text as the pickup.
 func TestTypedPickupTextReachesDrivers(t *testing.T) {
 	const typed = "Мешіттің жанында, көк қақпа"
-	pickup := pricing.QuoteStop{Lat: 48.8264, Lon: 58.1442, Address: typed}
+	pickup := pricing.QuoteStop{Lat: 48.8264, Lon: 58.1442, Address: typed, AddressTyped: true}
 	for _, tc := range []struct {
 		name  string
 		stops []pricing.QuoteStop
@@ -47,8 +47,11 @@ func TestTypedPickupTextReachesDrivers(t *testing.T) {
 				t.Fatalf("passenger order: fare %d, pickup %+v", o.Fare, o.Stops[0])
 			}
 			if e.count(`SELECT count(*) FROM order_stops WHERE order_id = $1 AND seq = 0 AND mode = 'geocoded'
-				AND lat = 48.8264 AND lon = 58.1442 AND address = $2`, o.ID, typed) != 1 {
-				t.Fatal("pickup not stored with its coordinates and the typed text")
+				AND lat = 48.8264 AND lon = 58.1442 AND address = $2 AND address_typed`, o.ID, typed) != 1 {
+				t.Fatal("pickup not stored with its coordinates, the typed text and the typed mark")
+			}
+			if !o.Stops[0].AddressTyped || o.Stops[len(o.Stops)-1].AddressTyped {
+				t.Fatalf("typed mark: %+v", o.Stops)
 			}
 			if e.count(`SELECT count(*) FROM orders WHERE id = $1 AND pickup_lat = 48.8264 AND pickup_lon = 58.1442`, o.ID) != 1 {
 				t.Fatal("order pickup point lost")
@@ -59,15 +62,22 @@ func TestTypedPickupTextReachesDrivers(t *testing.T) {
 				t.Fatalf("offers: near %d, far %d", e.offers(o.ID, near.DriverID), e.offers(o.ID, far.DriverID))
 			}
 
-			// The driver bot offer names the typed place as the pickup.
+			// The driver bot offer names the typed place as the pickup and says
+			// the passenger wrote it; a manual destination is marked ✍️ and
+			// explained.
 			params := offerParams(t, e, o.ID, near.DriverID)
+			manual := pricing.Manual(tc.stops)
 			for _, lang := range []string{"kk", "ru", "en"} {
 				msg, err := notifications.RenderFor(ctx, e.pool, notifications.TplOrderAvailableDriver, lang, params, "https://app.jantaxi.test/driver/")
 				if err != nil {
 					t.Fatalf("render %s: %v", lang, err)
 				}
-				if !strings.Contains(msg.Text, typed) {
-					t.Fatalf("%s offer without the typed pickup:\n%s", lang, msg.Text)
+				if !strings.Contains(msg.Text, typed) || !strings.Contains(msg.Text, "✍️ "+notifications.PickupTypedNote[lang]) {
+					t.Fatalf("%s offer without the typed pickup and its note:\n%s", lang, msg.Text)
+				}
+				hasNote := strings.Contains(msg.Text, notifications.ManualStopsNote[lang])
+				if manual != hasNote || manual != strings.Contains(msg.Text, "Ескі мәдениет үйі ✍️") {
+					t.Fatalf("%s offer manual mark (manual=%v):\n%s", lang, manual, msg.Text)
 				}
 			}
 
@@ -78,7 +88,7 @@ func TestTypedPickupTextReachesDrivers(t *testing.T) {
 					continue
 				}
 				listed = true
-				if len(c.Stops) == 0 || c.Stops[0].Address != typed || c.Stops[0].Lat != pickup.Lat || c.Stops[0].Lon != pickup.Lon {
+				if len(c.Stops) == 0 || c.Stops[0].Address != typed || c.Stops[0].Lat != pickup.Lat || c.Stops[0].Lon != pickup.Lon || !c.Stops[0].AddressTyped {
 					t.Fatalf("driver card pickup: %+v", c.Stops)
 				}
 			}
@@ -92,16 +102,17 @@ func TestTypedPickupTextReachesDrivers(t *testing.T) {
 				e.expect(view, http.StatusOK, "")
 				var body struct {
 					Stops []struct {
-						Kind    string   `json:"kind"`
-						Mode    string   `json:"mode"`
-						Address string   `json:"address"`
-						Lat     *float64 `json:"lat"`
-						Lon     *float64 `json:"lon"`
+						Kind         string   `json:"kind"`
+						Mode         string   `json:"mode"`
+						Address      string   `json:"address"`
+						AddressTyped bool     `json:"address_typed"`
+						Lat          *float64 `json:"lat"`
+						Lon          *float64 `json:"lon"`
 					} `json:"stops"`
 				}
 				view.decode(t, &body)
 				a := body.Stops[0]
-				if a.Kind != "pickup" || a.Mode != "geocoded" || a.Address != typed || a.Lat == nil || *a.Lat != pickup.Lat || a.Lon == nil || *a.Lon != pickup.Lon {
+				if a.Kind != "pickup" || a.Mode != "geocoded" || a.Address != typed || !a.AddressTyped || a.Lat == nil || *a.Lat != pickup.Lat || a.Lon == nil || *a.Lon != pickup.Lon {
 					t.Fatalf("pickup view: %+v (%s)", a, view.Body)
 				}
 			}

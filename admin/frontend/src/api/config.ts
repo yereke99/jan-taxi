@@ -1,6 +1,7 @@
-// Cities, service zones, places, tariffs and runtime settings
-// (shapes follow admin/backend/internal/{cities,pricing,settings}).
+// Cities, service zones, places, tariffs, village commissions and runtime
+// settings (shapes follow admin/backend/internal/{cities,pricing,settings}).
 
+import { i18n } from '../i18n'
 import { api } from '../services/api'
 import type { Category } from '../utils/status'
 import type { AdminRef, LatLon, LocalizedText, Page } from './common'
@@ -207,6 +208,96 @@ export const tariffsApi = {
   },
   create(body: TariffInput): Promise<Tariff> {
     return api.post('/admin/tariffs', body)
+  },
+}
+
+export type CommissionAreaShape = 'circle' | 'polygon'
+
+/**
+ * A village with its own driver commission: a percentage of the fare taken
+ * from the driver who accepts an order whose pickup A lies inside the area.
+ * Where areas overlap the nearest centre wins; outside every area the
+ * general commission from the settings applies.
+ */
+export interface CommissionArea {
+  id: string
+  name: string
+  /** Percent × 100 (7 % = 700), 0..5000. */
+  commission_bps: number
+  shape: CommissionAreaShape
+  /** The village point; it also settles overlaps. */
+  center: LatLon
+  /** Circle radius 200..50000 m; null for a drawn boundary. */
+  radius_m: number | null
+  /** Drawn boundary; null for a circle. */
+  boundary: MultiPolygonGeometry | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** Create body; a PATCH takes any subset (a new shape needs its radius_m or boundary). */
+export interface CommissionAreaInput {
+  name: string
+  commission_bps: number
+  shape: CommissionAreaShape
+  center: LatLon
+  /** Circle only. */
+  radius_m?: number
+  /** Polygon only; same rules as a service-zone geometry. */
+  boundary?: PolygonGeometry | MultiPolygonGeometry
+  is_active?: boolean
+}
+
+/** Village commission an order picked up at a point gets; area null = the general commission. */
+export interface CommissionAreaResolve {
+  area: { id: string; name: string; commission_bps: number } | null
+  /** Distance from the point to that village's centre. */
+  distance_m: number | null
+}
+
+export type RadiusBasis = 'osm_extent' | 'osm_type' | 'default'
+
+/** Radius proposed from the settlement size in OpenStreetMap and half the way to the nearest neighbour. */
+export interface RadiusSuggestion {
+  radius_m: number
+  basis: RadiusBasis
+  settlement: { name: string; kind: string | null } | null
+  neighbor: { name: string; distance_m: number; source: 'area' | 'osm' } | null
+}
+
+/** A village or place in Kazakhstan found by name. */
+export interface SettlementHit {
+  title: string
+  subtitle: string
+  lat: number
+  lon: number
+}
+
+export const commissionAreasApi = {
+  /** Every village, sorted by name. */
+  list(signal?: AbortSignal): Promise<{ items: CommissionArea[] }> {
+    return api.get('/admin/commission-areas', { signal })
+  },
+  create(body: CommissionAreaInput): Promise<CommissionArea> {
+    return api.post('/admin/commission-areas', body)
+  },
+  update(id: string, body: Partial<CommissionAreaInput>): Promise<CommissionArea> {
+    return api.patch(`/admin/commission-areas/${encodeURIComponent(id)}`, body)
+  },
+  remove(id: string): Promise<void> {
+    return api.delete(`/admin/commission-areas/${encodeURIComponent(id)}`)
+  },
+  resolve(point: LatLon, signal?: AbortSignal): Promise<CommissionAreaResolve> {
+    return api.get('/admin/commission-areas/resolve', { query: { lat: point.lat, lon: point.lon }, signal })
+  },
+  /** excludeId: the village being edited, so it is not its own neighbour. */
+  suggest(point: LatLon, excludeId?: string | null, signal?: AbortSignal): Promise<RadiusSuggestion> {
+    return api.get('/admin/commission-areas/suggest', { query: { lat: point.lat, lon: point.lon, exclude_id: opt(excludeId) }, signal })
+  },
+  /** q: 2..120 characters; names come in the interface language. */
+  search(q: string, signal?: AbortSignal): Promise<{ items: SettlementHit[] }> {
+    return api.get('/admin/commission-areas/search', { query: { q: q.trim(), lang: i18n.global.locale.value }, signal })
   },
 }
 

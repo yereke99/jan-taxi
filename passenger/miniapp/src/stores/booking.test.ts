@@ -9,7 +9,7 @@ import type { Order, RouteQuote, RouteQuoteOption } from '../api/types'
 import type { PlaceValue } from '../domain/route'
 import { ApiError } from '../services/http'
 import type { Category } from '../utils/status'
-import { PREVIEW_DEBOUNCE_MS, useBookingStore } from './booking'
+import { MANUAL_DISABLED, PREVIEW_DEBOUNCE_MS, useBookingStore } from './booking'
 import { useSessionStore } from './session'
 
 vi.mock('../api/routes', () => ({ previewRoute: vi.fn() }))
@@ -682,7 +682,7 @@ describe('booking store: pickup A in the passenger’s own words', () => {
     await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
     expect(preview).toHaveBeenCalledTimes(1)
     expect(preview.mock.calls[0]![0].stops).toEqual([
-      { lat: 48.82, lon: 58.1, address: TYPED },
+      { lat: 48.82, lon: 58.1, address: TYPED, address_typed: true },
       { lat: 48.84, lon: 58.1, address: 'Ембі, вокзал' },
     ])
     expect(b.canContinue).toBe(true)
@@ -701,7 +701,7 @@ describe('booking store: pickup A in the passenger’s own words', () => {
     b.setStopPlace(1, MANUAL_B)
     await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
     expect(preview.mock.calls[0]![0].stops).toEqual([
-      { lat: 48.82, lon: 58.1, address: TYPED },
+      { lat: 48.82, lon: 58.1, address: TYPED, address_typed: true },
       { mode: 'manual', lat: null, lon: null, address: MANUAL_B.address },
     ])
     expect(b.canContinue).toBe(true)
@@ -743,12 +743,100 @@ describe('booking store: pickup A in the passenger’s own words', () => {
     expect(b.pickupAccuracy).toBe(240)
   })
 
-  it('a new point for A replaces the typed text', () => {
+  it('a new point for A from the map keeps the typed text; a place chosen for A replaces it', async () => {
     const b = useBookingStore()
-    b.setStopPlace(0, place('A', 48.82))
+    b.setStopPlace(0, { ...place('A', 48.82), source: 'gps' })
+    b.pickupAccuracy = 240
     b.setPickupText(TYPED)
-    const moved: PlaceValue = { ...place('Абай көшесі, 5', 48.83), source: 'map' }
-    b.setStopPlace(0, moved)
+    // The pin moved (home screen, «Choose on map», a dragged marker): only the point changes.
+    b.setPickupPoint({ ...place('Абай көшесі, 5', 48.83), subtitle: 'Ембі', source: 'map', inServiceArea: true })
+    expect(b.stops[0]!.place).toEqual({ lat: 48.83, lon: 58.1, address: TYPED, subtitle: 'Ембі', source: 'map', inServiceArea: true, typed: true })
+    expect(b.pickupAccuracy).toBeNull()
+    b.setPickupPoint({ ...place('', 41.2), source: 'map', inServiceArea: false })
+    expect(b.stops[0]!.place).toMatchObject({ lat: 41.2, address: TYPED, inServiceArea: false, typed: true })
+
+    // A search result, a recent place or «My location» replaces the text.
+    const station = place('Ембі, вокзал', 48.84)
+    b.setStopPlace(0, station)
+    expect(b.stops[0]!.place).toEqual(station)
+    b.setPickupText(TYPED)
+    vi.mocked(reverseGeocode).mockResolvedValueOnce({ lat: fix.lat, lon: fix.lon, title: 'Абай көшесі, 7', subtitle: 'Ембі', source: 'photon', in_service_area: true })
+    await b.setPickupFromLocation(fix)
+    expect(b.stops[0]!.place).toEqual({ lat: fix.lat, lon: fix.lon, address: 'Абай көшесі, 7', subtitle: 'Ембі', source: 'gps', inServiceArea: true })
+
+    // An A that was not typed simply becomes the new point.
+    const moved: PlaceValue = { ...place('Абай көшесі, 9', 48.85), source: 'map' }
+    b.setPickupPoint(moved)
     expect(b.stops[0]!.place).toEqual(moved)
+  })
+
+  it('never attaches the text to the default map centre named after a failed GPS attempt', () => {
+    const b = useBookingStore()
+    const centre: PlaceValue = { ...place('Ембі, Абай көшесі', 48.8264, 58.1442), source: 'map' }
+    b.setPickupPoint(centre, true)
+    expect(b.pickupFallback).toBe(true)
+    expect(b.setPickupText(TYPED)).toBe(false)
+    expect(b.stops[0]!.place).toEqual(centre)
+
+    // With a device position the text goes there instead.
+    expect(b.setPickupText(TYPED, fix)).toBe(true)
+    expect(b.stops[0]!.place).toMatchObject({ lat: fix.lat, lon: fix.lon, address: TYPED, source: 'gps', typed: true })
+    expect(b.pickupFallback).toBe(false)
+
+    // A pin the passenger placed (or any chosen place) is a real point.
+    b.setStopPlace(0, null)
+    b.setPickupPoint(centre, true)
+    b.setPickupPoint({ ...centre, lat: 48.83 })
+    expect(b.pickupFallback).toBe(false)
+    b.setPickupPoint(centre, true)
+    b.setStopPlace(0, place('Ембі, вокзал', 48.84))
+    expect(b.pickupFallback).toBe(false)
+    b.setStopPlace(0, null)
+    b.setPickupPoint(centre, true)
+    b.resetDraft()
+    expect(b.pickupFallback).toBe(false)
+  })
+})
+
+describe('booking store: manual stops switched off by the administrator', () => {
+  const refused = (field: 'stops' | 'quote_id') => new ApiError(422, 'validation_failed', 'invalid', { [field]: MANUAL_DISABLED })
+
+  beforeEach(() => {
+    useSessionStore().config.orders = { manual_destination_enabled: true, manual_destination_pricing: 'passenger_tariff_bounds' }
+  })
+
+  it('marks every manual stop when the preview is refused and turns manual entry off', async () => {
+    const session = useSessionStore()
+    const b = useBookingStore()
+    preview.mockRejectedValueOnce(refused('stops'))
+    b.setStopPlace(0, place('A', 48.82))
+    b.addStop()
+    b.setStopPlace(1, MANUAL_B)
+    b.setStopPlace(2, { ...MANUAL_B, address: 'Ауылдағы үй' })
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.stopErrors).toEqual({ 1: MANUAL_DISABLED, 2: MANUAL_DISABLED })
+    expect(b.canContinue).toBe(false)
+    expect(session.manualDestinations).toBe(false)
+
+    // A place from the search or the map clears that stop's error.
+    b.setStopPlace(1, place('Ембі, вокзал', 48.84))
+    expect(b.stopErrors).toEqual({ 2: MANUAL_DISABLED })
+  })
+
+  it('sends the passenger back to the route when POST /orders refuses the manual stop', async () => {
+    const session = useSessionStore()
+    const b = useBookingStore()
+    preview.mockResolvedValueOnce(manualQuote())
+    b.setStopPlace(0, place('A', 48.82))
+    b.setStopPlace(1, MANUAL_B)
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    expect(b.canContinue).toBe(true)
+
+    create.mockRejectedValueOnce(refused('quote_id'))
+    expect((await b.submit()).kind).toBe('route_invalid')
+    expect(b.stopErrors).toEqual({ 1: MANUAL_DISABLED })
+    expect(b.blockedStops).toEqual([1])
+    expect(session.manualDestinations).toBe(false)
+    expect(preview).toHaveBeenCalledTimes(1)
   })
 })

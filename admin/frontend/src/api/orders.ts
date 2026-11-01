@@ -30,6 +30,12 @@ export type CancelReasonCode = (typeof CANCEL_REASON_CODES)[number]
 
 export type CommissionMode = 'fixed' | 'percent'
 
+/** Village whose commission an order got, by its name at that moment; id null once the village was deleted. */
+export interface OrderCommissionArea {
+  id: string | null
+  name: string
+}
+
 /** Vehicle class and load of an order (§21): seats for taxi, cargo size for parcel/other. */
 export interface OrderLoad {
   vehicle_class: string
@@ -47,8 +53,15 @@ export interface StopSummary {
   kind: StopKind
   address: string
   mode?: 'geocoded' | 'manual'
+  /** The address is the passenger's own words while the stop keeps its coordinates (typed pickup A); missing in older data. */
+  address_typed?: boolean
   lat: number | null
   lon: number | null
+}
+
+/** The passenger wrote this address: a manual stop (no map point) or a typed pickup A. */
+export function isPassengerWritten(stop: Pick<StopSummary, 'mode' | 'address_typed'>): boolean {
+  return stop.mode === 'manual' || stop.address_typed === true
 }
 
 /** Manual destinations never become synthetic (0, 0) map points. */
@@ -204,6 +217,8 @@ export interface AdminOrder extends OrderLoad, OrderPlace {
   commission_amount: number
   /** fixed: commission.fixed_amount at creation; percent: commission_bps of the fare (orders before v2). */
   commission_mode: CommissionMode
+  /** Village whose commission applied (pickup A inside it); null for the general commission, absent in older payloads. */
+  commission_area?: OrderCommissionArea | null
   payment_method: PaymentMethod
   tariff_id: string
   quote_id: string | null

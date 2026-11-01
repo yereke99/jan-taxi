@@ -27,6 +27,11 @@ export interface CommissionPolicy {
   mode: 'fixed' | 'percent'
   /** KZT charged when a driver takes an order (fixed mode). */
   fixed_amount: number
+  /**
+   * Villages have their own percentage (§22.9): an order's charge is known
+   * only from the order, so the general fixed amount is not every order's.
+   */
+  by_area: boolean
 }
 
 export interface DriverConfigExtras {
@@ -86,8 +91,9 @@ function normalizeCommission(v: unknown): CommissionPolicy | null {
   if (!v || typeof v !== 'object') return null
   const r = rec(v)
   const amount = intOrNull(r.fixed_amount)
-  if (r.mode === 'percent') return { mode: 'percent', fixed_amount: amount ?? 0 }
-  if (r.mode === 'fixed' && amount !== null && amount > 0) return { mode: 'fixed', fixed_amount: amount }
+  const byArea = r.by_area === true
+  if (r.mode === 'percent') return { mode: 'percent', fixed_amount: amount ?? 0, by_area: byArea }
+  if (r.mode === 'fixed' && amount !== null && amount > 0) return { mode: 'fixed', fixed_amount: amount, by_area: byArea }
   return null
 }
 
@@ -112,8 +118,9 @@ export function findClass(classes: readonly VehicleClassOption[], code: string |
 
 /**
  * The commission a new order costs when it is known in advance (fixed mode);
- * null in percent mode, where it depends on the fare.
+ * null in percent mode, where it depends on the fare, and when villages have
+ * their own percentage, where it depends on the order's pickup.
  */
 export function fixedCommission(policy: CommissionPolicy | null): number | null {
-  return policy && policy.mode === 'fixed' && policy.fixed_amount > 0 ? policy.fixed_amount : null
+  return policy && policy.mode === 'fixed' && !policy.by_area && policy.fixed_amount > 0 ? policy.fixed_amount : null
 }

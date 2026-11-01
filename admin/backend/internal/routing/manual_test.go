@@ -3,7 +3,11 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 )
 
 func TestManualDestinationValidation(t *testing.T) {
@@ -29,6 +33,38 @@ func TestManualDestinationValidation(t *testing.T) {
 				t.Fatalf("valid=%v error=%v", tc.valid, e)
 			}
 		})
+	}
+}
+
+// The passenger's own words for pickup A keep A's coordinates and are marked
+// typed; the mark means nothing on a manual stop (always the passenger's words).
+func TestTypedAddressValidation(t *testing.T) {
+	var req previewRequest
+	body := `{"category":"taxi","stops":[{"lat":48.8,"lon":58.1,"address":"Мешіттің жанында","address_typed":true},
+		{"mode":"manual","address":"Ескі мәдениет үйі","address_typed":true},{"lat":48.9,"lon":58.1,"address":"Вокзал"}]}`
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatal(err)
+	}
+	in, err := req.validate(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.Stops[0].AddressTyped || in.Stops[1].AddressTyped || in.Stops[2].AddressTyped {
+		t.Fatalf("typed marks: %+v", in.Stops)
+	}
+}
+
+// A service-area error names the stop's position in the request: manual stops
+// have no point and are skipped by the check, so its index is mapped back.
+func TestStopIndexErrorMapsToRequestPosition(t *testing.T) {
+	ptStop := []int{0, 2, 3} // stop 1 is manual
+	err := stopIndexError(geo.OutsideServiceArea("stops", 1), ptStop)
+	var he *httpx.Error
+	if !errors.As(err, &he) || he.Code != "outside_service_area" || he.Details["index"] != 2 || he.Details["field"] != "stops" {
+		t.Fatalf("mapped error: %+v", err)
+	}
+	if err := stopIndexError(geo.OutsideServiceArea("stops", 0), ptStop); !errors.As(err, &he) || he.Details["index"] != 0 {
+		t.Fatalf("unchanged index: %+v", err)
 	}
 }
 

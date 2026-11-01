@@ -38,6 +38,34 @@ describe('order load (§21)', () => {
   })
 })
 
+describe('passenger-written addresses (§3, §5)', () => {
+  const typedA = { seq: 0, kind: 'pickup', mode: 'geocoded', lat: 48.8264, lon: 58.1442, address: 'Мешіттің жанында, көк қақпа', address_typed: true }
+  const manualB = { seq: 1, kind: 'destination', mode: 'manual', lat: null, lon: null, address: 'Әженің үйі', address_typed: false }
+
+  it('keeps address_typed on the stops of cards, details and history rows', () => {
+    expect(normalizeCard({ id: 'o1', stops: [typedA, manualB] }).stops.map((s) => s.address_typed)).toEqual([true, false])
+    const detail = normalizeDetail({ id: 'o1', stops: [{ ...typedA, id: 's1', address_details: null, completed_at: null }, { ...manualB, id: 's2' }] })
+    expect(detail.stops.map((s) => [s.id, s.address, s.address_typed])).toEqual([
+      ['s1', 'Мешіттің жанында, көк қақпа', true],
+      ['s2', 'Әженің үйі', false],
+    ])
+    const row = normalizeSummary({ id: 'o1', pickup: typedA, destination: manualB })
+    expect(row.pickup).toEqual(typedA)
+    expect(row.destination).toEqual(manualB)
+  })
+
+  it('reads a missing or malformed flag as false', () => {
+    const old = { seq: 0, kind: 'pickup', lat: 48.8264, lon: 58.1442, address: 'Абай көшесі, 12' }
+    const card = normalizeCard({ id: 'o1', stops: [old, { ...old, seq: 1, kind: 'destination', address_typed: 'true' }] })
+    expect(card.stops.map((s) => s.address_typed)).toEqual([false, false])
+    expect(normalizeSummary({ id: 'o1', pickup: old, destination: { ...old, seq: 1, address_typed: 1 } })).toMatchObject({
+      pickup: { address: 'Абай көшесі, 12', address_typed: false },
+      destination: { address_typed: false },
+    })
+    expect(normalizeDetail({ id: 'o1' }).stops).toEqual([])
+  })
+})
+
 describe('passenger contact (§22.4/§22.5)', () => {
   it('opens only Telegram chat links', () => {
     expect(safeTelegramUrl('https://t.me/aigerim_k')).toBe('https://t.me/aigerim_k')

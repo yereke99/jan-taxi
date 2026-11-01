@@ -29,11 +29,14 @@ var ErrQuoteExpired = httpx.NewError(http.StatusUnprocessableEntity, "quote_expi
 var ErrQuoteNotFound = httpx.NewError(http.StatusNotFound, "not_found", "quote not found")
 
 // QuoteStop is one stop as stored in a quote, in route order (pickup first).
+// AddressTyped: the address is the passenger's own words for a point with
+// coordinates (a typed pickup A); always false for manual stops.
 type QuoteStop struct {
 	Mode           string  `json:"mode,omitempty"`
 	Lat            float64 `json:"lat"`
 	Lon            float64 `json:"lon"`
 	Address        string  `json:"address"`
+	AddressTyped   bool    `json:"address_typed,omitempty"`
 	AddressDetails string  `json:"address_details"` // "" when not given
 }
 
@@ -151,6 +154,7 @@ type storedStop struct {
 	Lon            *float64 `json:"lon"`
 	Mode           string   `json:"mode"`
 	Address        string   `json:"address"`
+	AddressTyped   bool     `json:"address_typed,omitempty"`
 	AddressDetails *string  `json:"address_details"`
 }
 
@@ -168,8 +172,9 @@ func CreateQuote(ctx context.Context, q db.Querier, in NewQuote) (StoredQuote, e
 	raw := make([]storedStop, len(in.Stops))
 	for i, s := range in.Stops {
 		s.Lat, s.Lon = round6(s.Lat), round6(s.Lon)
+		s.AddressTyped = s.AddressTyped && s.Mode != "manual"
 		stops[i] = s
-		raw[i] = storedStop{Mode: s.Mode, Address: s.Address}
+		raw[i] = storedStop{Mode: s.Mode, Address: s.Address, AddressTyped: s.AddressTyped}
 		if s.Mode != "manual" {
 			lat, lon := s.Lat, s.Lon
 			raw[i].Lat, raw[i].Lon = &lat, &lon
@@ -265,7 +270,7 @@ func LoadQuoteForUpdate(ctx context.Context, tx pgx.Tx, quoteID, userID uuid.UUI
 	}
 	sq.Stops = make([]QuoteStop, len(raw))
 	for i, s := range raw {
-		sq.Stops[i] = QuoteStop{Mode: s.Mode, Address: s.Address}
+		sq.Stops[i] = QuoteStop{Mode: s.Mode, Address: s.Address, AddressTyped: s.AddressTyped && s.Mode != "manual"}
 		if s.Mode == "manual" {
 			if i == 0 || s.Lat != nil || s.Lon != nil {
 				return StoredQuote{}, fmt.Errorf("invalid stored manual stop")

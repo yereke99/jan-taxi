@@ -282,6 +282,13 @@ export type StopKind = 'pickup' | 'intermediate' | 'destination'
 
 export interface StopSummary {
   mode?: 'geocoded' | 'manual'
+  /**
+   * The address is the passenger's own words while the stop keeps its
+   * coordinates (a typed pickup A, §3). Manual stops are always the
+   * passenger's words and keep false. Older data without it reads false
+   * (normalizeStop).
+   */
+  address_typed: boolean
   seq: number
   kind: StopKind
   lat: number | null

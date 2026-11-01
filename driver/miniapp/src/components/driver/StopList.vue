@@ -1,7 +1,8 @@
 <!--
   All stops of an order in seq order: letter, address, the passenger's
   address details (entrance, floor…) once visible to the driver, and
-  completion state on a live trip.
+  completion state on a live trip. An address the passenger wrote (a manual
+  stop or a typed pickup A) is shown as written and marked as such.
 -->
 <script setup lang="ts">
 import { Check } from '@lucide/vue'
@@ -9,7 +10,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Stop, StopSummary } from '../../api/types'
 import { sortedStops, stopLetter } from '../../features/trip/sequence'
-import { useAddressText } from '../../i18n/core'
+import { isPassengerWritten, useStopText } from '../../features/trip/stopText'
 
 const props = withDefaults(
   defineProps<{
@@ -22,7 +23,7 @@ const props = withDefaults(
 )
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 
 const list = computed(() => sortedStops(props.stops))
 
@@ -55,8 +56,8 @@ function kindLabel(s: Stop | StopSummary): string {
       </span>
       <span class="stops__text">
         <span class="stops__kind">{{ kindLabel(s) }}</span>
-        <span class="stops__addr">{{ s.mode === 'manual' ? s.address : addr(s.address) }}</span>
-        <span v-if="s.mode === 'manual'" class="stops__details">{{ t('manual.label') }}</span>
+        <span class="stops__addr">{{ stopText(s) }}</span>
+        <span v-if="isPassengerWritten(s)" class="stops__details">{{ t('manual.label') }}</span>
         <span v-if="details(s)" class="stops__details">{{ details(s) }}</span>
       </span>
     </li>

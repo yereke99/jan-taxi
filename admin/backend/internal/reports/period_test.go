@@ -64,6 +64,11 @@ func TestEscapeFormula(t *testing.T) {
 		"Ембі, Абай көшесі 5":      "Ембі, Абай көшесі 5",
 		"a=b":                      "a=b",
 		"":                         "",
+		// Excel in Russian and Kazakh locales splits on ';' (and reads a
+		// comma file the same way): a trigger after a separator starts a cell.
+		"Мешіт;=1+1;":      "Мешіт;'=1+1;",
+		"Абай 5, -2 қабат": "Абай 5, '-2 қабат",
+		"x; @SUM(A1)":      "x; '@SUM(A1)",
 	}
 	for in, want := range cases {
 		if got := EscapeFormula(in); got != want {

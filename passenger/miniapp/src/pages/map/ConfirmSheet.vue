@@ -11,7 +11,9 @@
   a small taxi party (e.g. a minibus for one passenger) is confirmed in an
   action sheet first. Before the first order the passenger is asked once to
   share the phone (§22.5). Confirm sends POST /orders with the chosen class's
-  quote and an idempotency key that stays the same on retries.
+  quote and an idempotency key that stays the same on retries. When the
+  passenger wrote a stop in their own words, the route summary lists the stop
+  texts as drivers get them; a route without a calculated length says so.
 -->
 <script setup lang="ts">
 import { ChevronRight, Circle, CircleCheck, Info } from '@lucide/vue'
@@ -24,10 +26,13 @@ import FarePicker from '../../components/booking/FarePicker.vue'
 import PassengerStepper from '../../components/booking/PassengerStepper.vue'
 import VehicleOptions from '../../components/booking/VehicleOptions.vue'
 import PhoneShareSheet from '../../components/PhoneShareSheet.vue'
+import StopBadge from '../../components/StopBadge.vue'
 import { JButton, JSheet, JSkeleton, JSpinner, JTextArea, JTextField, showActionSheet, toast, type SheetSnap } from '../../components/ui'
+import { useStopText } from '../../composables/useStopText'
 import { useVehicleText } from '../../composables/useVehicleText'
 import { isDelivery } from '../../domain/details'
 import { prohibitedItemKeys } from '../../domain/prohibited'
+import { isTypedPlace } from '../../domain/route'
 import { defaultOption, LARGE_CLASS_SEATS, loadProblem, oversizedForParty } from '../../domain/vehicleClass'
 import { useErrorText, useFieldErrorText } from '../../i18n/core'
 import { STOP_LETTERS } from '../../maps'
@@ -57,6 +62,7 @@ const orders = useOrdersStore()
 const session = useSessionStore()
 const phoneShare = usePhoneStore()
 const vehicleText = useVehicleText()
+const stopText = useStopText()
 
 const snap = ref<SheetSnap>('half')
 const contentEl = ref<HTMLElement | null>(null)
@@ -70,6 +76,8 @@ const stale = computed(() => !booking.quoteCurrent)
 const delivery = computed(() => isDelivery(booking.category))
 const prohibitedKeys = computed(() => prohibitedItemKeys(session.config.delivery.prohibited_items))
 const placedStops = computed(() => booking.stops.flatMap((s, i) => (s.place ? [{ letter: STOP_LETTERS[i] ?? '', place: s.place, i }] : [])))
+/** A stop the passenger wrote in their own words: drivers get that text, so it is shown here. */
+const writtenRoute = computed(() => placedStops.value.some((s) => isTypedPlace(s.place)))
 const methods = computed<PaymentMethod[]>(() => quote.value?.payment_methods ?? ['cash', 'bank_transfer'])
 
 /** Preview failure shown in the class section: the load cannot be carried, or the quote failed. */
@@ -326,10 +334,16 @@ async function submit(): Promise<void> {
         <div class="confirm-fact">
           <span>{{ t('booking.title') }}</span>
           <span v-if="quote" class="confirm-fact__value jt-tabular">
-            {{ t('confirm.points', { n: placedStops.length }) }} · {{ formatDistance(quote.distance_m, lang) }}
+            {{ t('confirm.points', { n: placedStops.length }) }} · {{ quote.distance_m === null ? t('manual.route_unknown') : formatDistance(quote.distance_m, lang) }}
           </span>
           <span v-else class="confirm-fact__value"><JSpinner /></span>
         </div>
+        <ol v-if="writtenRoute" class="confirm-stops">
+          <li v-for="s in placedStops" :key="s.i" class="confirm-stops__row">
+            <StopBadge :letter="s.letter" size="small" />
+            <span class="confirm-stops__address">{{ stopText(s.place) }}</span>
+          </li>
+        </ol>
         <div v-if="quote && quote.duration_s !== null" class="confirm-fact">
           <span>{{ t('confirm.duration') }}</span>
           <span class="confirm-fact__value jt-tabular">~{{ formatDuration(quote.duration_s, lang) }}</span>
@@ -442,7 +456,8 @@ async function submit(): Promise<void> {
   text-align: left;
 }
 
-.confirm-fact + .confirm-fact::before {
+.confirm-fact + .confirm-fact::before,
+.confirm-stops + .confirm-fact::before {
   content: '';
   position: absolute;
   top: 0;
@@ -583,6 +598,11 @@ async function submit(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: var(--jt-space-2);
+}
+
+/* The stop texts under the route row of the order facts. */
+.confirm-facts > .confirm-stops {
+  padding: 0 var(--jt-space-4) var(--jt-space-3);
 }
 
 .confirm-stops__row {

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/commissionareas"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
@@ -102,7 +103,8 @@ func PreviewETASeconds(distM float64) int {
 // without such a driver are absent. excludeUser (the passenger) is never
 // counted. With a fixed commission (§22.2) the driver's available balance
 // must cover it, since nobody else is offered the order; with a percentage
-// the amount depends on the fare, which is not chosen yet.
+// (the tariff's, or a village's around pickup, §22.9) the amount depends on
+// the fare, which is not chosen yet.
 func PreviewETAs(ctx context.Context, q db.Querier, pickup geo.Point, classes []string, load Load, excludeUser uuid.UUID) (map[string]int, error) {
 	out := map[string]int{}
 	if len(classes) == 0 {
@@ -111,7 +113,13 @@ func PreviewETAs(ctx context.Context, q db.Querier, pickup geo.Point, classes []
 	p := settings.Dispatch(ctx, q)
 	var minAvailable int64
 	if c := settings.Commission(ctx, q); c.Mode == settings.CommissionFixed {
-		minAvailable = c.FixedAmount
+		area, _, err := commissionareas.Resolve(ctx, q, pickup)
+		if err != nil {
+			return nil, err
+		}
+		if area == nil {
+			minAvailable = c.FixedAmount
+		}
 	}
 	cell := SnapETAPickup(pickup)
 	// Candidates within the radius plus the largest offset; the exact test

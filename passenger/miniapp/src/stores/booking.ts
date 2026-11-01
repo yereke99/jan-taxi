@@ -19,7 +19,11 @@
 //   (the price on its row, also for routes with a manual destination). Only
 //   parcel and other deliveries let the passenger choose the fare.
 // * Pickup A can be described in the passenger's own words (setPickupText);
-//   A still keeps the pin or GPS coordinates that dispatch measures from.
+//   A still keeps the pin or GPS coordinates that dispatch measures from. The
+//   text stays while only A's point moves (setPickupPoint: the home pin, the
+//   map picker, a dragged marker); a place chosen for A replaces it. The
+//   default map centre named after a failed GPS attempt is not a point for
+//   such a text (pickupFallback).
 // * POST /orders carries an idempotency key that stays the same while the
 //   payload is the same, so a retry after a lost response replays the
 //   original order instead of creating a second one.
@@ -105,8 +109,20 @@ function quoteExpiring(q: Pick<RouteQuote, 'expires_at'>, now = Date.now()): boo
   return Number.isFinite(t) && t - now < QUOTE_REFRESH_MARGIN_MS
 }
 
-/** Stop index → reason from a preview/create error (outside area, duplicates). */
-export function stopErrorsFrom(err: unknown): Record<number, string> {
+/** Reason the API gives when manual stops were switched off (preview: stops, POST /orders: quote_id). */
+export const MANUAL_DISABLED = 'manual_destination_disabled'
+
+/** The API refused the route because manual stops are switched off (§5). */
+export function manualRefused(err: unknown): boolean {
+  return isApiError(err) && err.code === 'validation_failed' && (err.fields.stops === MANUAL_DISABLED || err.fields.quote_id === MANUAL_DISABLED)
+}
+
+/**
+ * Stop index → reason from a preview/create error (outside area, duplicates).
+ * When manual stops were switched off, every manual stop of `stops` (the
+ * route that was sent) gets MANUAL_DISABLED.
+ */
+export function stopErrorsFrom(err: unknown, stops: readonly RouteStop[] = []): Record<number, string> {
   const out: Record<number, string> = {}
   if (!isApiError(err)) return out
   if (err.code === 'outside_service_area') {
@@ -115,6 +131,11 @@ export function stopErrorsFrom(err: unknown): Record<number, string> {
     return out
   }
   if (err.code === 'validation_failed') {
+    if (manualRefused(err)) {
+      stops.forEach((s, i) => {
+        if (s.place?.source === 'manual') out[i] = MANUAL_DISABLED
+      })
+    }
     for (const [field, reason] of Object.entries(err.fields)) {
       const m = /^stops\.(\d+)(?:\.|$)/.exec(field)
       if (m) out[Number(m[1])] = reason
@@ -131,6 +152,18 @@ export const useBookingStore = defineStore('booking', () => {
   const stops = ref<RouteStop[]>(createStops())
   /** Accuracy of the GPS fix used for the pickup, while the pickup came from GPS. */
   const pickupAccuracy = ref<number | null>(null)
+  /**
+   * A is only the default map centre the home screen named after the GPS
+   * attempt failed (no device position, the map never moved by the passenger,
+   * no place chosen): not a point drivers can be sent to for a typed pickup.
+   */
+  const pickupFallback = ref(false)
+  /**
+   * The passenger moved the map under the home pin themselves (a drag; a
+   * zoom keeps the point), so the pin names their own choice, never the
+   * default map centre, for the rest of this booking.
+   */
+  const pinPlaced = ref(false)
   let pickupRevision = 0
 
   const maxPoints = computed(() => clampMaxPoints(session.maxRoutePoints))
@@ -243,7 +276,8 @@ export const useBookingStore = defineStore('booking', () => {
   function applyPreviewError(err: unknown): void {
     previewStatus.value = 'error'
     previewError.value = err
-    stopErrors.value = stopErrorsFrom(err)
+    stopErrors.value = stopErrorsFrom(err, stops.value)
+    if (manualRefused(err)) session.disableManualDestinations()
   }
 
   const runner = createLatest<PreviewInput, RouteQuote>({
@@ -365,7 +399,10 @@ export const useBookingStore = defineStore('booking', () => {
 
   function setStopPlace(index: number, place: PlaceValue | null): void {
     if (place?.source === 'manual' && index === 0) return
-    if (index === 0) pickupRevision++
+    if (index === 0) {
+      pickupRevision++
+      pickupFallback.value = false
+    }
     stops.value = setPlace(stops.value, index, place)
     if (index === 0 && place?.source !== 'gps') pickupAccuracy.value = null
     if (stopErrors.value[index] !== undefined) {
@@ -425,18 +462,32 @@ export const useBookingStore = defineStore('booking', () => {
   }
 
   /**
+   * A new point for pickup A from the map: the home screen's pin, «Choose on
+   * map» or a dragged marker. A typed A keeps the passenger's text and takes
+   * only the point (coordinates, source, locality line, Kazakhstan check);
+   * any other A becomes the new place. `fallback` marks the default map
+   * centre the home screen names after the GPS attempt failed.
+   */
+  function setPickupPoint(place: PlaceValue, fallback = false): void {
+    const current = stops.value[0]?.place ?? null
+    setStopPlace(0, current?.typed === true ? { ...place, address: current.address, typed: true } : place)
+    pickupFallback.value = fallback
+  }
+
+  /**
    * Pickup A in the passenger's own words, for places the map search does not
    * know («Мешіттің жанында, көк қақпа»). Only the address changes: A keeps
    * the point it already has (the pin, the GPS fix or a found place), else it
    * takes the device position, because drivers are found by radius from A's
-   * coordinates and the API checks them against Kazakhstan. Returns false and
-   * changes nothing without such a point or for an empty or too long text.
+   * coordinates and the API checks them against Kazakhstan. The fallback map
+   * centre is not such a point. Returns false and changes nothing without a
+   * point or for an empty or too long text.
    */
   function setPickupText(text: string, device: DeviceLocation | null = null): boolean {
     const address = cleanText(text)
     if (!address || codePointLength(address) > MAX_ADDRESS_LENGTH) return false
     const current = stops.value[0]?.place ?? null
-    if (current && hasCoordinates(current)) {
+    if (current && hasCoordinates(current) && !pickupFallback.value) {
       setStopPlace(0, { ...current, address, typed: true })
       return true
     }
@@ -521,7 +572,8 @@ export const useBookingStore = defineStore('booking', () => {
         return { kind: 'failed', error: err }
       }
       case 'validation_failed': {
-        const stopsBad = stopErrorsFrom(err)
+        const stopsBad = stopErrorsFrom(err, stops.value)
+        if (manualRefused(err)) session.disableManualDestinations()
         if (Object.keys(stopsBad).length > 0) {
           stopErrors.value = stopsBad
           return { kind: 'route_invalid' }
@@ -579,6 +631,8 @@ export const useBookingStore = defineStore('booking', () => {
     runner.cancel()
     stops.value = createStops()
     pickupAccuracy.value = null
+    pickupFallback.value = false
+    pinPlaced.value = false
     quote.value = null
     quoteKey.value = ''
     quoteRouteKey.value = ''
@@ -604,6 +658,8 @@ export const useBookingStore = defineStore('booking', () => {
     category,
     stops,
     pickupAccuracy,
+    pickupFallback,
+    pinPlaced,
     maxPoints,
     complete,
     manualDestination,
@@ -648,6 +704,7 @@ export const useBookingStore = defineStore('booking', () => {
     pruneEmptyStops,
     moveStop,
     setPickupFromLocation,
+    setPickupPoint,
     setPickupText,
     prefill,
     schedulePreview,

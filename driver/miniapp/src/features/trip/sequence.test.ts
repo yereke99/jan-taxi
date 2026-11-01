@@ -11,6 +11,7 @@ function stop(seq: number, kind: Stop['kind'], done = false): Stop {
     lat: 48.82 + seq / 100,
     lon: 58.14 + seq / 100,
     address: `Address ${seq}`,
+    address_typed: false,
     address_details: null,
     completed_at: done ? '2026-10-16T10:00:00Z' : null,
   }

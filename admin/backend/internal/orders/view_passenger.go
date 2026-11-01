@@ -206,17 +206,18 @@ type OrderSummary struct {
 
 // endpointColumns select the pickup (p) and destination (x) stops of order o.
 const endpointColumns = `
-	p.seq, p.kind, COALESCE(p.lat,0), COALESCE(p.lon,0), p.address, p.mode,
-	x.seq, x.kind, COALESCE(x.lat,0), COALESCE(x.lon,0), x.address, x.mode`
+	p.seq, p.kind, COALESCE(p.lat,0), COALESCE(p.lon,0), p.address, p.mode, p.address_typed,
+	x.seq, x.kind, COALESCE(x.lat,0), COALESCE(x.lon,0), x.address, x.mode, x.address_typed`
 
 const endpointJoins = `
-	JOIN LATERAL (SELECT seq, kind, lat, lon, address, mode FROM order_stops
+	JOIN LATERAL (SELECT seq, kind, lat, lon, address, mode, address_typed FROM order_stops
 	              WHERE order_id = o.id ORDER BY seq ASC LIMIT 1) p ON true
-	JOIN LATERAL (SELECT seq, kind, lat, lon, address, mode FROM order_stops
+	JOIN LATERAL (SELECT seq, kind, lat, lon, address, mode, address_typed FROM order_stops
 	              WHERE order_id = o.id ORDER BY seq DESC LIMIT 1) x ON true`
 
 func endpointDest(p, x *stops.Summary) []any {
-	return []any{&p.Seq, &p.Kind, &p.Lat, &p.Lon, &p.Address, &p.Mode, &x.Seq, &x.Kind, &x.Lat, &x.Lon, &x.Address, &x.Mode}
+	return []any{&p.Seq, &p.Kind, &p.Lat, &p.Lon, &p.Address, &p.Mode, &p.AddressTyped,
+		&x.Seq, &x.Kind, &x.Lat, &x.Lon, &x.Address, &x.Mode, &x.AddressTyped}
 }
 
 // listPassengerOrders returns one page of the passenger's orders with the

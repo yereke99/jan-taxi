@@ -67,8 +67,10 @@ var cargoSizeLabels = map[string]map[string]string{
 var mapPointLabel = labels("Картадағы нүкте", "Точка на карте", "Point on the map")
 
 var (
-	// coordsRe matches an address that is only "lat, lon".
-	coordsRe = regexp.MustCompile(`^\s*-?\d{1,3}(\.\d+)?\s*,\s*-?\d{1,3}(\.\d+)?\s*$`)
+	// coordsRe matches an address that is only "lat, lon" as the system
+	// writes it (always with decimals); the passenger's own words such as
+	// «12, 5» (block 12, house 5) are kept.
+	coordsRe = regexp.MustCompile(`^\s*-?\d{1,3}\.\d+\s*,\s*-?\d{1,3}\.\d+\s*$`)
 	// linkRe is the Telegram profile link of a person: a public username or
 	// a mention by id.
 	linkRe = regexp.MustCompile(`^(https://t\.me/[A-Za-z][A-Za-z0-9_]{3,31}|tg://user\?id=[1-9][0-9]{0,19})$`)
@@ -410,7 +412,7 @@ func formatValue(p Param, v any, lang string) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		s = cleanParam(s)
+		s = cleanParamMax(s, p.Max)
 		if s == "" {
 			return "", false
 		}
@@ -495,7 +497,13 @@ func localized(v any) (map[string]string, bool) {
 
 // cleanParam collapses whitespace (so a value cannot break the line structure),
 // strips control and bidi-override characters and cuts to maxTextParam.
-func cleanParam(s string) string {
+func cleanParam(s string) string { return cleanParamMax(s, 0) }
+
+// cleanParamMax is cleanParam with its own limit (maxTextParam when max <= 0).
+func cleanParamMax(s string, max int) string {
+	if max <= 0 {
+		max = maxTextParam
+	}
 	var b strings.Builder
 	space := false
 	n := 0
@@ -507,7 +515,7 @@ func cleanParam(s string) string {
 		case unicode.IsControl(r), r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069, r == 0xFEFF:
 			continue
 		}
-		if n >= maxTextParam {
+		if n >= max {
 			b.WriteString("…")
 			break
 		}

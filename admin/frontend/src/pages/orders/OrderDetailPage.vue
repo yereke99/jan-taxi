@@ -9,7 +9,7 @@ import { MapPin } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { isDefaultRegion, localityText } from '../../api/common'
-import { orderTariffRegion, ordersApi, type AdminOrder, type Dispute } from '../../api/orders'
+import { isPassengerWritten, orderTariffRegion, ordersApi, type AdminOrder, type Dispute } from '../../api/orders'
 import { AppButton, Card, DataTable, DetailHeader, KeyValueList, ReasonDialog, StateView, StatusBadge, Timeline, VehicleClassIcon, toast, type Column, type KeyValueItem, type TimelineItem } from '../../components'
 import { useFormat } from '../../composables/useFormat'
 import { useRealtimeEvents, useResync } from '../../composables/useRealtime'
@@ -78,12 +78,14 @@ const loadText = computed(() => {
   return null
 })
 
+/** Amount, the percentage (or "fixed") and the village whose commission applied. */
 const commissionText = computed(() => {
   const o = order.value
   if (!o) return ''
-  return o.commission_mode === 'percent'
-    ? `${fmt.money(o.commission_amount)} · ${fmt.percentFromBps(o.commission_bps)}`
-    : `${fmt.money(o.commission_amount)} · ${t('orders.commission_fixed')}`
+  const parts = [fmt.money(o.commission_amount), o.commission_mode === 'percent' ? fmt.percentFromBps(o.commission_bps) : t('orders.commission_fixed')]
+  const area = o.commission_area
+  if (area) parts.push(area.id === null ? `${area.name} (${t('orders.commission_area_deleted')})` : area.name)
+  return parts.join(' · ')
 })
 
 const charged = computed(() => chargedCommission(order.value?.ledger ?? [], order.value?.driver?.id))
@@ -254,7 +256,7 @@ useResync(() => void res.reload({ silent: true }))
                 <span class="stops__letter">{{ stopLetter(s.seq) }}</span>
                 <div class="stops__text">
                   <p>{{ s.address }}</p>
-                  <p v-if="s.mode === 'manual'" class="jt-muted">{{ t('orders.manual_destination') }}</p>
+                  <p v-if="isPassengerWritten(s)" class="jt-muted">{{ t('orders.manual_destination') }}</p>
                   <p v-if="s.address_details" class="jt-muted">{{ s.address_details }}</p>
                   <p class="jt-muted stops__meta">
                     {{ t(`stop_kind.${s.kind}`) }}

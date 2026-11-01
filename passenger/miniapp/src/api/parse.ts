@@ -213,6 +213,7 @@ function parseQuoteStop(v: unknown, i: number, count: number): QuoteStop {
     lat: numOrNull(r.lat),
     lon: numOrNull(r.lon),
     address: str(r.address),
+    address_typed: bool(r.address_typed),
     address_details: strOrNull(r.address_details),
   }
 }
@@ -309,6 +310,7 @@ function parseStop(v: unknown, i: number, count: number): OrderStop {
     lat: numOrNull(r.lat),
     lon: numOrNull(r.lon),
     address: str(r.address),
+    address_typed: bool(r.address_typed),
     address_details: strOrNull(r.address_details),
     completed_at: strOrNull(r.completed_at),
   }
@@ -466,6 +468,7 @@ function parseStopSummary(v: unknown, kind: StopKind): StopSummary {
     lat: numOrNull(r.lat),
     lon: numOrNull(r.lon),
     address: str(r.address),
+    address_typed: bool(r.address_typed),
   }
 }
 

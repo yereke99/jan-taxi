@@ -131,10 +131,11 @@ var coordsRe = regexp.MustCompile(`^[-+]?\d{1,3}(\.\d+)?\s*[,;]\s*[-+]?\d{1,3}(\
 
 // PlaceLabel is the address to show for a stop: the address itself, or
 // fallback (e.g. "Картадағы нүкте") when it is empty or just coordinates.
-// Raw coordinates are never shown to users.
+// Raw coordinates are never shown to users. Coordinates always carry
+// decimals, so a passenger's own «12, 5» (block 12, house 5) is kept.
 func PlaceLabel(address, fallback string) string {
 	a := strings.TrimSpace(address)
-	if a == "" || coordsRe.MatchString(a) {
+	if a == "" || (coordsRe.MatchString(a) && strings.Contains(a, ".")) {
 		return fallback
 	}
 	return a

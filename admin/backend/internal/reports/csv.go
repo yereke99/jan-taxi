@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 )
@@ -50,12 +51,20 @@ func Time(t *time.Time, loc *time.Location) Cell {
 	return Cell{value: t.In(loc).Format(time.RFC3339)}
 }
 
+// sepTriggerRe is a formula trigger right after a list separator. Excel with
+// Russian or Kazakh regional settings splits an unquoted CSV line on ';' (and
+// a comma-separated file opened there is read the same way), so text such as
+// «Мешіт;=1+1» from a passenger would start a formula cell.
+var sepTriggerRe = regexp.MustCompile(`([;,][ \t]*)([=+\-@])`)
+
 // EscapeFormula prefixes a single quote to text that a spreadsheet would
-// otherwise evaluate as a formula (leading = + - @, tab or carriage return).
+// otherwise evaluate as a formula (leading = + - @, tab or carriage return),
+// also where such a trigger follows a ';' or ',' inside the text.
 func EscapeFormula(s string) string {
 	if s == "" {
 		return s
 	}
+	s = sepTriggerRe.ReplaceAllString(s, "$1'$2")
 	switch s[0] {
 	case '=', '+', '-', '@', '\t', '\r':
 		return "'" + s

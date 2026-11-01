@@ -4,7 +4,9 @@
   supersedes the older request) and the address appears in the callout above
   the pin and in the sheet. Camera changes that do not move the centre (sheet
   padding) never re-query. If geocoding fails the point can still be chosen
-  and is named by its coordinates; a point outside Kazakhstan cannot.
+  and is named by its coordinates; a point outside Kazakhstan cannot. For a
+  pickup A written in the passenger's own words only the point changes; the
+  text stays.
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch, watchEffect } from 'vue'
@@ -14,6 +16,7 @@ import { reverseGeocode } from '../../api/geo'
 import type { GeoReverse } from '../../api/types'
 import { JButton, JSheet, JSkeleton } from '../../components/ui'
 import { createLatest } from '../../domain/latest'
+import type { PlaceValue } from '../../domain/route'
 import { useAddressText } from '../../i18n/core'
 import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { useStageScreen } from '../../stage/mapStage'
@@ -146,14 +149,16 @@ function choosePoint(): void {
   const p = point.value
   if (!p || !canConfirm.value) return
   const r = result.value
-  booking.setStopPlace(index.value, {
+  const place: PlaceValue = {
     lat: p.lat,
     lon: p.lon,
     address: r?.title ?? '',
     subtitle: r?.title ? r.subtitle : null,
     source: 'map',
     inServiceArea: r ? r.in_service_area : null,
-  })
+  }
+  if (index.value === 0) booking.setPickupPoint(place)
+  else booking.setStopPlace(index.value, place)
   if (route.query.from === BOOKING_FROM_HOME) void router.replace({ name: ROUTE.book, query: { category: booking.category } })
   else navigateBack(router)
 }

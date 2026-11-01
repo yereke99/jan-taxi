@@ -3,7 +3,9 @@
   (the full route where 2GIS accepts via points, otherwise the next stop),
   always "Next stop only", and a visible note whenever the full route could
   not be passed. Links are opened from the tap itself (Telegram requires a
-  user gesture) with openLink; only https links are used.
+  user gesture) with openLink; only https links are used. While a remaining
+  stop is manual (the passenger's words, no map point) «Маршрут есептелмеген»
+  stays visible, also when 2GIS has nothing to open (heading to that stop).
 -->
 <script setup lang="ts">
 import { Navigation } from '@lucide/vue'
@@ -30,6 +32,7 @@ const plan = computed(() =>
     remaining: navigationPrefix(props.remaining),
   }),
 )
+const manualAhead = computed(() => props.remaining.some((s) => s.mode === 'manual'))
 
 function open(url: string): void {
   haptics.impact('light')
@@ -38,15 +41,17 @@ function open(url: string): void {
 </script>
 
 <template>
-  <section v-if="plan" class="nav">
-    <p v-if="remaining.some(s=>s.mode==='manual')" class="nav__note">{{ t('manual.route_unknown') }}</p>
-    <button type="button" class="nav__main" @click="open(plan.primaryUrl)">
-      <Navigation :size="20" :stroke-width="2.25" aria-hidden="true" />
-      {{ t('trip.open_2gis') }}
-    </button>
-    <!-- Only when the main button passes the whole route; otherwise both open the next stop. -->
-    <button v-if="plan.primaryMode === 'full'" type="button" class="nav__next" @click="open(plan.nextUrl)">{{ t('trip.next_only') }}</button>
-    <p v-if="plan.note" class="nav__note">{{ t(`trip.note_${plan.note}`) }}</p>
+  <section v-if="plan || manualAhead" class="nav">
+    <p v-if="manualAhead" class="nav__note">{{ t('manual.route_unknown') }}</p>
+    <template v-if="plan">
+      <button type="button" class="nav__main" @click="open(plan.primaryUrl)">
+        <Navigation :size="20" :stroke-width="2.25" aria-hidden="true" />
+        {{ t('trip.open_2gis') }}
+      </button>
+      <!-- Only when the main button passes the whole route; otherwise both open the next stop. -->
+      <button v-if="plan.primaryMode === 'full'" type="button" class="nav__next" @click="open(plan.nextUrl)">{{ t('trip.next_only') }}</button>
+      <p v-if="plan.note" class="nav__note">{{ t(`trip.note_${plan.note}`) }}</p>
+    </template>
   </section>
 </template>
 

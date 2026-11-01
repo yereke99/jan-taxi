@@ -25,6 +25,10 @@ export const useSessionStore = defineStore('session', () => {
 
   const isReady = computed(() => status.value === 'ready')
   const maxRoutePoints = computed(() => config.value.routing.max_points)
+  /** Stops after A may be written by hand, without coordinates (administrator switch, §5). */
+  const manualDestinations = computed(
+    () => config.value.orders?.manual_destination_enabled === true && config.value.orders.manual_destination_pricing === 'passenger_tariff_bounds',
+  )
 
   async function loadConfig(): Promise<void> {
     try {
@@ -81,6 +85,11 @@ export const useSessionStore = defineStore('session', () => {
     if (!configLoaded.value) await loadConfig()
   }
 
+  /** The API refused manual stops (manual_destination_disabled): they are off now, whatever the config said. */
+  function disableManualDestinations(): void {
+    config.value.orders = { manual_destination_enabled: false, manual_destination_pricing: config.value.orders?.manual_destination_pricing ?? 'disabled' }
+  }
+
   /** Persists the language server-side first, then switches the UI. */
   async function setLanguage(next: Locale): Promise<void> {
     if (!isLocale(next) || next === language.value) return
@@ -102,9 +111,11 @@ export const useSessionStore = defineStore('session', () => {
     savingLanguage,
     isReady,
     maxRoutePoints,
+    manualDestinations,
     bootstrap,
     refreshMe,
     ensureConfig,
+    disableManualDestinations,
     setLanguage,
   }
 })

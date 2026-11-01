@@ -1,8 +1,9 @@
 // Order detail before accepting: the fare is shown, the commission never is
 // (it is still charged on acceptance, §22.2), and a 402 insufficient_balance
-// keeps the order on screen with what is missing and a top-up button.
+// keeps the order on screen with what is missing and a top-up button. A route
+// with a manual stop has no metrics: one chip says so instead of dashes.
 
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -26,7 +27,7 @@ const plain = (s: string) => s.replace(/\u00a0/g, ' ')
 const ID = '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d34'
 const mocked = vi.mocked(api)
 
-function order() {
+function order(over: Record<string, unknown> = {}) {
   return normalizeDetail({
     id: ID,
     number: 1024,
@@ -53,7 +54,13 @@ function order() {
     can_accept: true,
     locality: 'Алматы',
     tariff_region: { code: 'KAZ', name: { kk: 'Қазақстан', ru: 'Казахстан', en: 'Kazakhstan' } },
+    ...over,
   })
+}
+
+/** Texts of the route chips under the stops. */
+function chips(w: VueWrapper): string[] {
+  return w.findAll('.odetail__chip').map((c) => plain(c.text()))
 }
 
 async function mountPage() {
@@ -113,6 +120,27 @@ describe('OrderDetailPage', () => {
     expect(place.exists()).toBe(true)
     expect(place.text()).toContain('Алматы')
     expect(w.text()).not.toContain('Қазақстан')
+  })
+
+  it('shows the trip distance and duration when the route is known', async () => {
+    const { w } = await mountPage()
+    expect(chips(w)).toEqual(['6,8 км', '14 мин', 'Сізден 1,2 км'])
+  })
+
+  it('a route without metrics shows one «Маршрут есептелмеген» chip, never dashes', async () => {
+    mocked.getOrder.mockResolvedValue(order({ distance_m: null, duration_s: null }))
+    const { w } = await mountPage()
+    expect(chips(w)).toEqual(['Маршрут есептелмеген', 'Сізден 1,2 км'])
+    expect(w.find('.odetail__chips').text()).not.toContain('—')
+  })
+
+  it('leaves out only the metric that is unknown', async () => {
+    mocked.getOrder.mockResolvedValue(order({ duration_s: null }))
+    const { w } = await mountPage()
+    expect(chips(w)).toEqual(['6,8 км', 'Сізден 1,2 км'])
+    mocked.getOrder.mockResolvedValue(order({ distance_m: null }))
+    const { w: other } = await mountPage()
+    expect(chips(other)).toEqual(['14 мин', 'Сізден 1,2 км'])
   })
 
   it('a 402 keeps the order open with the shortfall and a top-up button', async () => {

@@ -114,6 +114,21 @@ describe('parseOrder / parseOrderSummary', () => {
     expect(o.tariff_region).toBeNull()
   })
 
+  it('reads which stops the passenger wrote (address_typed); an older payload without it reads false', () => {
+    const typedA = { seq: 0, kind: 'pickup', lat: 48.82, lon: 58.14, address: 'Мешіттің жанында, көк қақпа', address_typed: true }
+    const manualB = { seq: 1, kind: 'destination', mode: 'manual', lat: null, lon: null, address: 'Ескі мәдениет үйі', address_typed: false }
+    const q = parseQuote({ ...preview, stops: [typedA, { ...manualB, address_typed: undefined }] })
+    expect(q.stops.map((x) => [x.mode, x.address_typed])).toEqual([['geocoded', true], ['manual', false]])
+
+    const o = parseOrder({ ...order, stops: [{ ...typedA, id: 'a' }, { ...manualB, id: 'b' }] })
+    expect(o.stops.map((x) => x.address_typed)).toEqual([true, false])
+    expect(parseOrder({ ...order, stops: [{ id: 'a', seq: 0, lat: 48.82, lon: 58.14, address: 'A' }] }).stops[0]!.address_typed).toBe(false)
+
+    const sum = parseOrderSummary({ id: 's1', status: 'completed', category: 'taxi', pickup: typedA, destination: { ...manualB, address_typed: 'yes' } })!
+    expect(sum.pickup.address_typed).toBe(true)
+    expect(sum.destination.address_typed).toBe(false)
+  })
+
   it('maps the load of a list row', () => {
     const s = parseOrderSummary({ id: 's1', status: 'completed', category: 'taxi', vehicle_class: 'minivan', passenger_count: 6, cargo_size: null, cargo_volume_l: 0 })
     expect(s).toMatchObject({ vehicle_class: 'minivan', passenger_count: 6, cargo_size: null, cargo_volume_l: 0 })

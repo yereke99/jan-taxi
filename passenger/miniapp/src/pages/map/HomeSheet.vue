@@ -6,6 +6,8 @@
   a newer movement aborts the older request). Tapping the callout edits the
   pickup. The sheet carries "Where to?", recent places and the three service
   tiles. Embi is only the initial map centre until the device position is known.
+  A pickup typed in the passenger's own words keeps its text when the pin
+  moves; only its point follows the pin.
 -->
 <script setup lang="ts">
 import { CarFront, ChevronRight, MapPin, Package, Search, Truck } from '@lucide/vue'
@@ -16,7 +18,9 @@ import { reverseGeocode } from '../../api/geo'
 import type { GeoReverse, OrderSummary } from '../../api/types'
 import CategoryIcon from '../../components/CategoryIcon.vue'
 import { JSheet } from '../../components/ui'
+import { useStopText } from '../../composables/useStopText'
 import { createLatest } from '../../domain/latest'
+import { placeKey } from '../../domain/places'
 import type { PlaceValue } from '../../domain/route'
 import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { useRealtime } from '../../services/realtime'
@@ -29,7 +33,6 @@ import { haptics } from '../../telegram'
 import { formatMoney } from '../../utils/format'
 import { hasCoordinates, haversineMeters, roundCoord, type LatLon } from '../../utils/geo'
 import { CATEGORIES, type Category } from '../../utils/status'
-import { useAddressText } from '../../i18n/core'
 
 /** Pin movements shorter than this keep the resolved address (GPS jitter, follow mode). */
 const PIN_SAME_PLACE_M = 12
@@ -38,7 +41,7 @@ const PIN_IS_GPS_M = 25
 const RECENT_LIMIT = 2
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const router = useRouter()
 const stage = useStageScreen()
 const session = useSessionStore()
@@ -69,7 +72,7 @@ watchEffect(() => {
   const place = booking.stops[0]?.place
   stage.pin.callout = {
     caption: t('home.pickup_caption'),
-    title: !place ? '' : place.inServiceArea === false ? t('home.outside_kz') : addr(place.address),
+    title: !place ? '' : place.inServiceArea === false ? t('home.outside_kz') : stopText(place),
     loading: pinLoading.value,
   }
 })
@@ -87,14 +90,17 @@ const runner = createLatest<LatLon, GeoReverse>({
     pinLoading.value = false
     const device = location.current
     const fromGps = device !== null && haversineMeters(device, p) <= PIN_IS_GPS_M
-    booking.setStopPlace(0, {
-      lat: p.lat,
-      lon: p.lon,
-      address: r.title,
-      subtitle: r.title ? r.subtitle : null,
-      source: fromGps ? 'gps' : 'map',
-      inServiceArea: r.in_service_area,
-    })
+    booking.setPickupPoint(
+      {
+        lat: p.lat,
+        lon: p.lon,
+        address: r.title,
+        subtitle: r.title ? r.subtitle : null,
+        source: fromGps ? 'gps' : 'map',
+        inServiceArea: r.in_service_area,
+      },
+      fallbackPoint(),
+    )
     if (fromGps) booking.pickupAccuracy = device.accuracy_m
     if (!r.in_service_area) haptics.notification('warning')
   },
@@ -109,9 +115,19 @@ const runner = createLatest<LatLon, GeoReverse>({
     }
     pinLoading.value = false
     // Still unnamed: the pickup is the point itself ("Point on the map").
-    booking.setStopPlace(0, { lat: p.lat, lon: p.lon, address: '', subtitle: null, source: 'map', inServiceArea: null })
+    booking.setPickupPoint({ lat: p.lat, lon: p.lon, address: '', subtitle: null, source: 'map', inServiceArea: null }, fallbackPoint())
   },
 })
+
+/**
+ * The pin names only the default map centre: no device position, the
+ * passenger never dragged the map in this booking (booking.pinPlaced, kept
+ * across screens) and A was not chosen (or is that centre already). Not a
+ * point to send drivers to for a typed pickup.
+ */
+function fallbackPoint(): boolean {
+  return !booking.pinPlaced && location.current === null && (!booking.stops[0]?.place || booking.pickupFallback)
+}
 
 function resolvePin(center: LatLon): void {
   // Already the pickup (resolved earlier, chosen in search or filled from GPS).
@@ -135,10 +151,16 @@ let userMoved = false
 
 // A drag supersedes the lookup in flight; camera animations (follow mode,
 // sheet changes) do not, or a moving passenger would never get an address.
+// A gesture that moved the point under the pin places it (a zoom keeps it).
+let gestureFrom: LatLon | null = null
 const offMoveStart = stage.onMoveStart((user) => {
-  if (user) runner.cancel()
+  if (!user) return
+  runner.cancel()
+  gestureFrom = stage.center()
 })
 const offMoveEnd = stage.onMoveEnd((center) => {
+  if (gestureFrom && haversineMeters(gestureFrom, center) >= PIN_SAME_PLACE_M) booking.pinPlaced = true
+  gestureFrom = null
   // Camera settling (sheet padding) before the first fix is not a pickup.
   if (!centred && !userMoved && location.locating) return
   resolvePin(center)
@@ -242,7 +264,7 @@ onBeforeUnmount(() => {
         <span class="home-active__icon"><CategoryIcon :category="o.category" /></span>
         <span class="home-active__text">
           <span class="home-active__status">{{ t(`order_status.${o.status}`) }}</span>
-          <span class="home-active__route">{{ addr(o.pickup.address) }} → {{ addr(o.destination.address) }}</span>
+          <span class="home-active__route">{{ stopText(o.pickup) }} → {{ stopText(o.destination) }}</span>
         </span>
         <span class="home-active__fare jt-tabular">{{ formatMoney(o.fare, session.language) }}</span>
         <ChevronRight :size="20" class="home-chevron" aria-hidden="true" />
@@ -250,9 +272,9 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-if="recent.length > 0" class="home-recent-list" :aria-label="t('home.recent')">
-      <button v-for="p in recent" :key="`${p.lat},${p.lon}`" type="button" class="home-recent" @click="openRecent(p)">
+      <button v-for="p in recent" :key="placeKey(p)" type="button" class="home-recent" @click="openRecent(p)">
         <MapPin :size="22" :stroke-width="1.9" class="home-recent__icon" aria-hidden="true" />
-        <span class="home-recent__title">{{ addr(p.address) }}</span>
+        <span class="home-recent__title">{{ stopText(p) }}</span>
       </button>
     </section>
 

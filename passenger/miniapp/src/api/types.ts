@@ -26,6 +26,11 @@ export interface StopInput {
   lat: number | null
   lon: number | null
   address: string
+  /**
+   * True only for pickup A whose address is the passenger's own words while A
+   * keeps its coordinates (§3); never sent for a manual stop.
+   */
+  address_typed?: boolean
   address_details?: string
 }
 
@@ -51,6 +56,8 @@ export interface QuoteStop {
   seq: number
   kind: StopKind
   address: string
+  /** The passenger wrote the address of a point that keeps its coordinates (typed pickup A). */
+  address_typed: boolean
   address_details: string | null
 }
 
@@ -131,6 +138,8 @@ export interface OrderStop {
   seq: number
   kind: StopKind
   address: string
+  /** The passenger wrote the address of a point that keeps its coordinates (typed pickup A). */
+  address_typed: boolean
   address_details: string | null
   completed_at: string | null
 }
@@ -290,6 +299,8 @@ export interface StopSummary {
   seq: number
   kind: StopKind
   address: string
+  /** The passenger wrote the address of a point that keeps its coordinates (typed pickup A). */
+  address_typed: boolean
 }
 
 export interface OrderSummary extends OrderLoad, OrderPlace {

@@ -90,6 +90,7 @@ type AdminOrder struct {
 	CommissionBps      int                `json:"commission_bps"`
 	CommissionAmount   int64              `json:"commission_amount"`
 	CommissionMode     string             `json:"commission_mode"`
+	CommissionArea     *CommissionAreaRef `json:"commission_area"`
 	PaymentMethod      string             `json:"payment_method"`
 	TariffID           uuid.UUID          `json:"tariff_id"`
 	QuoteID            *uuid.UUID         `json:"quote_id"`
@@ -142,6 +143,28 @@ func driverRef(d *driverRow) *DriverRef {
 	return &DriverRef{ID: d.ID, Code: d.Code, FirstName: d.FirstName, LastName: d.LastName, Phone: d.Phone}
 }
 
+// CommissionAreaRef is the village whose commission an order got (§22.9),
+// with its name at that moment; ID is null once the area was deleted.
+type CommissionAreaRef struct {
+	ID   *uuid.UUID `json:"id"`
+	Name string     `json:"name"`
+}
+
+// loadCommissionArea returns the order's village, nil for the general commission.
+func loadCommissionArea(ctx context.Context, q db.Querier, orderID uuid.UUID) (*CommissionAreaRef, error) {
+	var ref CommissionAreaRef
+	var name *string
+	if err := q.QueryRow(ctx, `SELECT commission_area_id, commission_area_name FROM orders WHERE id = $1`, orderID).
+		Scan(&ref.ID, &name); err != nil {
+		return nil, fmt.Errorf("orders: load commission area: %w", err)
+	}
+	if name == nil {
+		return nil, nil
+	}
+	ref.Name = *name
+	return &ref, nil
+}
+
 // adminOrder builds the operator view of an order.
 func adminOrder(ctx context.Context, q db.Querier, id uuid.UUID) (AdminOrder, error) {
 	r, err := loadRecord(ctx, q, id)
@@ -170,6 +193,9 @@ func adminOrder(ctx context.Context, q db.Querier, id uuid.UUID) (AdminOrder, er
 		if o.DriverLocation, err = loadDriverLocation(ctx, q, r.Driver.ID); err != nil {
 			return AdminOrder{}, err
 		}
+	}
+	if o.CommissionArea, err = loadCommissionArea(ctx, q, id); err != nil {
+		return AdminOrder{}, err
 	}
 	if o.Offers, err = loadOffers(ctx, q, id); err != nil {
 		return AdminOrder{}, err

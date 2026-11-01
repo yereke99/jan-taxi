@@ -108,13 +108,22 @@ func (h *Handler) exportOrders(w http.ResponseWriter, r *http.Request) error {
 	}
 	header := []string{"number", "id", "created_at", "city", "locality", "category", "status", "fare", "commission", "currency",
 		"payment_method", "distance_m", "duration_s", "stops", "pickup_address", "destination_address", "driver_code",
-		"accepted_at", "started_at", "completed_at", "cancelled_at", "cancelled_by", "cancel_reason"}
+		"accepted_at", "started_at", "completed_at", "cancelled_at", "cancelled_by", "cancel_reason",
+		"via_addresses", "passenger_written_stops", "commission_area"}
+	// Appended columns: the intermediate stops in route order, the letters
+	// of the stops whose address the passenger wrote (manual or typed A) and
+	// the village whose commission the order got.
 	const query = `
 		SELECT o.number, o.id, o.created_at, c.code, o.locality, o.category, o.status, o.fare, o.commission_amount, o.currency,
 		       o.payment_method, o.distance_m, o.duration_s, o.stop_count,
 		       (SELECT s.address FROM order_stops s WHERE s.order_id = o.id ORDER BY s.seq LIMIT 1),
 		       (SELECT s.address FROM order_stops s WHERE s.order_id = o.id ORDER BY s.seq DESC LIMIT 1),
-		       d.code, o.accepted_at, o.started_at, o.completed_at, o.cancelled_at, o.cancelled_by, o.cancel_reason
+		       d.code, o.accepted_at, o.started_at, o.completed_at, o.cancelled_at, o.cancelled_by, o.cancel_reason,
+		       (SELECT string_agg(s.address, ' → ' ORDER BY s.seq) FROM order_stops s
+		        WHERE s.order_id = o.id AND s.kind = 'intermediate'),
+		       (SELECT string_agg(chr(65 + s.seq), ', ' ORDER BY s.seq) FROM order_stops s
+		        WHERE s.order_id = o.id AND (s.mode = 'manual' OR s.address_typed)),
+		       o.commission_area_name
 		FROM orders o JOIN cities c ON c.id = o.city_id LEFT JOIN driver_profiles d ON d.id = o.driver_id
 		WHERE o.status <> 'draft' AND o.created_at >= $1 AND o.created_at < $2
 		  AND ($3::uuid IS NULL OR o.city_id = $3) AND ($4::text IS NULL OR o.status = $4)
@@ -129,18 +138,19 @@ func (h *Handler) exportOrders(w http.ResponseWriter, r *http.Request) error {
 				created                                          time.Time
 				city, category, st, currency, payment            string
 				pickup, destination, driver, cancelledBy, reason *string
-				locality                                         *string
+				locality, via, written, area                     *string
 				accepted, started, completed, cancelled          *time.Time
 			)
 			if err := rows.Scan(&number, &id, &created, &city, &locality, &category, &st, &fare, &commission, &currency, &payment,
 				&distance, &duration, &stops, &pickup, &destination, &driver, &accepted, &started, &completed,
-				&cancelled, &cancelledBy, &reason); err != nil {
+				&cancelled, &cancelledBy, &reason, &via, &written, &area); err != nil {
 				return nil, err
 			}
 			return []Cell{Int(number), Text(id.String()), Time(&created, loc), Text(city), TextPtr(locality), Text(category), Text(st),
 				Int(fare), Int(commission), Text(currency), Text(payment), nullableInt(distance), nullableInt(duration), Int(stops),
 				TextPtr(pickup), TextPtr(destination), TextPtr(driver), Time(accepted, loc), Time(started, loc),
-				Time(completed, loc), Time(cancelled, loc), TextPtr(cancelledBy), TextPtr(reason)}, nil
+				Time(completed, loc), Time(cancelled, loc), TextPtr(cancelledBy), TextPtr(reason),
+				TextPtr(via), TextPtr(written), TextPtr(area)}, nil
 		})
 }
 

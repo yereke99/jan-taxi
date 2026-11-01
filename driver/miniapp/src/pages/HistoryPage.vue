@@ -13,12 +13,13 @@ import CategoryIcon from '../components/driver/CategoryIcon.vue'
 import DriverPage from '../components/driver/DriverPage.vue'
 import { JBadge, JButton, JEmptyState, JSkeleton } from '../components/ui'
 import { useFormat } from '../composables/useFormat'
-import { useAddressText, useErrorText } from '../i18n/core'
+import { useStopText } from '../features/trip/stopText'
+import { useErrorText } from '../i18n/core'
 import { ROUTE } from '../router/names'
 import { orderStatusTone } from '../utils/status'
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const fmt = useFormat()
 const errorText = useErrorText()
 const router = useRouter()
@@ -86,7 +87,7 @@ onMounted(() => void load(true))
           </span>
           <span class="hist__date">{{ fmt.dateTime(o.completed_at ?? o.cancelled_at ?? o.created_at) }}</span>
         </div>
-        <p class="hist__route">{{ addr(o.pickup.address) }} → {{ addr(o.destination.address) }}</p>
+        <p class="hist__route">{{ stopText(o.pickup) }} → {{ stopText(o.destination) }}</p>
         <div class="hist__bottom">
           <JBadge :tone="orderStatusTone(o.status)" :label="t(`trip.status.${o.status}`)" />
           <span v-if="o.status === 'completed'" class="hist__money jt-tabular">{{ fmt.money(o.fare) }}</span>

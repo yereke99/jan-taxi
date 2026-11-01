@@ -14,6 +14,7 @@ export const PAGE_COMPONENTS: Record<string, Loader> = {
   topups: () => import('../pages/finance/TopUpsPage.vue'),
   ledger: () => import('../pages/finance/LedgerPage.vue'),
   cities: () => import('../pages/config/CitiesPage.vue'),
+  'commission-areas': () => import('../pages/config/CommissionAreasPage.vue'),
   places: () => import('../pages/config/PlacesPage.vue'),
   'vehicle-classes': () => import('../pages/config/VehicleClassesPage.vue'),
   tariffs: () => import('../pages/config/TariffsPage.vue'),

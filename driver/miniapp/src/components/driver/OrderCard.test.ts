@@ -1,12 +1,13 @@
 // The available-order card takes its order in one tap: «Тапсырысты алу» is a
 // button of its own next to (never inside) the button that opens the order,
 // so taking an order never opens it and opening never takes it. It shows the
-// fare, never the commission, and drops unknown route metrics.
+// fare, never the commission, drops unknown route metrics, and shows an
+// address the passenger wrote as written, with one line saying so.
 
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { DriverOrderCard } from '../../api/types'
+import type { DriverOrderCard, StopSummary } from '../../api/types'
 import { i18n } from '../../i18n'
 import OrderCard from './OrderCard.vue'
 
@@ -45,6 +46,16 @@ function card(over: Partial<DriverOrderCard> = {}): DriverOrderCard {
 function mountCard(props: Record<string, unknown> = {}) {
   return mount(OrderCard, { props: { order: card(), now: Date.now(), ...props }, global: { plugins: [i18n] } })
 }
+
+/** Pickup A and the destination, both map addresses unless overridden. */
+function route(pickup: Partial<StopSummary>, destination: Partial<StopSummary>): StopSummary[] {
+  return [
+    { seq: 0, kind: 'pickup', mode: 'geocoded', lat: 45.5, lon: 64.1, address: 'Әйтеке би көшесі, 14', address_typed: false, ...pickup },
+    { seq: 1, kind: 'destination', mode: 'geocoded', lat: 45.51, lon: 64.12, address: 'Жалағаш базары', address_typed: false, ...destination },
+  ]
+}
+
+const LABEL = 'Жолаушы көрсеткен орын'
 
 describe('OrderCard', () => {
   beforeEach(() => {
@@ -105,5 +116,24 @@ describe('OrderCard', () => {
     })
     expect(manual.find('.ocard__summary').exists()).toBe(false)
     expect(manual.text()).not.toContain('—')
+  })
+
+  it('shows the addresses the passenger wrote as written, with one muted line saying so', () => {
+    const stops = route({ address: 'Мешіттің жанында, көк қақпа', address_typed: true }, { mode: 'manual', lat: null, lon: null, address: 'Әженің үйі' })
+    const w = mountCard({ order: card({ stops }) })
+    expect(w.find('.ocard__route').text()).toBe('Мешіттің жанында, көк қақпа → Әженің үйі')
+    const written = w.findAll('.ocard__written')
+    expect(written).toHaveLength(1)
+    expect(written[0]!.text()).toBe(LABEL)
+  })
+
+  it('says so for a typed pickup or a manual destination alone, never for map addresses', () => {
+    const typedPickup = mountCard({ order: card({ stops: route({ address: 'Мешіттің жанында', address_typed: true }, {}) }) })
+    expect(typedPickup.find('.ocard__written').text()).toBe(LABEL)
+    const manualDestination = mountCard({ order: card({ stops: route({}, { mode: 'manual', lat: null, lon: null, address: 'Әженің үйі' }) }) })
+    expect(manualDestination.find('.ocard__written').text()).toBe(LABEL)
+    const ordinary = mountCard({ order: card({ stops: route({}, {}) }) })
+    expect(ordinary.find('.ocard__route').text()).toBe('Әйтеке би көшесі, 14 → Жалағаш базары')
+    expect(ordinary.find('.ocard__written').exists()).toBe(false)
   })
 })

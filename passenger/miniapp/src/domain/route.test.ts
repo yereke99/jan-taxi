@@ -165,12 +165,33 @@ describe('route editor rules', () => {
     expect(isComplete(s)).toBe(true)
     expect(isTypedPlace(typed)).toBe(true)
     expect(isTypedPlace(place('Вокзал'))).toBe(false)
-    // An ordinary stop (no manual mode): dispatch and the Kazakhstan check use A's point.
-    expect(toStopInputs(s, 'Картадағы нүкте')![0]).toEqual({ lat: 48.826412, lon: 58.144212, address: 'Мешіттің жанында, көк қақпа' })
+    // An ordinary stop (no manual mode) marked as written by the passenger:
+    // dispatch and the Kazakhstan check use A's point.
+    expect(toStopInputs(s, 'Картадағы нүкте')![0]).toEqual({ lat: 48.826412, lon: 58.144212, address: 'Мешіттің жанында, көк қақпа', address_typed: true })
     // Even text that looks like coordinates is the passenger's own words.
-    s = setPlace(s, 0, { ...typed, address: '12, 5' })
-    expect(toStopInputs(s, 'Картадағы нүкте')![0]!.address).toBe('12, 5')
+    s = setPlace(s, 0, { ...typed, address: '48.82, 58.14' })
+    expect(toStopInputs(s, 'Картадағы нүкте')![0]!.address).toBe('48.82, 58.14')
     expect(routeFingerprint(setPlace(s, 0, { ...typed, address: 'Көк қақпа' }))).not.toBe(routeFingerprint(s))
+  })
+
+  it('marks only a typed pickup A as written: never a manual stop, a found place or a later stop', () => {
+    const typedA: PlaceValue = { ...place('Абай көшесі, 5', 48.82, 58.14), source: 'map', typed: true }
+    const manualB: PlaceValue = { lat: null, lon: null, address: 'Ескі мәдениет үйі', subtitle: null, source: 'manual', inServiceArea: null }
+    let s = createStops(keys())
+    s = setPlace(s, 0, { ...typedA, typed: undefined })
+    s = setPlace(s, 1, manualB)
+    expect(toStopInputs(s)!.map((x) => x.address_typed)).toEqual([undefined, undefined])
+    expect(toStopInputs(s)![1]).toEqual({ mode: 'manual', lat: null, lon: null, address: manualB.address })
+
+    // The same address written by the passenger is a new route: it is quoted again.
+    const found = routeFingerprint(s)
+    s = setPlace(s, 0, typedA)
+    expect(routeFingerprint(s)).not.toBe(found)
+    expect(toStopInputs(s)![0]!.address_typed).toBe(true)
+
+    // A typed place reused for B (a recent pickup) is an ordinary point there.
+    s = setPlace(s, 1, { ...typedA, lat: 48.84, address: 'Мешіттің жанында' })
+    expect(toStopInputs(s)![1]).toEqual({ lat: 48.84, lon: 58.14, address: 'Мешіттің жанында' })
   })
 })
 

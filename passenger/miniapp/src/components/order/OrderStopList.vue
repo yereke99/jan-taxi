@@ -1,13 +1,15 @@
 <!--
   Read-only route of an order: letters in order, completed stops greyed while
   the trip runs, and the settlement of pickup A under its address when given.
+  An address the passenger wrote (a manual stop or a typed pickup A) is shown
+  as written and marked as such, as drivers see it.
 -->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import type { OrderStop } from '../../api/types'
+import { isPassengerWritten, useStopText } from '../../composables/useStopText'
 import { STOP_LETTERS } from '../../maps/constants'
 import StopBadge from '../StopBadge.vue'
-import { useAddressText } from '../../i18n/core'
 
 withDefaults(
   defineProps<{
@@ -19,7 +21,7 @@ withDefaults(
   { showDone: false, pickupLocality: null },
 )
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 </script>
 
 <template>
@@ -27,8 +29,8 @@ const addr = useAddressText()
     <li v-for="(s, i) in stops" :key="s.id" class="order-stops__row" :class="{ 'is-done': showDone && s.completed_at }">
       <StopBadge :letter="STOP_LETTERS[i] ?? ''" :done="showDone && s.completed_at !== null" size="small" />
       <span class="order-stops__text">
-        <span class="order-stops__address">{{ s.mode === 'manual' ? s.address : addr(s.address) }}</span>
-        <span v-if="s.mode === 'manual'" class="order-stops__details">{{ t('manual.label') }}</span>
+        <span class="order-stops__address">{{ stopText(s) }}</span>
+        <span v-if="isPassengerWritten(s)" class="order-stops__details">{{ t('manual.label') }}</span>
         <span v-if="s.address_details" class="order-stops__details">{{ s.address_details }}</span>
         <span v-if="i === 0 && pickupLocality" class="order-stops__details">{{ pickupLocality }}</span>
       </span>

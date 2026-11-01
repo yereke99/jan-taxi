@@ -74,6 +74,8 @@ var texts = runtime.Catalog{
 		"order_meta":        "Маршрут: %s",
 		"order_cargo":       "Жүк: %s",
 		"order_comment":     "Түсініктеме: %s",
+		"order_typed":       "✍️ Мекенжайды жолаушы өзі жазды",
+		"order_manual":      "✍️ — орынды жолаушы жазды, картада нүктесі жоқ; маршрут есептелмеген",
 		"btn_all_orders":    "Барлық тапсырыстар",
 
 		"trip_title":  "<b>Ағымдағы сапар №%d</b>",
@@ -277,6 +279,8 @@ var texts = runtime.Catalog{
 		"order_meta":        "Маршрут: %s",
 		"order_cargo":       "Груз: %s",
 		"order_comment":     "Комментарий: %s",
+		"order_typed":       "✍️ Адрес написан пассажиром",
+		"order_manual":      "✍️ — место указано пассажиром, точки на карте нет; маршрут не рассчитан",
 		"btn_all_orders":    "Все заказы",
 
 		"trip_title":  "<b>Текущая поездка №%d</b>",
@@ -480,6 +484,8 @@ var texts = runtime.Catalog{
 		"order_meta":        "Route: %s",
 		"order_cargo":       "Cargo: %s",
 		"order_comment":     "Comment: %s",
+		"order_typed":       "✍️ Address written by the passenger",
+		"order_manual":      "✍️ — written by the passenger, no map point; route not calculated",
 		"btn_all_orders":    "All orders",
 
 		"trip_title":  "<b>Current trip #%d</b>",

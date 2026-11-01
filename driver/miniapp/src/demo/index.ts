@@ -104,7 +104,7 @@ function kind(i: number, n: number): 'pickup' | 'intermediate' | 'destination' {
 }
 
 function stopsOf(places: readonly DemoPlace[]) {
-  return places.map((p, i) => ({ seq: i, kind: kind(i, places.length), lat: p.lat, lon: p.lon, address: p.title }))
+  return places.map((p, i) => ({ seq: i, kind: kind(i, places.length), lat: p.lat, lon: p.lon, address: p.title, address_typed: false }))
 }
 
 /** Active vehicle classes as GET /public/config returns them (§21.1 seed). */
@@ -192,6 +192,7 @@ function detail(c: CardSpec) {
       lat: p.lat,
       lon: p.lon,
       address: p.title,
+      address_typed: false,
       address_details: null,
       completed_at: null,
     })),
@@ -343,7 +344,7 @@ function api(): DemoApi {
         { code: 'xl', volume_l: 1500 },
       ],
       max_passenger_count: 15,
-      commission: { mode: 'fixed', fixed_amount: COMMISSION },
+      commission: { mode: 'fixed', fixed_amount: COMMISSION, by_area: false },
       welcome_bonus: 500,
     }))
     .on('GET', '/me', me)

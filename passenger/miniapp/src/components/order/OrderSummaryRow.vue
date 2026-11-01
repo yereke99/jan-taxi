@@ -9,8 +9,8 @@ import { formatDateTime, formatMoney, type Locale } from '../../utils/format'
 import { orderStatusTone } from '../../utils/status'
 import CategoryIcon from '../CategoryIcon.vue'
 import { JBadge } from '../ui'
+import { useStopText } from '../../composables/useStopText'
 import { useVehicleText } from '../../composables/useVehicleText'
-import { useAddressText } from '../../i18n/core'
 
 const props = withDefaults(
   defineProps<{
@@ -23,7 +23,7 @@ const props = withDefaults(
 )
 const emit = defineEmits<{ open: [order: OrderSummary] }>()
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const vehicleText = useVehicleText()
 const locality = computed(() => orderLocality(props.order, props.pickupSubtitle))
 </script>
@@ -33,10 +33,10 @@ const locality = computed(() => orderLocality(props.order, props.pickupSubtitle)
     <span class="summary__icon"><CategoryIcon :category="order.category" /></span>
     <span class="summary__main">
       <span class="summary__route">
-        <span class="summary__address">{{ addr(order.pickup.address) }}</span>
+        <span class="summary__address">{{ stopText(order.pickup) }}</span>
         <span v-if="locality" class="summary__place">{{ locality }}</span>
         <span class="summary__arrow" aria-hidden="true">↓</span>
-        <span class="summary__address">{{ addr(order.destination.address) }}</span>
+        <span class="summary__address">{{ stopText(order.destination) }}</span>
       </span>
       <span class="summary__meta">
         {{ formatDateTime(order.created_at, locale) }} · {{ vehicleText.className(order.vehicle_class, order.vehicle_class_name) }}<template v-if="order.stop_count > 2">

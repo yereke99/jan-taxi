@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
+	"github.com/yereke99/jantaxi/admin/backend/internal/commissionareas"
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
@@ -71,6 +72,8 @@ func (a *App) wireRouting() error {
 
 	pricing.NewAdminHandler(a.Pool).MountAdmin(a.Admin)        // /admin/tariffs
 	vehicleclasses.NewAdminHandler(a.Pool).MountAdmin(a.Admin) // /admin/vehicle-classes
+	// /admin/commission-areas: villages with their own driver commission.
+	commissionareas.NewAdminHandler(a.Pool, commissionGeocoder{places}).MountAdmin(a.Admin)
 
 	a.AddJob("quote_cleanup", time.Hour, func(ctx context.Context) error {
 		n, err := pricing.CleanupQuotes(ctx, a.Pool, quoteRetention)
@@ -90,6 +93,35 @@ func (a *App) defaultMapCenter() geo.Point {
 		return c.Center
 	}
 	return embiCenter
+}
+
+// commissionGeocoder gives the village commission editor the map search:
+// places by name and the settlements around a point.
+type commissionGeocoder struct{ places *routing.Places }
+
+func (g commissionGeocoder) SearchPlaces(ctx context.Context, query, lang string, limit int) ([]commissionareas.Place, error) {
+	found, err := g.places.Search(ctx, query, nil, lang, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]commissionareas.Place, 0, len(found))
+	for _, p := range found {
+		out = append(out, commissionareas.Place{Title: p.Title, Subtitle: p.Subtitle, Lat: p.Point.Lat, Lon: p.Point.Lon})
+	}
+	return out, nil
+}
+
+func (g commissionGeocoder) SettlementsNear(ctx context.Context, p geo.Point, radiusKm float64, limit int) ([]commissionareas.Settlement, error) {
+	list := g.places.Settlements(ctx, p, radiusKm, limit)
+	out := make([]commissionareas.Settlement, 0, len(list))
+	for _, s := range list {
+		c := commissionareas.Settlement{Name: s.Name, Kind: s.Kind, Point: s.Point}
+		if len(s.Extent) == 4 {
+			c.Extent = &[4]float64{s.Extent[0], s.Extent[1], s.Extent[2], s.Extent[3]}
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }
 
 func isPublicPhoton(raw string) bool {

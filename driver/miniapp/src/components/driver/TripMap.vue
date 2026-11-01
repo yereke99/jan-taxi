@@ -1,6 +1,7 @@
 <!--
   Full-screen white map of one order (§14/§15): the passenger route in black,
-  lettered stop markers A–E (completed stops greyed), the driver's real GPS
+  lettered stop markers A–E (completed stops greyed; a stop without a map point
+  has no marker and the others keep their letters), the driver's real GPS
   position as the car marker and the approach leg from the driver to the
   current target as a dashed gray line. One map instance for the screen.
 -->
@@ -11,6 +12,7 @@ import { computed, onBeforeUnmount, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DriverOrderDetail } from '../../api/types'
 import type { Fix } from '../../features/location/locationSender'
+import { stopMarkerPoints } from '../../features/trip/markers'
 import { currentTarget, sortedStops } from '../../features/trip/sequence'
 import { fitToPoints, MapView, straightLine, useCarMarker, useRouteLayer, useStopMarkers, type LineStringGeometry } from '../../maps'
 import { useSessionStore } from '../../stores/session'
@@ -61,7 +63,7 @@ function geometry(): LineStringGeometry | null {
 function draw(): void {
   if (!map.value) return
   route.setRoute(geometry())
-  markers.setStops(stops.value.map((s) => ({ lat: s.lat, lon: s.lon, done: props.live ? s.completed_at !== null : false })))
+  markers.setStops(stopMarkerPoints(props.order.stops, props.live))
   const p = props.position
   car.set(p ? { lat: p.lat, lon: p.lon, heading: p.heading } : null)
   route.setApproach(p && target.value ? straightLine(p, target.value) : null)

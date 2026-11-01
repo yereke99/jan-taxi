@@ -4,6 +4,7 @@
 import { base } from './areas/base'
 import { bonusArea } from './areas/bonus'
 import { classesArea } from './areas/classes'
+import { commissionAreasArea } from './areas/commissionAreas'
 import { dashboard } from './areas/dashboard'
 import { drivers } from './areas/drivers'
 import { finance } from './areas/finance'
@@ -24,6 +25,7 @@ function compose(locale: 'kk' | 'ru' | 'en') {
     system: system[locale],
     classes: classesArea[locale],
     bonus: bonusArea[locale],
+    commission_areas: commissionAreasArea[locale],
   }
 }
 

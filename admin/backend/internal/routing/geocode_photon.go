@@ -196,6 +196,45 @@ func (g *Photon) Settlement(ctx context.Context, p geo.Point, lang string) (stri
 	return best, nil
 }
 
+// Settlements implements SettlementLister with Photon's city layer: the
+// settlements within radiusKm of p, nearest first, with their extent when
+// they are mapped as areas. An instance without the layer filter (HTTP 400)
+// lists none.
+func (g *Photon) Settlements(ctx context.Context, p geo.Point, radiusKm float64, limit int) ([]Settlement, error) {
+	q := url.Values{}
+	q.Set("lat", strconv.FormatFloat(p.Lat, 'f', 6, 64))
+	q.Set("lon", strconv.FormatFloat(p.Lon, 'f', 6, 64))
+	q.Set("lang", photonLang(""))
+	q.Set("layer", "city")
+	q.Set("limit", strconv.Itoa(limit))
+	q.Set("radius", strconv.FormatFloat(radiusKm, 'f', -1, 64))
+	u := *g.base
+	u.Path += "/reverse"
+	u.RawQuery = q.Encode()
+	var resp photonResponse
+	if err := getJSON(ctx, g.client, SourcePhoton, u.String(), &resp, http.StatusBadRequest); err != nil {
+		return nil, err
+	}
+	out := make([]Settlement, 0, len(resp.Features))
+	for _, f := range resp.Features {
+		pr := f.Properties
+		name := strings.TrimSpace(pr.Name)
+		if name == "" || f.Geometry.Type != "Point" || len(f.Geometry.Coordinates) < 2 ||
+			(pr.CountryCode != "" && !strings.EqualFold(pr.CountryCode, "KZ")) {
+			continue
+		}
+		s := Settlement{Name: name, Point: geo.Point{Lat: f.Geometry.Coordinates[1], Lon: f.Geometry.Coordinates[0]}}
+		if pr.OsmKey == "place" {
+			s.Kind = pr.OsmValue
+		}
+		if len(pr.Extent) == 4 {
+			s.Extent = append([]float64(nil), pr.Extent...)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
 func (g *Photon) get(ctx context.Context, path string, q url.Values) ([]Place, error) {
 	u := *g.base
 	u.Path += path

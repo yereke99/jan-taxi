@@ -123,6 +123,13 @@ var endpointCatalogue = []string{
 	"POST /api/v1/admin/places",
 	"PATCH /api/v1/admin/places/{}",
 	"DELETE /api/v1/admin/places/{}",
+	"GET /api/v1/admin/commission-areas",
+	"POST /api/v1/admin/commission-areas",
+	"GET /api/v1/admin/commission-areas/resolve",
+	"GET /api/v1/admin/commission-areas/suggest",
+	"GET /api/v1/admin/commission-areas/search",
+	"PATCH /api/v1/admin/commission-areas/{}",
+	"DELETE /api/v1/admin/commission-areas/{}",
 	"GET /api/v1/admin/tariffs",
 	"POST /api/v1/admin/tariffs",
 	"GET /api/v1/admin/vehicle-classes", // §21.3

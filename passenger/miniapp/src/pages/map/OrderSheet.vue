@@ -26,10 +26,11 @@ import { JButton, JEmptyState, JSheet, JSkeleton, JSpinner, showActionSheet, toa
 import VehicleClassIcon from '../../components/VehicleClassIcon.vue'
 import { useDriverPhoto } from '../../composables/useDriverPhoto'
 import { useLiveOrder } from '../../composables/useLiveOrder'
+import { useStopText } from '../../composables/useStopText'
 import { useVehicleText } from '../../composables/useVehicleText'
 import { arrivalMinutes, cancelInfo, framingPoints, hasActiveDriver, headlineKey, isDeliveryOrder, orderLocality, orderMarkers } from '../../domain/orderView'
 import { placesOfStops } from '../../domain/places'
-import { useAddressText, useErrorText } from '../../i18n/core'
+import { useErrorText } from '../../i18n/core'
 import { straightLine } from '../../maps'
 import { ROUTE } from '../../router/names'
 import { isApiError } from '../../services/http'
@@ -44,7 +45,7 @@ import { formatDateTime, formatMoney } from '../../utils/format'
 import { formatKzPhone, telHref } from '../../utils/phone'
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const vehicleText = useVehicleText()
 const errorText = useErrorText()
 const route = useRoute()
@@ -219,8 +220,8 @@ function shareTrip(): void {
   const o = order.value
   if (!o || !o.driver) return
   const text = t('order.share_text', {
-    from: addr(firstStop.value?.address),
-    to: addr(lastStop.value?.address),
+    from: stopText(firstStop.value),
+    to: stopText(lastStop.value),
     driver: o.driver.first_name,
     vehicle: [o.vehicle?.make, o.vehicle?.model].filter(Boolean).join(' '),
     plate: o.vehicle?.plate ?? '',
@@ -329,13 +330,13 @@ function toHome(): void {
           <li v-if="firstStop" class="trip-route__row">
             <span class="trip-route__dot is-start" aria-hidden="true" />
             <span class="trip-route__address">
-              {{ addr(firstStop.address) }}
+              {{ stopText(firstStop) }}
               <span v-if="locality" class="trip-place">{{ locality }}</span>
             </span>
           </li>
           <li v-if="lastStop" class="trip-route__row">
             <span class="trip-route__dot is-end" aria-hidden="true" />
-            <span class="trip-route__address">{{ addr(lastStop.address) }}</span>
+            <span class="trip-route__address">{{ stopText(lastStop) }}</span>
             <span v-if="extraStops > 0" class="trip-route__extra">{{ t('order.extra_stops', { n: extraStops }, extraStops) }}</span>
           </li>
         </ol>
@@ -354,13 +355,13 @@ function toHome(): void {
         <div v-if="firstStop" class="trip-list__row">
           <span class="trip-list__badge" aria-hidden="true">A</span>
           <span class="trip-list__text">
-            {{ addr(firstStop.address) }}
+            {{ stopText(firstStop) }}
             <span v-if="locality" class="trip-place">{{ locality }}</span>
           </span>
         </div>
         <div v-if="lastStop" class="trip-list__row">
           <span class="trip-list__badge" aria-hidden="true">{{ String.fromCharCode(64 + order.stops.length) }}</span>
-          <span class="trip-list__text">{{ addr(lastStop.address) }}</span>
+          <span class="trip-list__text">{{ stopText(lastStop) }}</span>
           <span v-if="extraStops > 0" class="trip-list__meta">{{ t('order.extra_stops', { n: extraStops }, extraStops) }}</span>
         </div>
         <div class="trip-list__row">

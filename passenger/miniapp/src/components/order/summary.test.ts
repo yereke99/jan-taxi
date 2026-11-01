@@ -1,10 +1,12 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
+import { parseOrder } from '../../api/parse'
 import type { OrderSummary } from '../../api/types'
 import { createI18nInstance } from '../../i18n/core'
 import { en } from '../../i18n/messages/en'
 import { kk } from '../../i18n/messages/kk'
 import { ru } from '../../i18n/messages/ru'
+import OrderStopList from './OrderStopList.vue'
 import OrderSummaryRow from './OrderSummaryRow.vue'
 
 const global = { plugins: [createI18nInstance({ kk, ru, en })] }
@@ -60,5 +62,30 @@ describe('OrderSummaryRow', () => {
     expect(w.find('.summary__place').exists()).toBe(false)
     expect(w.text()).not.toContain('43.2389')
     expect(w.text()).not.toContain('76.8897')
+  })
+
+  it('shows an address the passenger wrote exactly as written', () => {
+    const typed = { seq: 0, kind: 'pickup' as const, lat: 48.82, lon: 58.14, address: '48.82, 58.14', address_typed: true }
+    expect(mountRow({ pickup: typed }).findAll('.summary__address')[0]!.text()).toBe('48.82, 58.14')
+    // The same text from the map is coordinates, never shown as an address.
+    expect(mountRow({ pickup: { ...typed, address_typed: false } }).findAll('.summary__address')[0]!.text()).toBe('Картадағы нүкте')
+  })
+})
+
+describe('OrderStopList', () => {
+  it('marks the stops the passenger wrote, as drivers see them: a typed pickup A and a manual stop', () => {
+    const order = parseOrder({
+      id: 'o1',
+      status: 'searching',
+      stops: [
+        { id: 'a', seq: 0, kind: 'pickup', lat: 48.82, lon: 58.14, address: 'Мешіттің жанында, көк қақпа', address_typed: true },
+        { id: 'b', seq: 1, kind: 'intermediate', lat: 48.83, lon: 58.15, address: '48.830000, 58.150000' },
+        { id: 'c', seq: 2, kind: 'destination', mode: 'manual', lat: null, lon: null, address: 'Ескі мәдениет үйі' },
+      ],
+    })
+    const w = mount(OrderStopList, { props: { stops: order.stops }, global })
+    const rows = w.findAll('.order-stops__row')
+    expect(rows.map((r) => r.find('.order-stops__address').text())).toEqual(['Мешіттің жанында, көк қақпа', 'Картадағы нүкте', 'Ескі мәдениет үйі'])
+    expect(rows.map((r) => r.text().includes('Жолаушы көрсеткен орын'))).toEqual([true, false, true])
   })
 })

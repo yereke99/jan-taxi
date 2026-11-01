@@ -82,7 +82,10 @@ func FieldName(field string, index int, attr string) string {
 	return field + "." + strconv.Itoa(index) + "." + attr
 }
 
-// Stop is a stored order stop.
+// Stop is a stored order stop. AddressTyped marks a point whose address is
+// the passenger's own words while it keeps its coordinates (a typed pickup A,
+// ARCHITECTURE §3); a manual stop is always the passenger's words and keeps
+// it false.
 type Stop struct {
 	Mode           string     `json:"mode"`
 	ID             uuid.UUID  `json:"id"`
@@ -91,24 +94,30 @@ type Stop struct {
 	Lat            float64    `json:"lat"`
 	Lon            float64    `json:"lon"`
 	Address        string     `json:"address"`
+	AddressTyped   bool       `json:"address_typed"`
 	AddressDetails *string    `json:"address_details"`
 	CompletedAt    *time.Time `json:"completed_at"`
 }
 
 // Summary is the compact stop shape used in lists and cards (StopSummary).
 type Summary struct {
-	Mode    string  `json:"mode"`
-	Seq     int     `json:"seq"`
-	Kind    string  `json:"kind"`
-	Lat     float64 `json:"lat"`
-	Lon     float64 `json:"lon"`
-	Address string  `json:"address"`
+	Mode         string  `json:"mode"`
+	Seq          int     `json:"seq"`
+	Kind         string  `json:"kind"`
+	Lat          float64 `json:"lat"`
+	Lon          float64 `json:"lon"`
+	Address      string  `json:"address"`
+	AddressTyped bool    `json:"address_typed"`
 }
 
 // Summary returns the compact form of s.
 func (s Stop) Summary() Summary {
-	return Summary{Mode: s.Mode, Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address}
+	return Summary{Mode: s.Mode, Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address, AddressTyped: s.AddressTyped}
 }
+
+// PassengerWritten reports whether the stop's address is the passenger's own
+// words: a manual stop (no coordinates) or a typed point that keeps them.
+func (s Stop) PassengerWritten() bool { return s.Mode == "manual" || s.AddressTyped }
 
 // DisplayAddress returns the address shown in notifications; a stop without a
 // text address is shown by its coordinates.

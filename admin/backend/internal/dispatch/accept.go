@@ -482,12 +482,10 @@ func TripCardParams(ctx context.Context, q db.Querier, orderID uuid.UUID) (map[s
 	params := map[string]any{
 		"order_id": orderID.String(), "order_number": number, "category": category,
 		"vehicle_class": map[string]string{"kk": classKK, "ru": classRU, "en": classEN},
-		"pickup":        route.Pickup, "destination": route.Destination, "fare": fare, "payment_method": payment,
+		"fare":          fare, "payment_method": payment,
 		"passenger_name": name, "passenger_link": lifecycle.TelegramLink(username, tgID),
 	}
-	if via := route.ViaText("…"); via != "" {
-		params["via"] = via
-	}
+	route.AddressParams(params)
 	if route.PickupDetails != "" {
 		params["pickup_details"] = route.PickupDetails
 	}

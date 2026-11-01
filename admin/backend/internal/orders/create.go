@@ -13,10 +13,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/commissionareas"
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/phone"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
@@ -356,27 +358,43 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 		return uuid.Nil, httpx.Validation(map[string]string{"quote_id": "invalid"})
 	}
 	// The commission is snapshotted now and charged when a driver takes the
-	// order (§22.2).
-	policy := settings.Commission(ctx, tx)
-	commission := pricing.OrderCommission(policy.Mode, policy.FixedAmount, n.Fare, q.CommissionBps)
+	// order (§22.2): the percentage of the village whose area covers pickup
+	// A (§22.9), else the general policy.
 	pickup := q.Stops[0]
+	policy := settings.Commission(ctx, tx)
+	mode, bps := policy.Mode, q.CommissionBps
+	commission := pricing.OrderCommission(policy.Mode, policy.FixedAmount, n.Fare, q.CommissionBps)
+	area, _, err := commissionareas.Resolve(ctx, tx, geo.Point{Lat: pickup.Lat, Lon: pickup.Lon})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	var areaID *uuid.UUID
+	var areaName *string
+	if area != nil {
+		mode, bps = settings.CommissionPercent, area.CommissionBps
+		commission = pricing.Commission(n.Fare, area.CommissionBps)
+		areaID, areaName = &area.ID, &area.Name
+	}
 	var id uuid.UUID
 	var number int64
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO orders (passenger_id, city_id, category, service_type, cargo_type, cargo_description,
 		                    recipient_phone, prohibited_items_ack, comment, status, fare, commission_bps,
 		                    commission_amount, payment_method, tariff_id, quote_id, distance_m, duration_s,
 		                    stop_count, pickup_lat, pickup_lon, idempotency_key, search_expires_at,
-		                    vehicle_class, passenger_count, cargo_size, cargo_volume_l, commission_mode, locality)
+		                    vehicle_class, passenger_count, cargo_size, cargo_volume_l, commission_mode, locality,
+		                    commission_area_id, commission_area_name)
 		SELECT $1, c.id, $3, $4, $5, $6, $7, $8, $9, 'searching', $10, $11, $12, $13, $14, $15, $16, $17,
-		       $18, $19, $20, $21, now() + make_interval(secs => c.search_timeout_s), $22, $23, $24, $25, $26, $27
+		       $18, $19, $20, $21, now() + make_interval(secs => c.search_timeout_s), $22, $23, $24, $25, $26, $27,
+		       $28, $29
 		FROM cities c WHERE c.id = $2
 		RETURNING id, number`,
 		passengerID, q.CityID, q.Category, lifecycle.ServiceType(q.Category), lifecycle.CargoType(q.Category),
 		n.CargoDescription, n.RecipientPhone, n.Ack && q.Category != lifecycle.CategoryTaxi, n.Comment, n.Fare,
-		q.CommissionBps, commission, n.PaymentMethod, q.TariffID, q.ID, pricing.Metric(q.DistanceM, pricing.Manual(q.Stops)), pricing.Metric(q.DurationS, pricing.Manual(q.Stops)),
+		bps, commission, n.PaymentMethod, q.TariffID, q.ID, pricing.Metric(q.DistanceM, pricing.Manual(q.Stops)), pricing.Metric(q.DurationS, pricing.Manual(q.Stops)),
 		len(q.Stops), pickup.Lat, pickup.Lon, n.IdempotencyKey,
-		q.VehicleClass, q.PassengerCount, q.CargoSize, q.CargoVolumeL, policy.Mode, q.Locality).Scan(&id, &number)
+		q.VehicleClass, q.PassengerCount, q.CargoSize, q.CargoVolumeL, mode, q.Locality,
+		areaID, areaName).Scan(&id, &number)
 	switch {
 	case db.IsUniqueViolation(err, lifecycle.IdxOneActivePerPassenger):
 		return uuid.Nil, errActiveRace
@@ -390,7 +408,8 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 
 	in := make([]stops.Input, len(q.Stops))
 	for i, st := range q.Stops {
-		in[i] = stops.Input{Mode: st.Mode, Lat: st.Lat, Lon: st.Lon, Address: st.Address, AddressDetails: lifecycle.StrPtr(st.AddressDetails)}
+		in[i] = stops.Input{Mode: st.Mode, Lat: st.Lat, Lon: st.Lon, Address: st.Address, AddressTyped: st.AddressTyped,
+			AddressDetails: lifecycle.StrPtr(st.AddressDetails)}
 	}
 	stored, err := stops.Insert(ctx, tx, id, in)
 	if err != nil {
@@ -430,13 +449,15 @@ type snapshotStop struct {
 	Lat            float64 `json:"lat"`
 	Lon            float64 `json:"lon"`
 	Address        string  `json:"address"`
+	AddressTyped   bool    `json:"address_typed"`
 	AddressDetails *string `json:"address_details"`
 }
 
 func insertRouteSnapshot(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, q pricing.StoredQuote, list []stops.Stop) error {
 	ss := make([]snapshotStop, len(list))
 	for i, s := range list {
-		ss[i] = snapshotStop{Mode: s.Mode, Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address, AddressDetails: s.AddressDetails}
+		ss[i] = snapshotStop{Mode: s.Mode, Seq: s.Seq, Kind: s.Kind, Lat: s.Lat, Lon: s.Lon, Address: s.Address,
+			AddressTyped: s.AddressTyped, AddressDetails: s.AddressDetails}
 	}
 	legs := make([]RouteLeg, len(q.Legs))
 	for i, l := range q.Legs {

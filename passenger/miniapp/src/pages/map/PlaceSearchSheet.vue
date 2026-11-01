@@ -4,8 +4,11 @@
   order history, "use my location" for the pickup and "choose on map". When
   the search does not know the place, the passenger writes it in their own
   words: a stop after A is then a manual stop without coordinates (if the
-  administrator allows them), while pickup A only takes the text and keeps
-  its point on the map (the pin, else the device position) for dispatch.
+  administrator allows them; the public config is fetched again here when it
+  failed at launch), while pickup A only takes the text and keeps its point
+  on the map (the pin, else the device position) for dispatch. Without such a
+  point (only the default map centre, or none) a one-line hint asks to mark A
+  on the map or turn on location first.
 -->
 <script setup lang="ts">
 import { ChevronRight, Clock, LocateFixed, MapPin, MapPinned, SquarePen } from '@lucide/vue'
@@ -15,9 +18,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { GEO_SEARCH_MIN_CHARS, searchPlaces } from '../../api/geo'
 import type { GeoPlace } from '../../api/types'
 import { JButton, JSheet, JSkeleton, JSpinner, JTextField, toast } from '../../components/ui'
+import { useStopText } from '../../composables/useStopText'
 import { createLatest } from '../../domain/latest'
+import { placeKey } from '../../domain/places'
 import { isTypedPlace, MAX_ADDRESS_LENGTH, type PlaceValue } from '../../domain/route'
-import { useAddressText, useErrorText } from '../../i18n/core'
+import { useErrorText } from '../../i18n/core'
 import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { formatDistance } from '../../utils/format'
 import { hasCoordinates, haversineMeters, type LatLon } from '../../utils/geo'
@@ -32,7 +37,7 @@ import { cleanText, codePointLength } from '../../utils/text'
 const SEARCH_DEBOUNCE_MS = 300
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const errorText = useErrorText()
 const route = useRoute()
 const router = useRouter()
@@ -111,12 +116,16 @@ const recent = computed(() => orders.places.filter(p=>!isPickup.value || hasCoor
 const manualMode = ref(false)
 const manualText = ref('')
 const manualField = ref<InstanceType<typeof JTextField> | null>(null)
-/** Typed text for A needs a point to stay at: the pickup's own, else the device position. */
+/**
+ * Typed text for A needs a point drivers are sent to: the pickup's own (not
+ * the default map centre named after a failed GPS attempt), else the device
+ * position.
+ */
 const pickupHasPoint = computed(() => {
   const place = booking.stops[0]?.place
-  return (!!place && hasCoordinates(place)) || location.current !== null
+  return (!!place && hasCoordinates(place) && !booking.pickupFallback) || location.current !== null
 })
-const canManual = computed(()=>isPickup.value ? pickupHasPoint.value : session.config.orders?.manual_destination_enabled === true && session.config.orders.manual_destination_pricing === 'passenger_tariff_bounds')
+const canManual = computed(() => (isPickup.value ? pickupHasPoint.value : session.manualDestinations))
 const manualValid = computed(()=>codePointLength(cleanText(manualText.value))>0 && codePointLength(cleanText(manualText.value))<=MAX_ADDRESS_LENGTH)
 function openManual(): void {
   // Editing a place already written by hand starts from its text.
@@ -185,6 +194,8 @@ onMounted(() => {
     return
   }
   if (!orders.historyLoaded && !orders.historyLoading) void orders.loadHistory()
+  // A config that failed at launch would hide manual entry for the whole session.
+  void session.ensureConfig()
   void nextTick(() => field.value?.focus())
 })
 onBeforeUnmount(() => runner.cancel())
@@ -230,6 +241,7 @@ onBeforeUnmount(() => runner.cancel())
           <span class="search-row__title">{{ usingLocation ? t('search.locating') : t('search.use_my_location') }}</span>
         </span>
       </button>
+      <p v-if="isPickup && !pickupHasPoint" class="search-note">{{ t('manual.pickup_point_first') }}</p>
       <button type="button" class="search-row" @click="chooseOnMap">
         <span class="search-row__icon"><MapPinned :size="20" :stroke-width="2" aria-hidden="true" /></span>
         <span class="search-row__text">
@@ -242,10 +254,10 @@ onBeforeUnmount(() => runner.cancel())
       <p v-if="trimmed.length > 0" class="search-note">{{ t('search.min_chars') }}</p>
       <section v-if="recent.length > 0" class="search-section">
         <h2 class="search-section__title">{{ t('search.recent') }}</h2>
-        <button v-for="p in recent" :key="`${p.lat},${p.lon}`" type="button" class="search-row" @click="choose(p)">
+        <button v-for="p in recent" :key="placeKey(p)" type="button" class="search-row" @click="choose(p)">
           <span class="search-row__icon"><Clock :size="18" :stroke-width="2" aria-hidden="true" /></span>
           <span class="search-row__text">
-            <span class="search-row__title">{{ addr(p.address) }}</span>
+            <span class="search-row__title">{{ stopText(p) }}</span>
           </span>
         </button>
       </section>

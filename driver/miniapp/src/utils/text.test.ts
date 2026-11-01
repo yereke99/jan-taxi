@@ -90,4 +90,9 @@ describe('isUnnamedPlace', () => {
   it('keeps real names, including ones with numbers', () => {
     for (const s of ['Абай көшесі, 12', '№2 мектеп', 'Жолдасбеков көшесі', '12 мкр, 5']) expect(isUnnamedPlace(s)).toBe(false)
   })
+
+  it('needs decimals on both numbers: text that merely looks like numbers is a name', () => {
+    for (const s of ['12, 5', '45,6', '3;14', '12.5, 30', '7; 8,25']) expect(isUnnamedPlace(s)).toBe(false)
+    for (const s of ['48.826400, 58.144200', '48,8264; 58,1442']) expect(isUnnamedPlace(s)).toBe(true)
+  })
 })

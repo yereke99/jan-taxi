@@ -137,6 +137,9 @@ type Param struct {
 	Kind        ParamKind `json:"kind"`
 	Optional    bool      `json:"optional"`
 	Description string    `json:"description"`
+	// Max bounds a text value in code points (maxTextParam when zero), for
+	// a param that joins several addresses.
+	Max int `json:"-"`
 }
 
 // Button is the inline web_app button attached to a message. StartParam may use
@@ -267,7 +270,29 @@ var (
 	pReference   = Param{Name: "reference", Kind: KindText, Description: "top-up reference, e.g. EMB001-TOPUP-000123"}
 	pAmount      = Param{Name: "amount", Kind: KindMoney, Description: "top-up amount, KZT"}
 	pLocalityOpt = Param{Name: "locality", Kind: KindText, Optional: true, Description: "settlement of the pickup, e.g. Алматы"}
+	// Up to three stop addresses (200 code points each) with their marks
+	// and arrows: never cut, every stop the passenger named is shown.
+	pVia = Param{Name: "via", Kind: KindText, Optional: true, Max: 640,
+		Description: "intermediate stop addresses joined with \" → \"; a stop the passenger described in words ends with ✍️"}
+	pPickupNote = Param{Name: "pickup_note", Kind: KindLocalized, Optional: true,
+		Description: "{kk, ru, en} note that pickup A's address is the passenger's own words (A keeps its map point)"}
+	pRouteNote = Param{Name: "route_note", Kind: KindLocalized, Optional: true,
+		Description: "{kk, ru, en} note explaining the ✍️ stops: written by the passenger, no map point, route not calculated"}
 )
+
+// PickupTypedNote and ManualStopsNote are the pickup_note and route_note
+// values (ARCHITECTURE §3, §5): the driver sees which addresses the passenger
+// wrote and that a stop without a map point leaves the route uncalculated.
+var (
+	PickupTypedNote = labels("Мекенжайды жолаушы өзі жазды", "Адрес написан пассажиром", "Address written by the passenger")
+	ManualStopsNote = labels("— орынды жолаушы жазды, картада нүктесі жоқ; маршрут есептелмеген",
+		"— место указано пассажиром, точки на карте нет; маршрут не рассчитан",
+		"— written by the passenger, no map point; route not calculated")
+)
+
+// ManualMark ends a stop address the passenger described in words without a
+// map point (the via and destination params).
+const ManualMark = " ✍️"
 
 func labels(kk, ru, en string) map[string]string {
 	return map[string]string{LangKK: kk, LangRU: ru, LangEN: en}
@@ -297,9 +322,7 @@ var registry = buildRegistry([]*Template{
 		Params: []Param{pOrderID, pOrderNumber,
 			{Name: "category", Kind: KindCategory, Description: "orders.category: taxi | parcel | other"},
 			{Name: "vehicle_class", Kind: KindLocalized, Description: "vehicle class name {kk, ru, en}"},
-			pLocalityOpt, pPickup,
-			{Name: "via", Kind: KindText, Optional: true, Description: "intermediate stop addresses joined with \" → \""},
-			pDestination,
+			pLocalityOpt, pPickup, pPickupNote, pVia, pDestination, pRouteNote,
 			{Name: "pickup_distance", Kind: KindDistance, Optional: true, Description: "driver's distance to the pickup, metres"},
 			{Name: "route_distance", Kind: KindDistance, Optional: true, Description: "route length, metres"},
 			{Name: "route_duration", Kind: KindDuration, Optional: true, Description: "route duration, seconds"},
@@ -312,9 +335,9 @@ var registry = buildRegistry([]*Template{
 		// acceptance, §22.2). An admin override that still names
 		// {{commission}} no longer validates, so the default body is sent.
 		Bodies: labels(
-			"🚕 <b>Жаңа тапсырыс №{{order_number}}</b> · {{category}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n🧭 A нүктесіне дейін: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Көлік: {{vehicle_class}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}",
-			"🚕 <b>Новый заказ №{{order_number}}</b> · {{category}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n🧭 До точки A: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Машина: {{vehicle_class}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}",
-			"🚕 <b>New order #{{order_number}}</b> · {{category}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n🧭 To pickup: {{pickup_distance}}\n🗺 Route: {{route_distance}} · {{route_duration}}\n🚗 Vehicle: {{vehicle_class}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}"),
+			"🚕 <b>Жаңа тапсырыс №{{order_number}}</b> · {{category}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n✍️ {{route_note}}\n🧭 A нүктесіне дейін: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Көлік: {{vehicle_class}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}",
+			"🚕 <b>Новый заказ №{{order_number}}</b> · {{category}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n✍️ {{route_note}}\n🧭 До точки A: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Машина: {{vehicle_class}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}",
+			"🚕 <b>New order #{{order_number}}</b> · {{category}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n✍️ {{route_note}}\n🧭 To pickup: {{pickup_distance}}\n🗺 Route: {{route_distance}} · {{route_duration}}\n🚗 Vehicle: {{vehicle_class}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}"),
 		Callback: &CallbackButton{Label: labels("✅ Тапсырысты алу", "✅ Забрать заказ", "✅ Accept order"), Data: "take:{{order_id}}"},
 		Button:   &Button{Label: labels("📱 Қосымшаны ашу", "📱 Открыть мини-приложение", "📱 Open Mini App"), StartParam: "order_{{order_id}}"},
 	},
@@ -359,10 +382,9 @@ var registry = buildRegistry([]*Template{
 			// Optional so that cards queued before these lines existed still render.
 			{Name: "category", Kind: KindCategory, Optional: true, Description: "orders.category: taxi | parcel | other"},
 			{Name: "vehicle_class", Kind: KindLocalized, Optional: true, Description: "vehicle class name {kk, ru, en}"},
-			pLocalityOpt, pPickup,
+			pLocalityOpt, pPickup, pPickupNote,
 			{Name: "pickup_details", Kind: KindText, Optional: true, Description: "passenger's note for pickup A (entrance, floor)"},
-			{Name: "via", Kind: KindText, Optional: true, Description: "intermediate stop addresses joined with \" → \""},
-			pDestination, pFare, pPayment,
+			pVia, pDestination, pRouteNote, pFare, pPayment,
 			{Name: "passengers", Kind: KindNumber, Optional: true, Description: "taxi passenger count"},
 			{Name: "cargo_size", Kind: KindCargoSize, Optional: true, Description: "delivery cargo size: s | m | l | xl"},
 			{Name: "cargo", Kind: KindText, Optional: true, Description: "delivery cargo description"},
@@ -375,9 +397,9 @@ var registry = buildRegistry([]*Template{
 		// they used (§22.4); the only message that carries the passenger's
 		// contact, revalidated against the assignment when it is sent.
 		Bodies: labels(
-			"✅ <b>Тапсырыс №{{order_number}} сізге бекітілді</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n📌 {{pickup_details}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Алушының телефоны: {{recipient_phone}}",
-			"✅ <b>Заказ №{{order_number}} закреплён за вами</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n📌 {{pickup_details}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Телефон получателя: {{recipient_phone}}",
-			"✅ <b>Order #{{order_number}} is yours</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n📌 {{pickup_details}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}\n🙋 Customer: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Phone: {{passenger_phone}}\n📦 Recipient's phone: {{recipient_phone}}"),
+			"✅ <b>Тапсырыс №{{order_number}} сізге бекітілді</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n✍️ {{route_note}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Алушының телефоны: {{recipient_phone}}",
+			"✅ <b>Заказ №{{order_number}} закреплён за вами</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n✍️ {{route_note}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Телефон получателя: {{recipient_phone}}",
+			"✅ <b>Order #{{order_number}} is yours</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n✍️ {{route_note}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}\n🙋 Customer: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Phone: {{passenger_phone}}\n📦 Recipient's phone: {{recipient_phone}}"),
 		Button: btnOrder,
 	},
 	{

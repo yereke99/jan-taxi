@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/plate"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
@@ -119,28 +120,60 @@ func PlateDisplay(normalized, raw *string) string {
 type Route struct {
 	HasManualStops bool
 	Pickup         string
+	// PickupTyped: A's address is the passenger's own words; A keeps its
+	// map point (ARCHITECTURE §3).
+	PickupTyped bool
 	// PickupDetails is the passenger's note for pickup A (entrance, floor…).
 	PickupDetails string
 	Via           []string // intermediate stops in order
-	Destination   string
+	// ViaManual[i] reports that Via[i] is a manual stop: the passenger's
+	// words without a map point.
+	ViaManual         []bool
+	Destination       string
+	DestinationManual bool
 }
 
-// coordinatesRe matches an "address" that is only a coordinate pair, which
-// is never shown to people (as the notification place kind does).
-var coordinatesRe = regexp.MustCompile(`^\s*-?\d{1,3}(\.\d+)?\s*,\s*-?\d{1,3}(\.\d+)?\s*$`)
+// coordinatesRe matches an "address" that is only a coordinate pair as the
+// system writes it (always with decimals), which is never shown to people
+// (as the notification place kind does); «12, 5» typed by a passenger stays.
+var coordinatesRe = regexp.MustCompile(`^\s*-?\d{1,3}\.\d+\s*,\s*-?\d{1,3}\.\d+\s*$`)
 
 // ViaText joins the intermediate stops with arrows in route order ("" when
 // there are none); a stop without an address, or with bare coordinates, is
-// called placeholder.
+// called placeholder, and a manual stop ends with notifications.ManualMark.
 func (r Route) ViaText(placeholder string) string {
 	parts := make([]string, 0, len(r.Via))
-	for _, v := range r.Via {
+	for i, v := range r.Via {
 		if v == "" || coordinatesRe.MatchString(v) {
 			v = placeholder
+		}
+		if i < len(r.ViaManual) && r.ViaManual[i] {
+			v += notifications.ManualMark
 		}
 		parts = append(parts, v)
 	}
 	return strings.Join(parts, " → ")
+}
+
+// AddressParams sets the route params shared by the driver offer and trip
+// card: pickup, via, destination and the notes telling the driver which
+// addresses the passenger wrote (pickup_note for a typed A, route_note for
+// stops without a map point, marked with notifications.ManualMark).
+func (r Route) AddressParams(params map[string]any) {
+	params["pickup"] = r.Pickup
+	params["destination"] = r.Destination
+	if r.DestinationManual {
+		params["destination"] = r.Destination + notifications.ManualMark
+	}
+	if via := r.ViaText("…"); via != "" {
+		params["via"] = via
+	}
+	if r.PickupTyped {
+		params["pickup_note"] = notifications.PickupTypedNote
+	}
+	if r.HasManualStops {
+		params["route_note"] = notifications.ManualStopsNote
+	}
 }
 
 // LoadRoute reads the stop addresses.
@@ -151,18 +184,22 @@ func LoadRoute(ctx context.Context, q db.Querier, orderID uuid.UUID) (Route, err
 	}
 	var r Route
 	for _, s := range list {
-		r.HasManualStops = r.HasManualStops || s.Mode == "manual"
+		manual := s.Mode == "manual"
+		r.HasManualStops = r.HasManualStops || manual
 		addr := textutil.Clean(s.Address)
 		switch s.Kind {
 		case stops.KindPickup:
 			r.Pickup = addr
+			r.PickupTyped = s.AddressTyped
 			if s.AddressDetails != nil {
 				r.PickupDetails = textutil.Clean(*s.AddressDetails)
 			}
 		case stops.KindDestination:
 			r.Destination = addr
+			r.DestinationManual = manual
 		default:
 			r.Via = append(r.Via, addr)
+			r.ViaManual = append(r.ViaManual, manual)
 		}
 	}
 	return r, nil

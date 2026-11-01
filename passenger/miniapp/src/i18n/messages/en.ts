@@ -13,6 +13,7 @@ export const en: PassengerMessages = {
     fare_hint: "Choose a fare within the administrator tariff limits.",
     fare_required: "Choose the trip fare.",
     copy_destination: "Copy destination",
+    pickup_point_first: "First mark point A on the map or turn on location",
   },
   home: {
     greeting: 'Hello, {name}!',
@@ -67,6 +68,7 @@ export const en: PassengerMessages = {
     outside: 'This point is outside Kazakhstan. Choose another address.',
     duplicate: 'Same as the previous point. Choose another address.',
     stop_invalid: 'This point could not be accepted. Choose another address.',
+    manual_disabled: 'Manual addresses are switched off right now. Choose the address from search or on the map.',
     calculating: 'Calculating the route…',
     fill_route: 'Choose the addresses to see the route and price',
     summary: '{distance} · {duration}',

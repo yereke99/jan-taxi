@@ -60,10 +60,18 @@ type PublicConfig struct {
 	// order (passenger, §22.3).
 	CancelReasons []CancelReason `json:"cancel_reasons,omitempty"`
 	// Commission is charged when a driver takes an order (driver, §22.2).
-	Commission *settings.CommissionPolicy `json:"commission,omitempty"`
+	Commission *DriverCommission `json:"commission,omitempty"`
 	// WelcomeBonus is credited once to a new driver on approval (driver,
 	// §22.1; 0 when disabled).
 	WelcomeBonus *int64 `json:"welcome_bonus,omitempty"`
+}
+
+// DriverCommission is the general commission policy plus ByArea: villages
+// have their own percentage (§22.9), so what an order costs the driver is
+// known only from the order itself, never from the general fixed amount.
+type DriverCommission struct {
+	settings.CommissionPolicy
+	ByArea bool `json:"by_area"`
 }
 
 // CancelReason is one passenger cancellation reason; a comment is required
@@ -240,7 +248,10 @@ func (s *PublicConfigService) Build(ctx context.Context, app string) (PublicConf
 	case "driver":
 		k := settings.KaspiPayment(ctx, q)
 		t := settings.TopUp(ctx, q)
-		c := settings.Commission(ctx, q)
+		c := DriverCommission{CommissionPolicy: settings.Commission(ctx, q)}
+		if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM commission_areas WHERE is_active)`).Scan(&c.ByArea); err != nil {
+			return PublicConfig{}, fmt.Errorf("public config: commission areas: %w", err)
+		}
 		b := settings.WelcomeBonus(ctx, q)
 		cfg.Kaspi, cfg.TopUp, cfg.Commission, cfg.WelcomeBonus = &k, &t, &c, &b
 	}

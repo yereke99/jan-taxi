@@ -2,7 +2,8 @@
   Active trip (§5): map with the route and the current leg, one primary
   action per state — arrived → start → intermediate stops in seq order →
   complete — 2GIS hand-off, the passenger contact (call when the phone was
-  shared, Telegram chat), the requested class and load, all stops. Drivers
+  shared, Telegram chat), the requested class and load, all stops. A target
+  address the passenger wrote is shown as written and marked as such. Drivers
   cannot cancel (§22.3): a problem goes to support, which can cancel or
   reassign. When the order ends (here or elsewhere) its outcome is shown —
   a completed trip only as «Сапар сәтті аяқталды», without fare, commission
@@ -23,6 +24,7 @@ import { useFormat } from '../composables/useFormat'
 import { usePolling } from '../composables/usePolling'
 import { actionLabelKey } from '../features/trip/labels'
 import { currentTarget, primaryAction, remainingStops, stopLetter } from '../features/trip/sequence'
+import { isPassengerWritten, useStopText } from '../features/trip/stopText'
 import { useVehicleText } from '../features/vehicle/useVehicleText'
 import { useDriverErrorText } from '../composables/useDriverErrorText'
 import { ROUTE } from '../router/names'
@@ -30,10 +32,9 @@ import { isApiError } from '../services/http'
 import { useLocationStore } from '../stores/location'
 import { useTripStore } from '../stores/trip'
 import { haptics } from '../telegram'
-import { useAddressText } from '../i18n/core'
 
 const { t } = useI18n()
-const addr = useAddressText()
+const stopText = useStopText()
 const fmt = useFormat()
 const errorText = useDriverErrorText()
 const router = useRouter()
@@ -124,7 +125,8 @@ onBeforeUnmount(() => {
         <template #header>
           <div class="tpage__head">
             <p class="tpage__heading">{{ heading }}</p>
-            <p v-if="target" class="tpage__target">{{ addr(target.address) }}</p>
+            <p v-if="target" class="tpage__target">{{ stopText(target) }}</p>
+            <p v-if="isPassengerWritten(target)" class="tpage__details">{{ t('manual.label') }}</p>
             <p v-if="target?.address_details" class="tpage__details">{{ target.address_details }}</p>
             <p class="tpage__meta jt-tabular">
               {{ t('trip.order_number', { number: order.number }) }} · {{ fmt.money(order.fare) }} · {{ t(`payment_method.${order.payment_method}`) }}

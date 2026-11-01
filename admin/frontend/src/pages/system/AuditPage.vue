@@ -10,7 +10,7 @@ import { usePagedList } from '../../composables/usePagedList'
 import { useResource } from '../../composables/useResource'
 import { useAuthStore } from '../../stores/auth'
 
-const ENTITY_TYPES = ['order', 'dispute', 'driver', 'topup', 'city', 'service_zone', 'place', 'tariff', 'app_setting', 'notification', 'notification_template', 'admin', 'report', 'file']
+const ENTITY_TYPES = ['order', 'dispute', 'driver', 'topup', 'city', 'service_zone', 'place', 'commission_area', 'tariff', 'app_setting', 'notification', 'notification_template', 'admin', 'report', 'file']
 
 const { t, te } = useI18n()
 const fmt = useFormat()

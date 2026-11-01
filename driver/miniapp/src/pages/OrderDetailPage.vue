@@ -272,9 +272,13 @@ watch(id, () => void load())
           <StopList :stops="order.stops" :live="order.is_mine" />
         </section>
 
+        <!-- A route with a manual stop has no metrics: one chip says so instead of dashes. -->
         <div class="odetail__chips jt-tabular">
-          <span class="odetail__chip"><Route :size="18" :stroke-width="2" aria-hidden="true" />{{ fmt.distance(order.distance_m) }}</span>
-          <span class="odetail__chip"><Clock :size="17" :stroke-width="2" aria-hidden="true" />{{ fmt.duration(order.duration_s) }}</span>
+          <span v-if="order.distance_m !== null" class="odetail__chip"><Route :size="18" :stroke-width="2" aria-hidden="true" />{{ fmt.distance(order.distance_m) }}</span>
+          <span v-if="order.duration_s !== null" class="odetail__chip"><Clock :size="17" :stroke-width="2" aria-hidden="true" />{{ fmt.duration(order.duration_s) }}</span>
+          <span v-if="order.distance_m === null && order.duration_s === null" class="odetail__chip">
+            <Route :size="18" :stroke-width="2" aria-hidden="true" />{{ t('manual.route_unknown') }}
+          </span>
           <span v-if="order.distance_to_pickup_m !== null && !finished" class="odetail__chip">
             <Navigation :size="16" :stroke-width="2" aria-hidden="true" />{{ t('orders.from_you', { distance: fmt.distance(order.distance_to_pickup_m) }) }}
           </span>
