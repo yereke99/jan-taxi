@@ -79,15 +79,31 @@ const safe = computed(() => effectiveSafeInsets(tg.state))
 
 /**
  * Height available to the sheet above the keyboard. While the keyboard is
- * open the layout viewport (innerHeight) is used: it shrinks on Android, and
- * on iOS the overlap is subtracted instead.
+ * open the part of the page on screen is used: the layout viewport shrinks
+ * on Android, and on iOS the keyboard covers its lower part.
  */
 const viewportHeight = computed(() => {
   const s = tg.state
-  const layout = typeof window === 'undefined' ? 0 : window.innerHeight
-  const base = s.keyboardOpen ? layout || s.viewportHeight : s.stableHeight || s.viewportHeight || layout
-  return Math.max(0, base - s.keyboardHeight)
+  return Math.max(0, s.keyboardOpen ? s.visibleHeight : s.stableHeight || s.viewportHeight || s.visibleHeight)
 })
+
+/**
+ * A viewport change (mostly the keyboard) resizes the sheet at once: its
+ * bottom edge has already moved with the viewport, and an animated height
+ * would push the header above the screen until it settled.
+ */
+const sheetEl = ref<HTMLElement | null>(null)
+const resizing = ref(false)
+watch(viewportHeight, () => (resizing.value = true))
+watch(
+  viewportHeight,
+  () => {
+    // Styles the new size while transitions are off.
+    void sheetEl.value?.offsetHeight
+    resizing.value = false
+  },
+  { flush: 'post' },
+)
 
 /** Distance between the floating sheet and the screen (or keyboard) bottom. */
 const tabReserve = computed(() => (props.tabBar && !tg.state.keyboardOpen ? TAB_BAR_RESERVE : 0))
@@ -352,8 +368,9 @@ defineExpose({
 
 <template>
   <section
+    ref="sheetEl"
     class="jt-sheet"
-    :class="{ 'is-docked': docked, 'is-floating': !docked, 'jt-glass': glass && !docked, 'is-dragging': dragHeight !== null }"
+    :class="{ 'is-docked': docked, 'is-floating': !docked, 'jt-glass': glass && !docked, 'is-dragging': dragHeight !== null, 'is-resizing': resizing }"
     :style="sheetStyle"
     :aria-label="ariaLabel"
   >
@@ -471,6 +488,10 @@ defineExpose({
 .jt-sheet__footer {
   flex: none;
   padding: var(--jt-space-2) var(--jt-side-margin) var(--jt-sheet-bottom-pad);
+}
+
+.jt-sheet.is-resizing {
+  transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

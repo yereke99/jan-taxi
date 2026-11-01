@@ -47,6 +47,8 @@ export interface TelegramViewportState {
   keyboardOpen: boolean
   /** Keyboard overlap, px (0 when closed). */
   keyboardHeight: number
+  /** Height of the page area on screen, px: the visual viewport, which ends at the keyboard. */
+  visibleHeight: number
   /** Telegram platform id (ios, android, tdesktop, macos, web, ...) or "browser". */
   platform: string
   /** Validated start parameter (ARCHITECTURE §18) or null. */
@@ -146,6 +148,7 @@ export function createTelegramFullscreen(win: Window = window): TelegramFullscre
     contentSafeArea: zeroInsets(),
     keyboardOpen: false,
     keyboardHeight: 0,
+    visibleHeight: win.innerHeight,
     platform: 'browser',
     startParam: null,
     version: '',
@@ -164,6 +167,7 @@ export function createTelegramFullscreen(win: Window = window): TelegramFullscre
   let fullscreenLostAt = 0
   let editableFocused = false
   let baselineHeight = 0
+  let baselineLayout = 0
 
   // --- CSS variables -------------------------------------------------------
 
@@ -190,18 +194,25 @@ export function createTelegramFullscreen(win: Window = window): TelegramFullscre
 
   function updateKeyboard(): void {
     const vv = win.visualViewport
+    const layout = win.innerHeight
     // iOS: the layout viewport keeps its height and the visual viewport shrinks.
-    const visualOverlap = vv ? Math.max(0, win.innerHeight - vv.height - vv.offsetTop) : 0
-    // Android: the webview itself (and Telegram's viewport height) shrinks.
-    const current = state.viewportHeight || win.innerHeight
-    if (!editableFocused) baselineHeight = current
-    const drop = Math.max(0, baselineHeight - current)
+    const visualOverlap = vv ? Math.max(0, layout - vv.height - vv.offsetTop) : 0
+    // Android: the webview itself shrinks. Telegram's viewport height follows
+    // late or not at all (Android in fullscreen), so the layout viewport's own
+    // drop counts as well.
+    const current = state.viewportHeight || layout
+    if (!editableFocused) {
+      baselineHeight = current
+      baselineLayout = layout
+    }
+    const drop = Math.max(0, baselineHeight - current, baselineLayout - layout)
     const overlap = Math.max(visualOverlap, drop)
     const open = editableFocused && overlap >= KEYBOARD_MIN_PX
     state.keyboardOpen = open
     // Only the iOS-style overlap needs compensating: on Android the layout has
     // already shrunk above the keyboard.
     state.keyboardHeight = open ? visualOverlap : 0
+    state.visibleHeight = vv ? vv.height : layout
   }
 
   function sync(): void {

@@ -289,6 +289,36 @@ describe('useTelegramFullscreen', () => {
     tg.dispose()
   })
 
+  // Android in fullscreen: the webview shrinks above the keyboard while
+  // Telegram's viewport height stays as it was.
+  it('detects the keyboard from the shrinking webview when Telegram keeps its height', async () => {
+    const initial = window.innerHeight
+    const setLayout = (h: number): void => {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: h })
+      window.dispatchEvent(new Event('resize'))
+    }
+    setLayout(700)
+    const tg = createTelegramFullscreen()
+    await tg.start()
+    const input = document.body.appendChild(document.createElement('input'))
+    try {
+      input.focus()
+      setLayout(400)
+      expect(tg.state.viewportHeight).toBe(700)
+      expect(tg.state.keyboardOpen).toBe(true)
+      expect(tg.state.visibleHeight).toBe(400)
+      expect(cssVar('--jt-keyboard')).toBe('0px')
+
+      setLayout(700)
+      expect(tg.state.keyboardOpen).toBe(false)
+      expect(tg.state.visibleHeight).toBe(700)
+    } finally {
+      input.remove()
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: initial })
+      tg.dispose()
+    }
+  })
+
   it('reads and validates the start parameter (initData first, then URL)', async () => {
     sdk.initData.startParam.mockReturnValue('order_7d9f2c1e-1111-4a2b-9c3d-123456789abc')
     const a = createTelegramFullscreen()
