@@ -160,6 +160,11 @@ export interface OrderDriver {
   last_name: string
   /** E.164 while the order is active, otherwise null. */
   phone: string | null
+  /**
+   * The driver's Telegram chat while the order is active (https://t.me/<username>
+   * or tg://user?id=<id>), otherwise null; offered when there is no phone.
+   */
+  telegram_url: string | null
   rating: number | null
   rating_count: number
   completed_trips: number

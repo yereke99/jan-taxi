@@ -67,13 +67,17 @@ type Order struct {
 }
 
 // OrderDriver is the assigned driver as shown to the passenger (openapi
-// OrderDriver): last-name initial only, phone only while the order is active.
+// OrderDriver): last-name initial only; the phone and the Telegram link to
+// the driver's chat (https://t.me/<username>, or tg://user?id=<id> without a
+// username: the fallback when the driver has no phone) only while the order
+// occupies the driver.
 type OrderDriver struct {
 	ID             uuid.UUID `json:"id"`
 	Code           string    `json:"code"`
 	FirstName      string    `json:"first_name"`
 	LastName       string    `json:"last_name"`
 	Phone          *string   `json:"phone"`
+	TelegramURL    *string   `json:"telegram_url"`
 	Rating         *float64  `json:"rating"`
 	RatingCount    int       `json:"rating_count"`
 	CompletedTrips int       `json:"completed_trips"`
@@ -163,7 +167,8 @@ func passengerOrder(ctx context.Context, q db.Querier, id, passengerID uuid.UUID
 			Rating: averageRating(dr.RatingSum, dr.RatingCount), RatingCount: dr.RatingCount,
 			CompletedTrips: dr.CompletedTrips}
 		if lifecycle.OccupiesDriver(r.Status) {
-			od.Phone = dr.Phone
+			link := lifecycle.TelegramLink(dr.Username, dr.TelegramID)
+			od.Phone, od.TelegramURL = dr.Phone, &link
 		}
 		if dr.AvatarFileID != nil {
 			u := "/api/v1/orders/" + r.ID.String() + "/driver-photo"

@@ -1,7 +1,8 @@
 // Order detail before accepting: the fare is shown, the commission never is
 // (it is still charged on acceptance, §22.2), and a 402 insufficient_balance
-// keeps the order on screen with what is missing and a top-up button. A route
-// with a manual stop has no metrics: one chip says so instead of dashes.
+// keeps the order on screen with a plain top-up request and button — never
+// the amount the order needs, which is its commission. A route with a manual
+// stop has no metrics: one chip says so instead of dashes.
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -143,7 +144,7 @@ describe('OrderDetailPage', () => {
     expect(chips(other)).toEqual(['14 мин', 'Сізден 1,2 км'])
   })
 
-  it('a 402 keeps the order open with the shortfall and a top-up button', async () => {
+  it('a 402 keeps the order open with a top-up request and button, never the amount the order needs', async () => {
     mocked.acceptOrder.mockRejectedValue(
       new ApiError(402, 'insufficient_balance', 'x', {}, { required: 50, available: 20, currency: 'KZT', topup_min_amount: 1000 }),
     )
@@ -152,8 +153,9 @@ describe('OrderDetailPage', () => {
     await accept.trigger('click')
     await flushPromises()
     const footer = w.find('footer')
-    expect(plain(footer.find('[role="alert"]').text())).toContain('тапсырысты алу үшін 50 ₸ керек, қолжетімдісі — 20 ₸')
+    expect(footer.find('[role="alert"]').text()).toBe('Тапсырысты алу үшін балансты толтырыңыз')
     expect(footer.text()).not.toMatch(/омисси/)
+    expect(plain(footer.text())).not.toMatch(/\b(50|20|30) ₸/)
     const topUp = footer.findAll('button')[0]!
     expect(plain(topUp.text())).toContain('Толтыру · 1 000 ₸')
     await topUp.trigger('click')

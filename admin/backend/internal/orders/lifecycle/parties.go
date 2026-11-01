@@ -215,9 +215,9 @@ func deref(s *string) string {
 // telegramUsernameRe is a public Telegram username.
 var telegramUsernameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{3,31}$`)
 
-// TelegramLink is how a driver reaches a passenger in Telegram: the public
-// profile https://t.me/<username>, or a mention by id (tg://user?id=<id>)
-// when the passenger has no username.
+// TelegramLink is how a driver and a passenger reach each other in Telegram:
+// the public profile https://t.me/<username>, or a mention by id
+// (tg://user?id=<id>) when the person has no username.
 func TelegramLink(username *string, telegramUserID int64) string {
 	if username != nil {
 		if u := strings.TrimPrefix(strings.TrimSpace(*username), "@"); telegramUsernameRe.MatchString(u) {

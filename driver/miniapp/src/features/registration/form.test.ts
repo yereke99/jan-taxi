@@ -304,7 +304,7 @@ describe('pages', () => {
     expect(isStepComplete('personal', ctx(registration({ avatar: null })))).toBe(false)
     expect(isStepComplete('personal', ctx(registration(), form({ iin: '900101300018' })))).toBe(false)
     expect(isStepComplete('personal', ctx(registration({ phone_verified: false, missing_fields: ['phone'] })))).toBe(false)
-    // driver.require_phone_verification off: the API does not list the phone.
+    // The server decides: a phone it does not list as missing counts as done.
     expect(isStepComplete('personal', ctx(registration({ phone_verified: false, missing_fields: [] })))).toBe(true)
   })
 

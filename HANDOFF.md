@@ -161,7 +161,7 @@ changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
     one reservation, one ledger reserve row (`admin/backend/internal/orders/concurrency_test.go`).
   - Commission charged exactly once under concurrent completes; wallet ledger reconciliation; idempotent top-up credit;
     duplicate Kaspi transaction id rejected; phone/plate uniqueness; geofence (Kazakhstan in, Orenburg/Tashkent/Bishkek out).
-- Frontend (2026-11-01): `vue-tsc` clean, lint and `vite build` ok; vitest → driver 546, passenger 398, admin 150
+- Frontend (2026-11-01): `vue-tsc` clean, lint and `vite build` ok; vitest → driver 551, passenger 405, admin 150
   tests passing; `verify-shared` → shared core identical (87 files).
 - Upgrade (2026-11-01): the previous release `5070b9c` with orders, updated through `make preflight`, `make config`,
   `make build`, `make up`, `make health` → migrations 13 → 15, API ready, both bots healthy and answering `/start`.

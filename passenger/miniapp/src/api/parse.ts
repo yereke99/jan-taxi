@@ -327,6 +327,15 @@ function parseRoute(v: unknown): RouteSnapshot {
   }
 }
 
+/** The Telegram chat links the API builds: https://t.me/<username> or tg://user?id=<id>. */
+const TELEGRAM_CHAT_RE = /^(https:\/\/t\.me\/[A-Za-z][A-Za-z0-9_]{3,31}|tg:\/\/user\?id=[1-9]\d{0,19})$/
+
+/** Only a link that opens a Telegram chat is kept; anything else is dropped rather than opened. */
+function telegramChatUrl(v: unknown): string | null {
+  const s = str(v).trim()
+  return TELEGRAM_CHAT_RE.test(s) ? s : null
+}
+
 function parseDriver(v: unknown): OrderDriver | null {
   const r = rec(v)
   const id = strOrNull(r.id)
@@ -338,6 +347,7 @@ function parseDriver(v: unknown): OrderDriver | null {
     first_name: str(r.first_name),
     last_name: str(r.last_name),
     phone: strOrNull(r.phone),
+    telegram_url: telegramChatUrl(r.telegram_url),
     rating: rating !== null && rating >= 1 && rating <= 5 ? rating : null,
     rating_count: num(r.rating_count),
     completed_trips: num(r.completed_trips),

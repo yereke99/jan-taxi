@@ -183,6 +183,17 @@ func TestCatalogIsComplete(t *testing.T) {
 	}
 }
 
+// Drivers never see the commission (customer request): no bot text names it.
+func TestTextsNeverNameTheCommission(t *testing.T) {
+	for _, lang := range runtime.Languages {
+		for key, text := range texts[lang] {
+			if l := strings.ToLower(text); strings.Contains(l, "комисси") || strings.Contains(l, "commission") {
+				t.Errorf("%s %s names the commission: %s", lang, key, text)
+			}
+		}
+	}
+}
+
 // Every field and reason code a correction can carry (drivers.RegistrationFields
 // and drivers.CorrectionReasons, legacy ones included) has a label.
 func TestCorrectionLabels(t *testing.T) {

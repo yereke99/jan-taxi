@@ -177,6 +177,7 @@ export const kk = {
     cancel: 'Тапсырыстан бас тарту',
     cancelled_toast: 'Тапсырыстан бас тартылды',
     call_driver: 'Қоңырау шалу',
+    message_driver: 'Жазу',
     copy_driver_phone: 'Жүргізуші нөмірін көшіру',
     copy_failed: 'Нөмірді көшіру мүмкін болмады. Оны қолмен көшіріңіз.',
     arrives_in: 'Жүргізуші {n} минутта келеді',

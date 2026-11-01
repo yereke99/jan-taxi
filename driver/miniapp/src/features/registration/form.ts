@@ -326,8 +326,9 @@ export interface StepContext {
 }
 
 /**
- * The phone is confirmed through Telegram, or not required: the API lists
- * phone in missing_fields only while driver.require_phone_verification is on.
+ * The phone is confirmed through Telegram. The API always requires it (it is
+ * how passengers call the driver); a profile it does not list as missing
+ * counts as done, as the server decides.
  */
 export function phoneDone(r: DriverRegistration): boolean {
   return r.phone_verified || (r.id !== null && !r.missing_fields.includes('phone'))

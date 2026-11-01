@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -246,6 +247,64 @@ func TestAdminTemplates(t *testing.T) {
 	// Reverting again is a no-op and not audited twice.
 	if code := e.do("DELETE", path, nil, nil); code != 200 || e.auditCount("notification_template.revert") != 1 {
 		t.Fatalf("second revert → %d", code)
+	}
+}
+
+// TestAdminTemplatesKeepTheCommissionFromDrivers: an override of a message
+// the driver bot sends is refused when it names the commission (§22.2), and
+// the low-balance editor no longer offers the retired {{required}} amount.
+func TestAdminTemplatesKeepTheCommissionFromDrivers(t *testing.T) {
+	e := newAdminEnv(t)
+	var bad struct {
+		Error struct {
+			Code    string            `json:"code"`
+			Fields  map[string]string `json:"fields"`
+			Details map[string]any    `json:"details"`
+		} `json:"error"`
+	}
+	for _, path := range []string{
+		"/notification-templates/" + TplOrderCompletedDriver + "/ru",
+		"/notification-templates/" + TplDisputeResolved + "/kk",
+	} {
+		body := map[string]string{"body": "Комиссия списана: №{{order_number}}"}
+		if code := e.do("PUT", path, body, &bad); code != 422 || bad.Error.Fields["body"] != "invalid" ||
+			!strings.Contains(fmt.Sprint(bad.Error.Details["reason"]), "commission") {
+			t.Fatalf("PUT %s → %d %+v", path, code, bad.Error)
+		}
+	}
+	if n := e.auditCount("notification_template.update"); n != 0 {
+		t.Fatalf("refused override audited %d times", n)
+	}
+	var stored int
+	if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM notification_templates`).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("refused override stored: %d %v", stored, err)
+	}
+	// Passenger messages are not concerned.
+	if code := e.do("PUT", "/notification-templates/"+TplOrderCreatedPassenger+"/ru",
+		map[string]string{"body": "Без комиссии: {{fare}}"}, nil); code != 200 {
+		t.Fatalf("passenger override → %d", code)
+	}
+
+	// An override stored before the rule is shown as not in effect.
+	old := "Комиссия списана. Баланс: {{balance}}"
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO notification_templates (key, language, body) VALUES ($1, 'ru', $2)`,
+		TplOrderCompletedDriver, old); err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Items []TemplateItem `json:"items"`
+	}
+	if code := e.do("GET", "/notification-templates", nil, &list); code != 200 {
+		t.Fatalf("list → %d", code)
+	}
+	for _, it := range list.Items {
+		switch {
+		case it.Key == TplWalletLowBalance && (fmt.Sprint(it.Placeholders) != "[available]" || len(it.Params) != 1):
+			t.Fatalf("low balance editor offers %v / %+v", it.Placeholders, it.Params)
+		case it.Key == TplOrderCompletedDriver && it.Language == LangRU &&
+			(!it.IsCustom || it.OverrideBody == nil || *it.OverrideBody != old || it.Body != it.DefaultBody):
+			t.Fatalf("stored override naming the commission: %+v", it)
+		}
 	}
 }
 

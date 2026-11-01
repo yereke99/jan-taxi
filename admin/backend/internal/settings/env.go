@@ -216,13 +216,6 @@ func MinOnlineBalance(ctx context.Context, q db.Querier) int64 {
 	return effectiveInt(ctx, q, "driver.min_online_balance")
 }
 
-// RequirePhoneVerification reports whether driver registration needs a verified phone.
-func RequirePhoneVerification(ctx context.Context, q db.Querier) bool {
-	var b bool
-	_ = Effective(ctx, q, "driver.require_phone_verification", &b)
-	return b
-}
-
 // DriverOnlineIdleTimeout is how long an online driver may stay silent before
 // being set offline.
 func DriverOnlineIdleTimeout(ctx context.Context, q db.Querier) time.Duration {

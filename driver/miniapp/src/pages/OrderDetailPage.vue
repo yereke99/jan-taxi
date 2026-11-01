@@ -5,9 +5,10 @@
   comment / cargo, the fare and payment method (drivers never see the
   commission), and the sticky «Тапсырысты алу» button. Acceptance is the
   same one-tap operation as on the order cards (features/orders/useAcceptOrder,
-  atomic on the server): 402 shows how much is missing with a top-up button, a
-  taken or closed order closes, a missing location is fixed in place. Taking
-  the order through the bot meanwhile moves this screen to the trip.
+  atomic on the server): 402 asks for a top-up with a top-up button (never the
+  amount the order needs: that is its commission), a taken or closed order
+  closes, a missing location is fixed in place. Taking the order through the
+  bot meanwhile moves this screen to the trip.
 -->
 <script setup lang="ts">
 import { ChevronLeft, Clock, MapPin, Navigation, Package, Route, Users } from '@lucide/vue'
@@ -59,8 +60,8 @@ const loading = ref(true)
 const loadError = shallowRef<unknown>(null)
 const gone = ref(false)
 const accepting = computed(() => order.value !== null && acceptor.acceptingId.value === order.value.id)
-/** Set by a 402 insufficient_balance: what taking the order needs and what is available. */
-const shortfall = ref<{ required: number | null; available: number | null; topUp: number | null } | null>(null)
+/** Set by a 402 insufficient_balance: the top-up amount to suggest (null: none). */
+const shortfall = ref<{ topUp: number | null } | null>(null)
 const snap = ref<SheetSnap>('half')
 const sheetHeight = ref(0)
 const tg = useTelegramFullscreen()
@@ -99,13 +100,6 @@ const finished = computed(() => order.value?.status === 'completed' || order.val
 const classIcon = computed(() => findClass(session.extras.vehicleClasses, order.value?.vehicle_class)?.icon ?? null)
 const className = computed(() => (order.value?.vehicle_class ? vt.className(order.value.vehicle_class, order.value.vehicle_class_name) : ''))
 const loadText = computed(() => (order.value ? vt.load(order.value) : ''))
-
-const shortfallText = computed(() => {
-  const s = shortfall.value
-  if (!s) return ''
-  if (s.required === null || s.available === null) return t('order.insufficient_toast')
-  return t('order.insufficient_text', { required: fmt.money(s.required), available: fmt.money(s.available) })
-})
 
 function topUp(): void {
   const amount = shortfall.value?.topUp
@@ -156,14 +150,10 @@ async function accept(): Promise<void> {
   const o = order.value
   if (!o) return
   const ok = await acceptor.accept(o.id, {
-    // The order stays open: say what is missing and offer the top-up right here.
+    // The order stays open: ask for a top-up and offer it right here.
     onInsufficient: (f) => {
       const required = f.required ?? o.commission_amount
-      shortfall.value = {
-        required,
-        available: f.available,
-        topUp: f.suggestedTopUp ?? suggestedTopUpAmount(required, f.available, session.config.topup?.min ?? null),
-      }
+      shortfall.value = { topUp: f.suggestedTopUp ?? suggestedTopUpAmount(required, f.available, session.config.topup?.min ?? null) }
       snap.value = 'half'
     },
     onGone: () => markGone(),
@@ -306,7 +296,7 @@ watch(id, () => void load())
       </template>
 
       <template v-if="canAcceptNow" #footer>
-        <p v-if="shortfall" class="odetail__short" role="alert">{{ shortfallText }}</p>
+        <p v-if="shortfall" class="odetail__short" role="alert">{{ t('order.insufficient_toast') }}</p>
         <div class="odetail__actions">
           <JButton v-if="shortfall" block @click="topUp">
             {{ shortfall.topUp ? t('order.top_up_amount', { amount: fmt.money(shortfall.topUp) }) : t('orders.top_up') }}

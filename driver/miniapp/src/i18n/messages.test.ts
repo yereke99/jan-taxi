@@ -73,6 +73,15 @@ describe('driver message catalogue', () => {
     expect(offenders).toEqual([])
   })
 
+  // Drivers never see the commission (customer request); only the legal
+  // personal-data consent names it among the purposes of processing.
+  it('never names the commission outside the personal-data consent', () => {
+    const offenders = LOCALES.flatMap((l) =>
+      [...catalogue(l)].filter(([k, v]) => !k.startsWith('registration.consent.') && /комисси|commission/i.test(v)).map(([k]) => `${l}:${k}`),
+    )
+    expect(offenders).toEqual([])
+  })
+
   it('has no Russian words inside Kazakh texts', () => {
     const offenders = [...kk].filter(([k, v]) => !k.startsWith('languages.') && russianWords(v).length > 0).map(([k, v]) => `${k}: ${v}`)
     expect(offenders).toEqual([])

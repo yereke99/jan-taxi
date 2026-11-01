@@ -2,6 +2,7 @@ package orders_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -66,12 +67,13 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatal("accept notifications missing")
 	}
 
-	// Passenger sees the driver with phone and vehicle while active.
+	// Passenger sees the driver with phone, Telegram chat and vehicle while active.
 	var po orders.Order
 	r = e.do(pc, http.MethodGet, path("/orders/%s", o.ID), nil)
 	e.expect(r, http.StatusOK, "")
 	r.decode(t, &po)
-	if po.Driver == nil || po.Driver.Phone == nil || po.Driver.LastName != "D." || po.Vehicle == nil || po.Vehicle.Make != "Toyota" {
+	if po.Driver == nil || po.Driver.Phone == nil || po.Driver.LastName != "D." || po.Vehicle == nil || po.Vehicle.Make != "Toyota" ||
+		po.Driver.TelegramURL == nil || *po.Driver.TelegramURL != fmt.Sprintf("https://t.me/u%d", drv.TelegramID) {
 		t.Fatalf("passenger driver view: %+v %+v", po.Driver, po.Vehicle)
 	}
 
@@ -126,7 +128,7 @@ func TestFullLifecycle(t *testing.T) {
 	// Passenger history and rating.
 	r = e.do(pc, http.MethodGet, path("/orders/%s", o.ID), nil)
 	r.decode(t, &po)
-	if po.Driver.Phone != nil || po.DriverLocation != nil || !po.CanRate || !po.CanDispute || po.CanCancel {
+	if po.Driver.Phone != nil || po.Driver.TelegramURL != nil || po.DriverLocation != nil || !po.CanRate || !po.CanDispute || po.CanCancel {
 		t.Fatalf("completed passenger view: %+v", po)
 	}
 	wantEvents := []string{"searching", "accepted", "driver_arriving", "in_progress", "completed"}
@@ -175,6 +177,42 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("driver history: %+v", dh)
 	}
 	e.expect(e.do(drv.c, http.MethodGet, "/driver/orders/active", nil), http.StatusNoContent, "")
+}
+
+// TestPassengerWritesToDriverWithoutPhone: a driver approved before the phone
+// was required has none; the passenger still reaches them through their
+// Telegram chat (a mention by id without a username), only while the order
+// occupies the driver (§22.5).
+func TestPassengerWritesToDriverWithoutPhone(t *testing.T) {
+	e := newEnv(t)
+	drv := e.driver(1000, true)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `UPDATE driver_profiles SET phone_e164 = NULL, phone_verified_at = NULL WHERE id = $1`, drv.DriverID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE users SET username = NULL, phone_e164 = NULL, phone_verified_at = NULL WHERE id = $1`, drv.UserID); err != nil {
+		t.Fatal(err)
+	}
+	o, _, pc := e.order(embiStops[:2], 800)
+	view := func() orders.Order {
+		t.Helper()
+		var po orders.Order
+		r := e.do(pc, http.MethodGet, path("/orders/%s", o.ID), nil)
+		e.expect(r, http.StatusOK, "")
+		r.decode(t, &po)
+		return po
+	}
+	want := fmt.Sprintf("tg://user?id=%d", drv.TelegramID)
+	for _, step := range []string{"accept", "arriving", "start"} {
+		e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/%s", o.ID, step), nil), http.StatusOK, "")
+		if po := view(); po.Driver == nil || po.Driver.Phone != nil || po.Driver.TelegramURL == nil || *po.Driver.TelegramURL != want {
+			t.Fatalf("%s: passenger driver view %+v", po.Status, po.Driver)
+		}
+	}
+	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/complete", o.ID), nil), http.StatusOK, "")
+	if po := view(); po.Driver == nil || po.Driver.TelegramURL != nil {
+		t.Fatalf("completed: passenger driver view %+v", po.Driver)
+	}
 }
 
 // TestStopsOrderPreserved checks that five stops keep their order end to end

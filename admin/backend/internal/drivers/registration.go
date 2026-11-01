@@ -373,10 +373,11 @@ func (r Registration) IIN() string {
 }
 
 // MissingFields lists what is still needed before submission, in form order:
-// profile photo, names, a valid IIN, the phone (only when a Telegram-verified
-// phone is required), vehicle class, make and model, colour and plate. ID
-// scans and vehicle photos are no longer asked for.
-func (r Registration) MissingFields(requirePhone bool) []string {
+// profile photo, names, a valid IIN, the Telegram-verified phone (always: it is
+// how passengers call the driver, whatever driver.require_phone_verification
+// says), vehicle class, make and model, colour and plate. ID scans and vehicle
+// photos are no longer asked for.
+func (r Registration) MissingFields() []string {
 	missing := map[string]bool{}
 	if r.Avatar == nil {
 		missing[FieldAvatar] = true
@@ -390,7 +391,7 @@ func (r Registration) MissingFields(requirePhone bool) []string {
 	if !iin.Valid(r.IIN()) {
 		missing[FieldIdentity] = true
 	}
-	if requirePhone && !r.PhoneVerified() {
+	if !r.PhoneVerified() {
 		missing[FieldPhone] = true
 	}
 	v := r.Vehicle

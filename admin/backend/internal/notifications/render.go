@@ -96,8 +96,9 @@ func Placeholders(body string) ([]string, error) {
 }
 
 // ValidateBody checks a (default or admin-supplied) body for this template:
-// non-empty, at most MaxBodyLength characters, every placeholder documented, and
-// well-formed Telegram HTML.
+// non-empty, at most MaxBodyLength characters, every placeholder documented,
+// well-formed Telegram HTML and, for a template the driver bot sends, no
+// mention of the commission (§22.2).
 func (t *Template) ValidateBody(body string) error {
 	if strings.TrimSpace(body) == "" {
 		return errors.New("body is empty")
@@ -114,7 +115,25 @@ func (t *Template) ValidateBody(body string) error {
 			return fmt.Errorf("unknown placeholder {{%s}}", n)
 		}
 	}
-	return ValidateHTML(body)
+	if err := ValidateHTML(body); err != nil {
+		return err
+	}
+	if t.AllowsBot(DriverBot) && mentionsCommission(body) {
+		return errors.New("a message to drivers must not mention the commission")
+	}
+	return nil
+}
+
+// tagRe matches one tag of a body that passed ValidateHTML.
+var tagRe = regexp.MustCompile(`<[^>]*>`)
+
+// mentionsCommission reports whether the visible text of body names the
+// commission in Kazakh, Russian or English («комиссия», «комиссиясы»,
+// «комиссионный», «commission» …), whatever the case, the tags or the
+// character references used.
+func mentionsCommission(body string) bool {
+	text := strings.ToLower(html.UnescapeString(tagRe.ReplaceAllString(body, "")))
+	return strings.Contains(text, "комисси") || strings.Contains(text, "commission")
 }
 
 // ValidateParams checks that params match the template: no undocumented keys,
@@ -208,8 +227,9 @@ type Message struct {
 
 // Render renders body (an override or the template default) in lang with
 // params. Every param value is HTML-escaped; lines referencing an empty optional
-// param are dropped. miniAppURL is the Mini App URL of the sending bot; when it
-// is empty, or the start param is not valid, the message has no button.
+// param or a retired one are dropped. miniAppURL is the Mini App URL of the
+// sending bot; when it is empty, or the start param is not valid, the message
+// has no button.
 func (t *Template) Render(lang, body string, params map[string]any, miniAppURL string) (Message, error) {
 	if !validLanguage(lang) {
 		lang = DefaultLanguage
@@ -217,6 +237,10 @@ func (t *Template) Render(lang, body string, params map[string]any, miniAppURL s
 	values := make(map[string]string, len(t.Params))
 	empty := make(map[string]bool)
 	for _, p := range t.Params {
+		if p.Retired {
+			values[p.Name], empty[p.Name] = "", true
+			continue
+		}
 		v, ok := formatValue(p, params[p.Name], lang)
 		if !ok && p.Kind == KindPlace && !p.Optional {
 			v, ok = html.EscapeString(mapPointLabel[lang]), true
@@ -693,9 +717,10 @@ func RenderFor(ctx context.Context, q db.Querier, key, lang string, params map[s
 	return t.Render(lang, body, params, miniAppURL)
 }
 
-// pickBody returns the override for (template, lang) when it is still valid for
-// the template's params, else the default; overrideInvalid reports a skipped
-// override so the caller can log it.
+// pickBody returns the override for (template, lang) when it still passes
+// ValidateBody (an override stored before a rule existed, e.g. one naming the
+// commission in a driver message, does not), else the default;
+// overrideInvalid reports a skipped override so the caller can log it.
 func pickBody(t *Template, lang string, overrides map[overrideKey]string) (body string, overrideInvalid bool) {
 	if b, ok := overrides[overrideKey{t.Key, lang}]; ok {
 		if t.ValidateBody(b) == nil {

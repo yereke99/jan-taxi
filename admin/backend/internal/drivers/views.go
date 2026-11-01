@@ -184,9 +184,9 @@ type RegistrationView struct {
 }
 
 // NewRegistrationView renders the registration for its driver.
-func NewRegistrationView(r Registration, requirePhone bool) RegistrationView {
+func NewRegistrationView(r Registration) RegistrationView {
 	corrections, comment := r.OpenCorrections()
-	missing := r.MissingFields(requirePhone)
+	missing := r.MissingFields()
 	phoneNum, _ := r.Phone()
 	v := RegistrationView{
 		Status:            r.Status(),
@@ -203,7 +203,7 @@ func NewRegistrationView(r Registration, requirePhone bool) RegistrationView {
 		Editable:          r.Editable(),
 		History:           []HistoryItem{},
 	}
-	v.CanSubmit = v.Editable && len(missing) == 0 && (r.PhoneVerified() || !requirePhone)
+	v.CanSubmit = v.Editable && len(missing) == 0
 	if p := r.Profile; p != nil {
 		id, code := p.ID, p.Code
 		v.ID, v.Code = &id, &code

@@ -22,6 +22,12 @@ package notifications
 //
 // An optional param that is missing or empty removes every body line that
 // references it, so "Reason: {{reason}}" disappears when no reason is given.
+// A retired param (Param.Retired) is accepted but never shown: its lines are
+// always removed.
+//
+// A template sent by the driver bot never mentions the commission (§22.2): a
+// body naming it («комиссия», «commission», any case) does not validate, so
+// such an override is refused when saved and the default is sent instead.
 //
 //	key                          bot        params (* = optional)                                  button → start param
 //	order_created_passenger      passenger  order_id, order_number, fare                           order_<order_id>
@@ -57,7 +63,7 @@ package notifications
 //	topup_created                driver     topup_id, reference, amount                            topup_<topup_id>
 //	topup_confirmed              driver     reference, amount, balance                             wallet
 //	topup_rejected               driver     topup_id, reference, reason*                           topup_<topup_id>
-//	wallet_low_balance           driver     available, required                                    topup
+//	wallet_low_balance           driver     available, required* (retired)                         topup
 //	driver_welcome_bonus         driver     amount, balance                                        home
 //	driver_bonus_granted         driver     amount, balance, comment*                              wallet
 //	dispute_opened               both       order_id, order_number                                 order_<order_id>
@@ -101,7 +107,8 @@ package notifications
 //	payment_method   orders.payment_method
 //	passengers / cargo_size / cargo  taxi passenger count; delivery size and description
 //	refunded      commission refunded to the driver, KZT
-//	required      commission of the next order (the balance needed to get offers), KZT
+//	required      retired: the commission of the next order, KZT; callers still pass it
+//	              but drivers never see it
 //	passenger_name / passenger_link / passenger_phone  the passenger's first name,
 //	              Telegram link (t.me or tg://user) and verified phone
 
@@ -140,6 +147,10 @@ type Param struct {
 	// Max bounds a text value in code points (maxTextParam when zero), for
 	// a param that joins several addresses.
 	Max int `json:"-"`
+	// Retired marks a param that is still accepted (callers, queued rows and
+	// stored overrides may name it) but never shown: it is not rendered (its
+	// lines are removed) nor offered in the admin editor. It must be optional.
+	Retired bool `json:"-"`
 }
 
 // Button is the inline web_app button attached to a message. StartParam may use
@@ -565,12 +576,17 @@ var registry = buildRegistry([]*Template{
 	},
 	{
 		Key: TplWalletLowBalance, Bots: driverOnly,
+		// The amount needed is the next order's commission, which drivers
+		// never see (§22.2): the available balance and the top-up button only.
+		// required stays declared so its callers, queued rows and stored
+		// overrides still validate; it is retired, so it is never rendered.
 		Params: []Param{{Name: "available", Kind: KindMoney, Description: "available balance (balance - reserved), KZT"},
-			{Name: "required", Kind: KindMoney, Description: "commission of the next order, KZT"}},
+			{Name: "required", Kind: KindMoney, Optional: true, Retired: true,
+				Description: "commission of the next order, KZT; retired: never shown to drivers"}},
 		Bodies: labels(
-			"<b>Баланс жеткіліксіз</b>\nҚолжетімді: {{available}} · Тапсырыс алу үшін керек: {{required}}\nБаланс толтырылмайынша жаңа тапсырыстар келмейді.",
-			"<b>Недостаточно средств</b>\nДоступно: {{available}} · Нужно для заказа: {{required}}\nПока баланс не пополнен, новые заказы приходить не будут.",
-			"<b>Balance too low</b>\nAvailable: {{available}} · Needed to take orders: {{required}}\nYou won't receive new orders until you top up."),
+			"<b>Баланс жеткіліксіз</b>\nҚолжетімді: {{available}}\nБаланс толтырылмайынша жаңа тапсырыстар келмейді.",
+			"<b>Недостаточно средств</b>\nДоступно: {{available}}\nПока баланс не пополнен, новые заказы приходить не будут.",
+			"<b>Balance too low</b>\nAvailable: {{available}}\nYou won't receive new orders until you top up."),
 		Button: &Button{Label: labels("Толтыру", "Пополнить", "Top up"), StartParam: "topup"},
 	},
 	{
@@ -652,6 +668,11 @@ func buildRegistry(ts []*Template) map[string]*Template {
 		}
 		if t.Edit && t.Callback != nil {
 			panic("notifications: edit template " + t.Key + " cannot carry a callback button")
+		}
+		for _, p := range t.Params {
+			if p.Retired && !p.Optional {
+				panic("notifications: retired param " + t.Key + "." + p.Name + " must be optional")
+			}
 		}
 		m[t.Key] = t
 	}

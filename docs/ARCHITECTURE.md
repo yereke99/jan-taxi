@@ -570,8 +570,9 @@ pages, no document scans, no manual approval.
   the check digit is right (an invalid patronymic is held back the same way), so a half-typed value
   never fails a save and is never overwritten by the saved answer.
 * Required at submission (`missing_fields`, in this order): `avatar`, `first_name`, `last_name`,
-  `identity` (a valid IIN; the patronymic is optional), `phone` (while
-  `driver.require_phone_verification` is on), `vehicle_class`, `vehicle_make_model`,
+  `identity` (a valid IIN; the patronymic is optional), `phone` (always: it is how passengers call
+  the driver; the setting `driver.require_phone_verification` is read-only and unused),
+  `vehicle_class`, `vehicle_make_model`,
   `vehicle_color`, `vehicle_plate`. ID scans and vehicle photos are no longer collected (§12).
 * `POST /driver/register` runs the automatic checks — everything required, the consent, the IIN,
   phone and plate not held by another live driver (`409 iin_taken` / `phone_taken` /
@@ -1099,13 +1100,18 @@ offers) where they conflict.
   ledger `commission_refund`, audited). Do not add grace-period or automatic refunds.
 - A driver whose available balance is below the commission stops receiving offers automatically
   and gets one `wallet_low_balance` notification with a top-up button.
-- **Drivers do not see the commission on order surfaces** (owner, 2026-10-31): not on the order
-  cards, the order screen, the trip screen, the trip history, the completion screen (only «Сапар
-  сәтті аяқталды»), the bot offers, the bot `/orders` list, the trip card or the completion message;
-  shortfall messages say how much the balance needs, not "commission". Accounting is unchanged: the
-  amount is snapshotted, charged at acceptance, kept in the ledger (the wallet history still lists
-  `commission_charge` entries) and shown to admins. The driver DTOs keep `commission_amount` /
-  `commission_charged` for compatibility; the apps do not render them.
+- **Drivers never see the commission** (owner, 2026-10-31 and 2026-11-01): neither the word nor an
+  amount that is the commission — not on the order cards, the order screen, the trip screen, the
+  trip history, the completion screen (only «Сапар сәтті аяқталды»), the wallet (a neutral line
+  «Тапсырыстар келуі үшін балансыңызды толтырып отырыңыз»; «orders paused» without an amount), the
+  bot offers, `/orders`, the trip card, the completion message or the low-balance message (available
+  balance and the top-up button only). A 402 at «Тапсырысты алу» says to top up, without the amount
+  needed. The wallet history keeps the amounts so the balance adds up, labelled neutrally («Тапсырыс
+  үшін есептен шығарылды», «Балансқа қайтарылды»). A template sent to the driver bot may not mention
+  the commission: such an admin override is refused when saved and ignored when sending. Accounting
+  is unchanged: the amount is snapshotted, charged at acceptance, kept in the ledger and shown to
+  admins. The driver DTOs keep `commission_amount` / `commission_charged` for compatibility; the
+  apps do not render them.
 
 ### 22.3 Only passengers cancel
 - Drivers cannot cancel (no endpoint, no UI); they contact support; admins can cancel or reassign.
@@ -1161,6 +1167,10 @@ offers) where they conflict.
   the call button; without one, the Telegram chat button takes the WhatsApp place. Call buttons in
   both apps are `tel:` links opened in a new window — Telegram for iOS ignores same-window `tel:`
   links (docs/TESTING.md §6).
+- Passenger trip screen (owner, 2026-11-01): the driver's phone (shared through Telegram at
+  registration, which always requires it) gives the call button while the order occupies the
+  driver; a driver without a phone (approved before the rule) gets a «Жазу» button with their
+  Telegram link (`OrderDriver.telegram_url`) instead, so the passenger can always reach the driver.
 
 ### 22.6 Passenger push when a driver takes the order (implement together with 22.4)
 - The moment an accept succeeds (Mini App or the bot «Тапсырысты алу»), the passenger receives a Telegram

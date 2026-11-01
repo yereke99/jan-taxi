@@ -1,10 +1,12 @@
 <!--
-  Wallet (GET /driver/wallet): the available balance, the commission each
-  order costs (charged when the order is taken, §22.2) and, when the balance
-  cannot pay it, the "orders paused — top up" state; the minimum to go online,
-  Kaspi top-ups with their statuses and the journal (including bonuses from
-  Jan Taxi). The balance changes only through the journal; realtime
-  wallet.updated / topup.* refresh it.
+  Wallet (GET /driver/wallet): the available balance and, when it cannot pay
+  for the next order (§22.2), the "orders paused — top up" state; the minimum
+  to go online, Kaspi top-ups with their statuses and the journal (including
+  bonuses from Jan Taxi). Drivers never see the commission (customer
+  request): the page names no per-order amount, and the journal names order
+  charges neutrally but keeps their amounts so the balance adds up. The
+  balance changes only through the journal; realtime wallet.updated /
+  topup.* refresh it.
 -->
 <script setup lang="ts">
 import { ChevronLeft, CirclePause } from '@lucide/vue'
@@ -42,14 +44,8 @@ const tabs = computed<SegmentedOption<Tab>[]>(() => [
 const w = computed(() => wallet.wallet)
 const openTopUps = computed(() => wallet.topups.items.filter((x) => x.status === 'created' || x.status === 'pending_verification'))
 const belowMin = computed(() => w.value !== null && w.value.available < w.value.min_online_balance)
-const funding = computed(() => orderFunding(w.value, session.extras.commission))
 /** Orders paused only matters to a driver who can work (approved). */
-const paused = computed(() => session.isApproved && funding.value.paused)
-const explainer = computed(() =>
-  funding.value.commission !== null
-    ? t('wallet.explainer_fixed', { amount: fmt.money(funding.value.commission) })
-    : t('wallet.explainer'),
-)
+const paused = computed(() => session.isApproved && orderFunding(w.value, session.extras.commission).paused)
 const canTopUp = computed(() => session.driverState !== 'rejected')
 
 const { pull, refreshing } = usePullToRefresh(
@@ -99,10 +95,7 @@ onMounted(() => {
         </div>
         <div v-if="paused" class="bal__paused" role="status">
           <CirclePause :size="20" :stroke-width="2" aria-hidden="true" />
-          <span>
-            <strong>{{ t('wallet.orders_paused') }}</strong>
-            <span class="bal__paused-sub jt-tabular">{{ t('wallet.orders_paused_text', { amount: fmt.money(funding.commission ?? 0), missing: fmt.money(funding.shortfall) }) }}</span>
-          </span>
+          <strong>{{ t('wallet.orders_paused') }}</strong>
         </div>
         <p class="bal__hint" :class="{ 'is-warn': belowMin }">{{ t('wallet.min_online', { amount: fmt.money(w.min_online_balance) }) }}</p>
       </template>
@@ -116,7 +109,7 @@ onMounted(() => {
       </template>
       <JButton v-if="canTopUp" block @click="router.push({ name: ROUTE.topup })">{{ t('wallet.top_up') }}</JButton>
     </section>
-    <p class="wallet__explainer">{{ explainer }}</p>
+    <p class="wallet__explainer">{{ t('wallet.explainer') }}</p>
 
     <JListGroup v-if="openTopUps.length > 0" :header="t('wallet.open_topups')">
       <TopUpRow v-for="x in openTopUps" :key="x.id" :topup="x" />
@@ -226,11 +219,6 @@ onMounted(() => {
 .bal__paused strong {
   display: block;
   font-weight: 600;
-}
-
-.bal__paused-sub {
-  display: block;
-  color: var(--jt-color-label);
 }
 
 .bal__hint {

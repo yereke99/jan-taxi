@@ -183,6 +183,9 @@ func TestSubmitIncompleteListsMissingFields(t *testing.T) {
 	}
 }
 
+// TestSubmitRequiresVerifiedPhone: the phone shared through Telegram is how
+// passengers call the driver, so registration always requires it, even with
+// driver.require_phone_verification switched off by an admin.
 func TestSubmitRequiresVerifiedPhone(t *testing.T) {
 	env := driverstest.New(t)
 	c := env.DriverClient()
@@ -190,17 +193,25 @@ func TestSubmitRequiresVerifiedPhone(t *testing.T) {
 	if res := c.Submit(); res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "phone_not_verified" {
 		t.Fatalf("submit without phone: %s", res)
 	}
-	// With the requirement switched off by an admin the registration goes through.
 	if _, err := env.Pool.Exec(context.Background(),
 		`UPDATE app_settings SET value = 'false' WHERE key = 'driver.require_phone_verification'`); err != nil {
 		t.Fatal(err)
 	}
-	if res := c.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" {
-		t.Fatalf("submit with requirement off: %s", res)
+	res := c.Do(http.MethodGet, pathRegistration, nil)
+	if got := strs(res.Body["missing_fields"]); res.Body["can_submit"] != false || fmt.Sprint(got) != "[phone]" {
+		t.Fatalf("registration without phone, requirement off: %s", res)
 	}
-	// Without a phone there is no welcome bonus (it is once per phone and plate).
-	if n := env.Count(`SELECT count(*) FROM welcome_bonus_grants`); n != 0 {
-		t.Fatalf("bonus without a phone")
+	if res := c.Submit(); res.Code != http.StatusUnprocessableEntity || res.ErrorCode() != "phone_not_verified" {
+		t.Fatalf("submit without phone, requirement off: %s", res)
+	}
+	if n := env.Count(`SELECT count(*) FROM driver_profiles WHERE user_id = $1 AND status = 'draft'`, c.UserID); n != 1 {
+		t.Fatal("refused submission changed the draft")
+	}
+	if err := env.VerifyPhone(c.UserID, "+77015550099"); err != nil {
+		t.Fatal(err)
+	}
+	if res := c.Submit(); res.Code != http.StatusOK || res.Body["status"] != "approved" || res.Body["phone"] != "+77015550099" {
+		t.Fatalf("submit with the phone: %s", res)
 	}
 }
 

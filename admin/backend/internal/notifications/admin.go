@@ -307,9 +307,11 @@ func deref(s *string) string {
 }
 
 func templateItem(t *Template, lang string, ov map[overrideKey]overrideRow) TemplateItem {
-	params := t.Params
-	if params == nil {
-		params = []Param{}
+	params := []Param{}
+	for _, p := range t.Params {
+		if !p.Retired {
+			params = append(params, p)
+		}
 	}
 	it := TemplateItem{
 		Key: t.Key, Language: lang, Body: t.DefaultBody(lang), DefaultBody: t.DefaultBody(lang),
@@ -455,10 +457,14 @@ func (h *Admin) deleteTemplate(w http.ResponseWriter, r *http.Request) error {
 	return httpx.OK(w, item)
 }
 
+// paramNames lists the placeholders offered to admins: retired params are
+// still accepted in a body but never shown, so they are left out.
 func paramNames(t *Template) []string {
 	out := make([]string, 0, len(t.Params))
 	for _, p := range t.Params {
-		out = append(out, p.Name)
+		if !p.Retired {
+			out = append(out, p.Name)
+		}
 	}
 	return out
 }

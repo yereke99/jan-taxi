@@ -220,11 +220,13 @@ var registry = []Def{
 		},
 	},
 	{
-		Key: "driver.require_phone_verification", Kind: KindBool, Default: true,
+		// Kept so stored values stay valid; registration ignores it (owner,
+		// 2026-11-01): the phone is how passengers call the driver.
+		Key: "driver.require_phone_verification", Kind: KindBool, Default: true, ReadOnly: true,
 		Description: Localized{
-			KK: "Жүргізуші тіркелгенде телефонды растауды талап ету",
-			RU: "Требовать подтверждение телефона при регистрации водителя",
-			EN: "Require phone verification for driver registration",
+			KK: "Қолданылмайды: жүргізуші тіркелгенде Telegram арқылы расталған телефон әрқашан міндетті (жолаушы жүргізушіге осы нөмір арқылы хабарласады)",
+			RU: "Не используется: при регистрации водителя телефон, подтверждённый через Telegram, обязателен всегда (по нему пассажир связывается с водителем)",
+			EN: "Not used: driver registration always requires the phone confirmed through Telegram (passengers reach the driver on it)",
 		},
 	},
 	{

@@ -6,12 +6,17 @@ import { createI18nInstance } from '../../i18n/core'
 import { en } from '../../i18n/messages/en'
 import { kk } from '../../i18n/messages/kk'
 import { ru } from '../../i18n/messages/ru'
+import { openTelegram } from '../../telegram'
 import { copyText } from '../../utils/clipboard'
 import JSheet from '../ui/JSheet.vue'
 import { toast } from '../ui'
 import TripDriverCard from './TripDriverCard.vue'
 
 vi.mock('../../utils/clipboard', () => ({ copyText: vi.fn(async () => true) }))
+vi.mock('../../telegram', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../telegram')>()),
+  openTelegram: vi.fn(() => true),
+}))
 
 const global = { plugins: [createI18nInstance({ kk, ru, en })] }
 
@@ -22,6 +27,7 @@ function driver(over: Partial<OrderDriver> = {}): OrderDriver {
     first_name: 'Ерлан',
     last_name: 'С.',
     phone: '+77012345678',
+    telegram_url: 'https://t.me/erlan_driver',
     rating: 4.9,
     rating_count: 12,
     completed_trips: 40,
@@ -60,10 +66,19 @@ describe('TripDriverCard call', () => {
   })
 
   it.each([null, '+7701234', '+77012345678;1'])('offers no call and no number for %j', (phone) => {
-    const w = mountCard(driver({ phone }))
+    const w = mountCard(driver({ phone, telegram_url: null }))
     expect(w.find('a[href^="tel:"]').exists()).toBe(false)
     expect(w.find('.ride-driver__phone').exists()).toBe(false)
     expect(w.findAll('.ride-action')).toHaveLength(2)
+    w.unmount()
+  })
+
+  it('keeps the call, not the Telegram chat, when the driver has a phone', () => {
+    const w = mountCard()
+    expect(w.findAll('.ride-action')).toHaveLength(3)
+    expect(w.find('a[href^="tel:"]').exists()).toBe(true)
+    expect(w.find('a[href^="https://t.me/"]').exists()).toBe(false)
+    expect(w.text()).not.toContain('Жазу')
     w.unmount()
   })
 
@@ -109,6 +124,50 @@ describe('TripDriverCard call', () => {
     await flushPromises()
     expect(copyText).toHaveBeenCalledOnce()
     expect(w.emitted('update:snap')).toBeUndefined()
+    w.unmount()
+  })
+})
+
+describe('TripDriverCard Telegram chat', () => {
+  it.each([null, '+7701234'])('offers «Жазу» in the call place when the phone is %j', (phone) => {
+    const parentClick = vi.fn()
+    const d = driver({ phone })
+    const Host = defineComponent({ setup: () => () => h('div', { onClick: parentClick }, h(TripDriverCard, { driver: d, vehicle, photoUrl: null })) })
+    const w = mount(Host, { global })
+    expect(w.find('a[href^="tel:"]').exists()).toBe(false)
+    const actions = w.findAll('.ride-action')
+    expect(actions).toHaveLength(3)
+    const link = actions[2]!
+    expect(link.attributes('href')).toBe('https://t.me/erlan_driver')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+    expect(link.attributes()).toHaveProperty('data-sheet-no-drag')
+    expect(link.find('.ride-action__circle').classes()).toContain('is-primary')
+    expect(link.text()).toBe('Жазу')
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+    link.element.dispatchEvent(click)
+    expect(openTelegram).toHaveBeenCalledExactlyOnceWith('https://t.me/erlan_driver')
+    expect(click.defaultPrevented).toBe(true)
+    expect(parentClick).not.toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it('follows a tg://user link (no username) as a plain link', () => {
+    const w = mountCard(driver({ phone: null, telegram_url: 'tg://user?id=700000001' }))
+    const link = w.find('a[href="tg://user?id=700000001"]')
+    expect(link.exists()).toBe(true)
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+    link.element.dispatchEvent(click)
+    expect(click.defaultPrevented).toBe(false)
+    expect(openTelegram).not.toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it.each(['ru', 'en'] as const)('labels the button in %s', (locale) => {
+    const i18n = createI18nInstance({ kk, ru, en })
+    i18n.global.locale.value = locale
+    const w = mount(TripDriverCard, { props: { driver: driver({ phone: null }), vehicle, photoUrl: null }, global: { plugins: [i18n] } })
+    expect(w.find('a[href^="https://t.me/"]').text()).toBe(locale === 'ru' ? 'Написать' : 'Message')
     w.unmount()
   })
 })

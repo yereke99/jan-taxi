@@ -173,8 +173,9 @@ func TestTakeAfterSomeoneElse(t *testing.T) {
 	}
 }
 
-// TestTakeInsufficientBalance: an alert with the amounts, the take button
-// goes (the map button stays) and a message offers a top-up.
+// TestTakeInsufficientBalance: an alert with the available balance only —
+// never the amount the order needs, which is its commission —, the offer
+// keeps its buttons and a message offers a top-up.
 func TestTakeInsufficientBalance(t *testing.T) {
 	e := newEnv(t)
 	e.approved(true)
@@ -185,15 +186,20 @@ func TestTakeInsufficientBalance(t *testing.T) {
 	msgs := e.tapTake(t, "take:"+orderID)
 	a := e.calls("answerCallbackQuery")
 	if len(a) != 1 || a[0].Body["show_alert"] != true ||
-		strings.ReplaceAll(a[0].Body["text"].(string), " ", " ") != "Балансыңыз жеткіліксіз: тапсырысты алу үшін кемінде 50 ₸ керек, қолжетімді 30 ₸. Балансты толтырыңыз." {
+		strings.ReplaceAll(a[0].Body["text"].(string), "\u00a0", " ") != "Қолжетімді балансыңыз (30 ₸) тапсырысты алуға жетпейді. Балансты толтырыңыз." {
 		t.Fatalf("answer: %+v", a)
 	}
 	// The driver can fix this: the offer keeps its accept button for a later tap.
 	if rm := e.calls("editMessageReplyMarkup"); len(rm) != 0 {
 		t.Fatalf("keyboard edited after a recoverable failure: %+v", rm)
 	}
-	if len(msgs) != 1 || !strings.Contains(msgText(msgs[0]), "50 ₸") || !strings.Contains(msgText(msgs[0]), "30 ₸") {
+	if len(msgs) != 1 || !strings.Contains(msgText(msgs[0]), "Қазір: 30 ₸") {
 		t.Fatalf("top-up message: %v", msgs)
+	}
+	for _, text := range []string{a[0].Body["text"].(string), msgText(msgs[0])} {
+		if text = strings.ReplaceAll(text, "\u00a0", " "); strings.Contains(text, "50 ₸") || strings.Contains(strings.ToLower(text), "комисси") {
+			t.Fatalf("the amount the order needs is shown: %q", text)
+		}
 	}
 	if b := bottest.InlineButtons(msgs[0]); len(b) != 1 || bottest.WebAppURL(b[0]) != appURL+"?startapp=topup" {
 		t.Fatalf("top-up button: %v", b)

@@ -14,7 +14,6 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
-	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
 )
 
@@ -130,9 +129,8 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
-	requirePhone := settings.RequirePhoneVerification(ctx, h.pool)
 	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		return Submit(ctx, tx, d.ID, p.UserID, req.PDConsent, req.PDConsentVersion, requirePhone)
+		return Submit(ctx, tx, d.ID, p.UserID, req.PDConsent, req.PDConsentVersion)
 	})
 	if err != nil {
 		return err
@@ -151,8 +149,9 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) error {
 //   - everything required is there: profile photo, names, a valid IIN,
 //     vehicle class, make and model, colour and plate (422
 //     registration_incomplete with details.missing_fields), and a
-//     Telegram-verified phone while driver.require_phone_verification is on
-//     (422 phone_not_verified when it is the only gap);
+//     Telegram-verified phone, always: it is how passengers call the driver,
+//     whatever driver.require_phone_verification says (422
+//     phone_not_verified when it is the only gap);
 //   - the personal-data consent (422 validation_failed, fields.pd_consent*);
 //   - the IIN, the phone and the plate are not held by another live driver
 //     (409 iin_taken, phone_taken, plate_taken). The partial unique indexes
@@ -165,7 +164,7 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) error {
 // plate, the approval event, audit rows, the moderation_approved message and
 // the realtime events. Any failure rolls everything back and the registration
 // stays editable.
-func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent *bool, consentVersion *string, requirePhone bool) error {
+func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent *bool, consentVersion *string) error {
 	prof, err := drivers.LockProfile(ctx, tx, driverID)
 	if err != nil {
 		return err
@@ -186,7 +185,7 @@ func Submit(ctx context.Context, tx pgx.Tx, driverID, userID uuid.UUID, consent 
 	if err != nil {
 		return err
 	}
-	missing := reg.MissingFields(requirePhone)
+	missing := reg.MissingFields()
 	if len(missing) == 1 && missing[0] == drivers.FieldPhone {
 		return errPhoneNotVerified
 	}

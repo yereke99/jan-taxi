@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -70,15 +71,21 @@ func TestRegistrationRules(t *testing.T) {
 	if empty.Status() != StatusDraft || !empty.Editable() {
 		t.Fatal("registration without a profile is an editable draft")
 	}
-	if got := empty.MissingFields(false); fmt.Sprint(got) != "[avatar first_name last_name identity vehicle_class vehicle_make_model vehicle_color vehicle_plate]" {
-		t.Fatalf("missing without phone requirement = %v", got)
+	// The Telegram-verified phone is always required: passengers call on it.
+	if got := empty.MissingFields(); fmt.Sprint(got) != "[avatar first_name last_name identity phone vehicle_class vehicle_make_model vehicle_color vehicle_plate]" {
+		t.Fatalf("missing = %v", got)
 	}
-	if got := empty.MissingFields(true); fmt.Sprint(got) != "[avatar first_name last_name identity phone vehicle_class vehicle_make_model vehicle_color vehicle_plate]" {
-		t.Fatalf("missing with phone requirement = %v", got)
+	unverified := Registration{User: UserInfo{PhoneE164: &phone}}
+	if got := unverified.MissingFields(); got[4] != FieldPhone {
+		t.Fatalf("phone without verification not missing: %v", got)
+	}
+	verified := Registration{User: UserInfo{PhoneE164: &phone, PhoneVerifiedAt: &now}}
+	if got := verified.MissingFields(); len(got) != 8 || slices.Contains(got, FieldPhone) {
+		t.Fatalf("verified phone still missing: %v", got)
 	}
 	// Only a valid IIN counts.
 	bad := "900101300018"
-	if got := (Registration{Profile: &Profile{Status: StatusDraft, IIN: &bad}}).MissingFields(false); got[3] != FieldIdentity {
+	if got := (Registration{Profile: &Profile{Status: StatusDraft, IIN: &bad}}).MissingFields(); got[3] != FieldIdentity {
 		t.Fatalf("IIN with a wrong check digit not missing: %v", got)
 	}
 	// Corrections of an application from before the IIN: the flagged fields

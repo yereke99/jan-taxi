@@ -136,12 +136,12 @@ func (b *Bot) takeFailed(ctx context.Context, s *session, q *telegram.CallbackQu
 	case e.Status == 404 && e.Code == "not_found":
 		text, terminal = s.t("take_unavailable"), true
 	case e.Code == "insufficient_balance":
-		required, _ := e.DetailInt64("required")
+		// Only the available balance: the amount the order needs is its
+		// commission, which drivers never see.
 		available, _ := e.DetailInt64("available")
-		money := func(n int64) string { return runtime.Esc(runtime.FormatMoney(n)) }
-		text = s.t("take_balance", runtime.FormatMoney(required), runtime.FormatMoney(available))
+		text = s.t("take_balance", runtime.FormatMoney(available))
 		followUp = func() error {
-			return b.send(ctx, s, s.t("take_balance_msg", money(required), money(available)),
+			return b.send(ctx, s, s.t("take_balance_msg", runtime.Esc(runtime.FormatMoney(available))),
 				runtime.Inline(b.appButton(ctx, s, "btn_topup", "topup")))
 		}
 	case e.Code == "driver_offline":

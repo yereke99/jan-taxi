@@ -19,7 +19,6 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/iin"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/plate"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
-	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicleclasses"
 	"github.com/yereke99/jantaxi/admin/backend/internal/vehicles"
 	"github.com/yereke99/jantaxi/admin/backend/internal/wallets"
@@ -31,7 +30,7 @@ func RegistrationResponse(ctx context.Context, q db.Querier, userID uuid.UUID) (
 	if err != nil {
 		return RegistrationView{}, err
 	}
-	return NewRegistrationView(reg, settings.RequirePhoneVerification(ctx, q)), nil
+	return NewRegistrationView(reg), nil
 }
 
 func (h *Handler) getRegistration(w http.ResponseWriter, r *http.Request) error {

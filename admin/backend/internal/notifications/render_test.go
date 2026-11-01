@@ -80,8 +80,8 @@ func TestRegistryCoversArchitecture(t *testing.T) {
 			used[tpl.Photo] = true
 		}
 		for _, p := range tpl.Params {
-			if !used[p.Name] {
-				t.Errorf("%s: param %s is documented but never used", k, p.Name)
+			if used[p.Name] == p.Retired {
+				t.Errorf("%s: param %s: used = %v, retired = %v (a param is used unless it is retired)", k, p.Name, used[p.Name], p.Retired)
 			}
 			if p.Description == "" {
 				t.Errorf("%s: param %s has no description", k, p.Name)
@@ -104,6 +104,68 @@ func TestKazakhBodiesHaveNoRussianOnlyLetters(t *testing.T) {
 				t.Errorf("%s: Kazakh text contains Russian-only letters: %q", k, s)
 			}
 		}
+	}
+}
+
+// TestDriverMessagesNeverMentionCommission: no body the driver bot sends may
+// name the commission (§22.2), in any language, case or markup, so an admin
+// override cannot bring it back; passenger messages are not concerned.
+func TestDriverMessagesNeverMentionCommission(t *testing.T) {
+	bodies := []string{
+		"Комиссия: 50 ₸", "КОМИССИЯСЫ ұсталды", "Тапсырыс комиссиясын төлеңіз", "Комиссионный сбор", "Commission: 50 ₸",
+		"COMMISSIONS", "<b>Ком</b>иссия", "&#1082;омиссия", "<i>com</i>mission",
+	}
+	for _, k := range Keys() {
+		tpl, _ := Lookup(k)
+		if !tpl.AllowsBot(DriverBot) {
+			continue
+		}
+		for _, body := range bodies {
+			if err := tpl.ValidateBody(body); err == nil || !strings.Contains(err.Error(), "commission") {
+				t.Errorf("%s accepts %q: %v", k, body, err)
+			}
+		}
+	}
+	passenger, _ := Lookup(TplOrderCreatedPassenger)
+	if err := passenger.ValidateBody("Комиссиясыз баға: {{fare}}"); err != nil {
+		t.Errorf("passenger message: %v", err)
+	}
+}
+
+// TestLowBalanceMessageHidesTheCommission: the low-balance message shows the
+// available balance only. Its retired required param (the next commission)
+// is still accepted from callers and in stored overrides, but never rendered:
+// a line naming it is left out.
+func TestLowBalanceMessageHidesTheCommission(t *testing.T) {
+	tpl, _ := Lookup(TplWalletLowBalance)
+	params := map[string]any{"available": 20, "required": 50}
+	if err := tpl.ValidateParams(params); err != nil {
+		t.Fatalf("callers pass required: %v", err)
+	}
+	if err := tpl.ValidateParams(map[string]any{"available": 20}); err != nil {
+		t.Fatalf("required is optional: %v", err)
+	}
+	override := "<b>Баланс аз</b>\nҚолжетімді: {{available}}\nКерек: {{required}}"
+	if err := tpl.ValidateBody(override); err != nil {
+		t.Fatalf("a stored override naming {{required}} stays valid: %v", err)
+	}
+	want := map[string]string{
+		LangKK: "<b>Баланс жеткіліксіз</b>\nҚолжетімді: 20" + nbsp + "₸\nБаланс толтырылмайынша жаңа тапсырыстар келмейді.",
+		LangRU: "<b>Недостаточно средств</b>\nДоступно: 20" + nbsp + "₸\nПока баланс не пополнен, новые заказы приходить не будут.",
+		LangEN: "<b>Balance too low</b>\nAvailable: 20" + nbsp + "₸\nYou won't receive new orders until you top up.",
+	}
+	for lang, text := range want {
+		msg, err := tpl.Render(lang, tpl.DefaultBody(lang), params, "https://example.kz/driver/")
+		if err != nil || msg.Text != text {
+			t.Errorf("%s: %q %v", lang, msg.Text, err)
+		}
+		if msg.Markup == nil || !strings.HasSuffix(msg.Markup.InlineKeyboard[0][0].WebApp.URL, "startapp=topup") {
+			t.Errorf("%s: top-up button %+v", lang, msg.Markup)
+		}
+	}
+	msg, err := tpl.Render(LangKK, override, params, "")
+	if err != nil || msg.Text != "<b>Баланс аз</b>\nҚолжетімді: 20"+nbsp+"₸" {
+		t.Fatalf("override naming {{required}}: %q %v", msg.Text, err)
 	}
 }
 

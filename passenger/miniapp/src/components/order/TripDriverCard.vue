@@ -5,14 +5,16 @@
   (initials when there is no photo). Below it the three round actions:
   safety, share trip details and call (the only filled one). The call is a
   tel: link opened in a new window, the form every Telegram client hands to
-  the phone app (see callPhone); the phone controls never start a sheet drag.
+  the phone app (see callPhone). A driver without a phone gets «Жазу» in the
+  call's place: their Telegram chat (§22.5). The contact controls never start
+  a sheet drag.
 -->
 <script setup lang="ts">
-import { Copy, Phone, Share2, ShieldCheck, Star } from '@lucide/vue'
+import { Copy, MessageCircle, Phone, Share2, ShieldCheck, Star } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { OrderDriver, Vehicle } from '../../api/types'
-import { haptics } from '../../telegram'
+import { haptics, openTelegram } from '../../telegram'
 import { copyText } from '../../utils/clipboard'
 import { formatKzPhone, normalizeContactPhone } from '../../utils/phone'
 import { toast } from '../ui'
@@ -46,10 +48,22 @@ const car = computed(() => {
 })
 /** The phone the API shares while the order is active, when it is a complete number. */
 const phone = computed(() => (props.driver.phone ? normalizeContactPhone(props.driver.phone) : null))
+/** Without a phone the passenger writes to the driver in Telegram instead. */
+const chatUrl = computed(() => (phone.value ? null : props.driver.telegram_url))
 
 /** The tel: link starts the call itself (never prevented); this is only the tap feedback. */
 function onCall(): void {
   haptics.impact('light')
+}
+
+/**
+ * A t.me link opens the chat inside Telegram; a tg://user?id= link (a driver
+ * without a username) is followed as a plain link.
+ */
+function onMessage(e: MouseEvent): void {
+  haptics.impact('light')
+  const url = chatUrl.value
+  if (url?.startsWith('https://') && openTelegram(url)) e.preventDefault()
 }
 
 async function copyPhone(): Promise<void> {
@@ -111,6 +125,10 @@ async function copyPhone(): Promise<void> {
     <a v-if="phone" class="ride-action" :href="`tel:${phone}`" target="_blank" rel="noopener noreferrer" data-sheet-no-drag @click.stop="onCall">
       <span class="ride-action__circle is-primary"><Phone :size="24" :stroke-width="2" aria-hidden="true" /></span>
       <span class="ride-action__label">{{ t('order.call_driver') }}</span>
+    </a>
+    <a v-else-if="chatUrl" class="ride-action" :href="chatUrl" target="_blank" rel="noopener noreferrer" data-sheet-no-drag @click.stop="onMessage">
+      <span class="ride-action__circle is-primary"><MessageCircle :size="24" :stroke-width="2" aria-hidden="true" /></span>
+      <span class="ride-action__label">{{ t('order.message_driver') }}</span>
     </a>
   </nav>
 </template>

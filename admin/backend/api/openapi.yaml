@@ -1162,11 +1162,11 @@ paths:
         the body when consent is already recorded, and `pd_consent: false` is always refused);
         the profile photo, first and last name, a valid IIN, vehicle class, make and model,
         colour and plate (`422 registration_incomplete` with `details.missing_fields`, in form
-        order) and a Telegram-verified phone while the setting
-        `driver.require_phone_verification` is on (`422 phone_not_verified` when the phone is the
-        only missing item); an IIN, phone and plate not held by another live driver
-        (`409 iin_taken`, `409 phone_taken`, `409 plate_taken`). ID scans and vehicle photos are
-        not required. Any other status → `409 invalid_transition` with
+        order) and a Telegram-verified phone, always: it is how passengers call the driver,
+        whatever the setting `driver.require_phone_verification` says (`422 phone_not_verified`
+        when the phone is the only missing item); an IIN, phone and plate not held by another
+        live driver (`409 iin_taken`, `409 phone_taken`, `409 plate_taken`). ID scans and vehicle
+        photos are not required. Any other status → `409 invalid_transition` with
         `details {from, action: submit}`. The body is optional.
       x-jantaxi-app: [driver]
       security: [{appToken: []}]
@@ -4152,8 +4152,11 @@ paths:
         parameter value is HTML-escaped when rendered. The body is trimmed (CRLF → LF);
         `fields.body` = `required | too_long` (more than `max_body_length` = 3500 characters)
         `| invalid` with `details {reason, allowed_placeholders}` (unknown or malformed
-        placeholder, unsupported or unclosed tag). An unknown key or language is `404`.
-        Audit-logged.
+        placeholder, unsupported or unclosed tag, or, in a template the driver bot sends, any
+        mention of the commission: «комиссия», «комиссиясы», «commission» … in any case, §22.2).
+        A stored override that no longer validates (e.g. one naming the commission saved before
+        that rule) is not sent: recipients get the default text. An unknown key or language is
+        `404`. Audit-logged.
       x-jantaxi-permission: config.manage
       security: [{adminSession: [], csrfHeader: []}]
       requestBody:
@@ -7005,7 +7008,7 @@ components:
           description: What is still needed before `POST /driver/register` succeeds.
           items: {$ref: '#/components/schemas/RegistrationField'}
         editable: {type: boolean, description: True while `draft` (including before the first save) or `changes_requested`.}
-        can_submit: {type: boolean, description: 'Editable, nothing missing and (when required) the phone verified.'}
+        can_submit: {type: boolean, description: 'Editable and nothing missing (the Telegram-verified phone included).'}
         submitted_at: {type: [string, 'null'], format: date-time}
         history:
           type: array
@@ -7599,7 +7602,7 @@ components:
         default_body: {type: string}
         placeholders:
           type: array
-          description: Names of the template's parameters.
+          description: Names of the template's parameters (retired ones, never rendered, are left out, as in `params`).
           items: {type: string}
           example: [order_number, driver_name, vehicle]
         updated_at: {type: [string, 'null'], format: date-time}
@@ -7896,7 +7899,7 @@ components:
     OrderDriver:
       type: object
       description: Assigned driver as shown to the passenger.
-      required: [id, code, first_name, last_name, phone, rating, rating_count, completed_trips, photo_url]
+      required: [id, code, first_name, last_name, phone, telegram_url, rating, rating_count, completed_trips, photo_url]
       properties:
         id: {type: string, format: uuid}
         code: {type: string, example: EMB001}
@@ -7906,6 +7909,14 @@ components:
           type: [string, 'null']
           description: Full E.164 phone while the order is `accepted`, `driver_arriving` or `in_progress` (so the passenger can call); `null` otherwise.
           example: '+77071234567'
+        telegram_url:
+          type: [string, 'null']
+          description: |
+            The driver's Telegram chat while the order is `accepted`, `driver_arriving` or
+            `in_progress`, `null` otherwise: `https://t.me/<username>`, or `tg://user?id=<telegram_user_id>`
+            (a mention link) when the driver has no username. The passenger app offers it as «Жазу»
+            when the driver has no phone (§22.5).
+          example: https://t.me/erlan_driver
         rating: {type: [number, 'null'], minimum: 1, maximum: 5, description: Average rating (one decimal); `null` before the first rating., example: 4.9}
         rating_count: {type: integer, minimum: 0, example: 37}
         completed_trips: {type: integer, minimum: 0, example: 112}
@@ -8754,7 +8765,8 @@ components:
       description: |
         Registered keys: `support.telegram_username`, `support.phone`, `support.hours`,
         `routing.max_points`, `commission.default_bps`, `driver.min_online_balance`,
-        `driver.require_phone_verification`, `driver.online_idle_hours`, `topup.min_amount`,
+        `driver.require_phone_verification` (kept but not used: registration always requires the
+        Telegram-verified phone), `driver.online_idle_hours`, `topup.min_amount`,
         `topup.max_amount`, `topup.expiry_hours`, `topup.presets`, `delivery.prohibited_items`,
         `delivery.blocked_keywords`, `kaspi.payment_url`, `kaspi.recipient_name`,
         `kaspi.instructions`, `navigation.twogis_base_url`, `dispatch.*`, `topup.auto_*`,

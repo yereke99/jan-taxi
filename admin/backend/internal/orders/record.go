@@ -86,6 +86,10 @@ type driverRow struct {
 	RatingCount    int
 	CompletedTrips int
 	AvatarFileID   *uuid.UUID
+	// TelegramID and Username are the driver's Telegram account, for the
+	// passenger's link to their chat.
+	TelegramID int64
+	Username   *string
 }
 
 // CityRef is a short city reference (openapi CityRef).
@@ -126,7 +130,7 @@ const recordColumns = `
 	pu.telegram_user_id, pu.first_name, pu.last_name, pu.username, pu.phone_e164, pu.phone_verified_at IS NOT NULL,
 	pu.is_blocked,
 	d.id, d.user_id, d.code, d.first_name, d.last_name, COALESCE(d.phone_e164, du.phone_e164),
-	d.rating_sum, d.rating_count, d.completed_trips, d.avatar_file_id,
+	d.rating_sum, d.rating_count, d.completed_trips, d.avatar_file_id, du.telegram_user_id, du.username,
 	v.make, v.model, v.color, v.plate_normalized, v.plate_raw,
 	v.class_code, vvc.name_kk, vvc.name_ru, vvc.name_en, v.seats, v.cargo_volume_l,
 	` + loadColumns + `, ` + placeColumns
@@ -149,6 +153,8 @@ func scanRecord(row scanner) (record, error) {
 		dCode, dFirst, dLast, dPhone       *string
 		dRatingSum, dRatingCnt, dTrips     *int
 		dAvatar                            *uuid.UUID
+		dTelegramID                        *int64
+		dUsername                          *string
 		vMake, vModel, vColor, vNorm, vRaw *string
 		vClass, vKK, vRU, vEN              *string
 		vSeats, vCargo                     *int
@@ -163,7 +169,7 @@ func scanRecord(row scanner) (record, error) {
 		&r.City.Code, &r.City.Name.KK, &r.City.Name.RU, &r.City.Name.EN,
 		&r.Passenger.TelegramID, &r.Passenger.FirstName, &r.Passenger.LastName, &r.Passenger.Username,
 		&r.Passenger.Phone, &r.Passenger.PhoneVerified, &r.Passenger.IsBlocked,
-		&dID, &dUser, &dCode, &dFirst, &dLast, &dPhone, &dRatingSum, &dRatingCnt, &dTrips, &dAvatar,
+		&dID, &dUser, &dCode, &dFirst, &dLast, &dPhone, &dRatingSum, &dRatingCnt, &dTrips, &dAvatar, &dTelegramID, &dUsername,
 		&vMake, &vModel, &vColor, &vNorm, &vRaw, &vClass, &vKK, &vRU, &vEN, &vSeats, &vCargo}
 	dest = append(dest, loadDest(&r.Load)...)
 	err := row.Scan(append(dest, placeDest(&r.Place)...)...)
@@ -176,7 +182,7 @@ func scanRecord(row scanner) (record, error) {
 	if dID != nil {
 		r.Driver = &driverRow{ID: *dID, UserID: deref(dUser), Code: str(dCode), FirstName: str(dFirst),
 			LastName: str(dLast), Phone: dPhone, RatingSum: num(dRatingSum), RatingCount: num(dRatingCnt),
-			CompletedTrips: num(dTrips), AvatarFileID: dAvatar}
+			CompletedTrips: num(dTrips), AvatarFileID: dAvatar, TelegramID: deref(dTelegramID), Username: dUsername}
 	}
 	if r.VehicleID != nil {
 		r.Vehicle = &Vehicle{Make: str(vMake), Model: str(vModel), Color: str(vColor), Plate: lifecycle.PlateDisplay(vNorm, vRaw),

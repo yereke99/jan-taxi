@@ -155,6 +155,35 @@ func TestWorkerUsesAdminOverride(t *testing.T) {
 	}
 }
 
+// TestWorkerIgnoresOverrideNamingCommission: an override stored before the
+// rule that names the commission in a driver message is not sent; the driver
+// gets the default text, and so does the admin preview.
+func TestWorkerIgnoresOverrideNamingCommission(t *testing.T) {
+	pool := testutil.NewDB(t)
+	ctx := context.Background()
+	user, tg := newUser(t, pool, LangRU)
+	if _, err := pool.Exec(ctx, `INSERT INTO notification_templates (key, language, body) VALUES ($1, 'ru', $2)`,
+		TplOrderCompletedDriver, "<b>Заказ №{{order_number}}</b>\nКомиссия списана. Баланс: {{balance}}"); err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{"order_number": 1042, "fare": 1500, "balance": 950}
+	if err := Enqueue(ctx, pool, Notification{Bot: DriverBot, UserID: user, Template: TplOrderCompletedDriver,
+		DedupeKey: "done:1042", Params: params}); err != nil {
+		t.Fatal(err)
+	}
+	fs := newFakeSender()
+	if _, err := testWorker(pool, fs, "w").RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := "<b>Заказ №1042 завершён</b>\nСтоимость: 1" + nbsp + "500" + nbsp + "₸\nБаланс: 950" + nbsp + "₸"
+	if got := fs.sentTo(tg); len(got) != 1 || got[0].text != want || got[0].bot != DriverBot {
+		t.Fatalf("sent = %+v", got)
+	}
+	if msg, err := RenderFor(ctx, pool, TplOrderCompletedDriver, LangRU, params, ""); err != nil || msg.Text != want {
+		t.Fatalf("preview = %q %v", msg.Text, err)
+	}
+}
+
 func TestWorker429RetryAfter(t *testing.T) {
 	pool := testutil.NewDB(t)
 	ctx := context.Background()

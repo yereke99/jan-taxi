@@ -129,6 +129,16 @@ describe('parseOrder / parseOrderSummary', () => {
     expect(sum.destination.address_typed).toBe(false)
   })
 
+  it("keeps only a Telegram chat link for the driver's telegram_url", () => {
+    const driver = { id: 'd1', code: 'EMB001', first_name: 'Ерлан', last_name: 'С.', phone: null, rating: 4.9 }
+    const url = (telegram_url: unknown) => parseOrder({ ...order, status: 'accepted', driver: { ...driver, telegram_url } }).driver?.telegram_url
+    expect(url('https://t.me/erlan_driver')).toBe('https://t.me/erlan_driver')
+    expect(url('tg://user?id=700000001')).toBe('tg://user?id=700000001')
+    for (const bad of ['javascript:alert(1)', 'https://evil.example/erlan', 'https://t.me/erlan_driver?start=x', 'tg://resolve?domain=x', 'tg://user?id=0', 42, null, undefined]) {
+      expect(url(bad)).toBeNull()
+    }
+  })
+
   it('maps the load of a list row', () => {
     const s = parseOrderSummary({ id: 's1', status: 'completed', category: 'taxi', vehicle_class: 'minivan', passenger_count: 6, cargo_size: null, cargo_volume_l: 0 })
     expect(s).toMatchObject({ vehicle_class: 'minivan', passenger_count: 6, cargo_size: null, cargo_volume_l: 0 })
