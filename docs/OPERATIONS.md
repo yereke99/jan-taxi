@@ -17,7 +17,7 @@ make ps          # containers with their Docker health status
 | API readiness | `GET /readyz` on :8080 | database reachable, schema at the embedded migration version, realtime listener connected, not shutting down; returns 503 otherwise |
 | Bots | `GET :8090/healthz` in each bot container (`<bot> healthcheck`) | the instance holding the Telegram lease is not stalled and polled successfully within 90 s (waiting out Telegram's `retry_after` does not count); a standby is healthy while its lease checks succeed. A bot unhealthy for 5 minutes exits and Docker restarts it |
 | Caddy | admin endpoint `127.0.0.1:2019` inside the container | Caddy is running |
-| PostgreSQL | `pg_isready` | accepting connections |
+| PostgreSQL | `pg_isready` over TCP | accepting connections (the first-start setup listens on the Unix socket only and does not count) |
 | OSRM | TCP port 5000 inside the container | router loaded |
 | Photon (optional) | `GET :2322/status` inside the container | index loaded |
 
@@ -126,6 +126,40 @@ copy and delete the staging directory. Record the date and the result.
 docker compose exec db psql -U jantaxi -d postgres -c "DROP DATABASE jantaxi_restore_<timestamp>;"
 rm -rf backups/restore/files-<timestamp>
 ```
+
+## Full data reset
+
+Starts again with an empty database.
+
+- **Deleted:** every user, driver, order, wallet, receipt and uploaded photo.
+  Settings changed in the admin panel (tariffs, villages, texts, Kaspi details)
+  go back to their defaults.
+- **Kept:** `.env`, the TLS certificates (`caddy_data`), the routing and
+  geocoding data (`osrm-data`, `photon-data`) and `./backups`.
+
+```sh
+make backup                                       # last copy of the old data
+make down                                         # also removes containers of retired services
+docker volume rm jantaxi_pgdata jantaxi_files     # database and uploaded files
+make up && make health                            # migrations from an empty database
+make admin-create EMAIL=... ROLE=super_admin NAME="..."
+```
+
+- The volume names start with `COMPOSE_PROJECT_NAME` (`jantaxi` by default);
+  `docker volume ls` lists them.
+- If `docker volume rm` answers "volume is in use", find the container that
+  still mounts the volume with `docker ps -a --filter volume=jantaxi_files`,
+  remove it with `docker rm -f <name>`, and repeat the step.
+- Never add `-v` to `down` and never run `docker volume prune`: both would
+  also delete the certificates and the routing data.
+- The backup taken first is pruned after `BACKUP_RETENTION_DAYS`, like any
+  other backup. Copy it elsewhere to keep it longer.
+- After the reset:
+  - Drivers register again and receive the welcome bonus again.
+  - Open Mini Apps sign in again by themselves.
+  - Kaspi details fall back to `KASPI_PAY_*` in `.env`.
+  - If `ADMIN_BOOTSTRAP_EMAIL` is still set, the API creates that administrator
+    at start; skip `make admin-create`.
 
 ## Notifications (Telegram outbox)
 

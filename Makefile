@@ -65,9 +65,9 @@ up: ## Check .env (deploy/preflight.sh), build missing images and start the stac
 	@if [ "$(SKIP_PREFLIGHT)" != 1 ]; then sh deploy/preflight.sh "$(ENV_FILE)"; fi
 	$(COMPOSE) up -d --remove-orphans
 
-down: ## Stop and remove containers (volumes and backups are kept)
+down: ## Stop and remove containers, also those of retired services (volumes and backups are kept)
 	$(require_env_file)
-	$(COMPOSE) down
+	$(COMPOSE) down --remove-orphans
 
 restart: ## Restart all services, or one: make restart SERVICE=api
 	$(require_env_file)
@@ -218,7 +218,7 @@ test-db-up: ## Start the local PostGIS container on localhost:55432 (tests and d
 			$(TEST_DB_IMAGE) >/dev/null; \
 	fi
 	@for i in $$(seq 1 60); do \
-		if docker exec $(TEST_DB_CONTAINER) pg_isready -q -U jantaxi -d jantaxi; then echo "PostGIS ready on localhost:$(TEST_DB_PORT)"; exit 0; fi; \
+		if docker exec $(TEST_DB_CONTAINER) pg_isready -q -h 127.0.0.1 -U jantaxi -d jantaxi; then echo "PostGIS ready on localhost:$(TEST_DB_PORT)"; exit 0; fi; \
 		sleep 1; \
 	done; echo "PostGIS did not become ready"; exit 1
 

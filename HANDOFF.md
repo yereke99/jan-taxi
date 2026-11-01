@@ -29,7 +29,14 @@ ARCHITECTURE §5 and §22.9, findings and checks in [docs/DRIVER_SYSTEM_AUDIT.md
   the order view shows the village; `orders.csv` gains `via_addresses`, `passenger_written_stops`
   and `commission_area`, and its formula guard also covers `;`-separated cells.
 - Deploy as before: `make build` and `make up` (the migrate service applies 00014 and 00015; no
-  `.env` change).
+  `.env` change). In one line: `make backup && git pull --ff-only origin main && make build &&
+  make up && make health` (DEPLOYMENT §6).
+- Operations:
+  - `make down` now also removes containers of retired services. The old `ocr-worker` kept
+    the photo volume in use during a data reset.
+  - The database health check now runs over TCP. On an empty database the first-start setup
+    answered on the Unix socket, so migrate started too early and failed with "connection refused".
+  - The full data reset is documented in OPERATIONS «Full data reset».
 
 ### 2026-10-31
 
@@ -165,6 +172,13 @@ changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
   tests passing; `verify-shared` → shared core identical (87 files).
 - Upgrade (2026-11-01): the previous release `5070b9c` with orders, updated through `make preflight`, `make config`,
   `make build`, `make up`, `make health` → migrations 13 → 15, API ready, both bots healthy and answering `/start`.
+- Reset (2026-11-01), on a stack with a running `ocr-worker` left over:
+  - `make backup`, `make down`, removing the `pgdata` and `files` volumes, `make up` and
+    `make health` → empty database at schema 15, photo volume owned by the API user, Caddy
+    volumes kept.
+  - Even with the first-start setup slowed to 25 s, migrate waited for TCP; with the old
+    socket check it failed.
+  - Updating a running stack to the new check kept its data.
 - Migrations apply cleanly on PostGIS 3.5 / PostgreSQL 17.
 
 ## 3. In progress when this file was written

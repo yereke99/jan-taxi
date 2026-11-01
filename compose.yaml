@@ -135,7 +135,11 @@ services:
     shm_size: 256m
     stop_grace_period: 60s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      # Over TCP, as every client connects: on the first start the image runs
+      # its setup on a temporary server that listens on the Unix socket only,
+      # and a socket check would pass then and let migrate fail with
+      # "connection refused".
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 10

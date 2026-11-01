@@ -199,6 +199,13 @@ make up                                           # runs migrate, then recreates
 make health
 ```
 
+With the default `latest` image tag, the whole update is one line in the
+repository directory. It stops at the first step that fails:
+
+```sh
+make backup && git pull --ff-only origin main && make build && make up && make health
+```
+
 - Database migrations only move forward (`api migrate up`). They run in the
   `migrate` service before the new API starts and are applied under a database
   advisory lock.
@@ -236,7 +243,7 @@ explicitly disabled.
 
 The driver document OCR worker was retired on 31 October 2026 (registration asks
 for an IIN instead of ID scans and approves automatically, ARCHITECTURE §11.1).
-The update needs no change to `.env`: `make up` removes an old `ocr-worker`
+The update needs no change to `.env`: `make up` and `make down` remove an old `ocr-worker`
 container (`--remove-orphans`), and a leftover `ocr` in `COMPOSE_PROFILES` or
 `VERIFICATION_*` / `OCR_*` lines are ignored (delete them whenever convenient).
 Stored ID scans stay in the private volume and remain viewable in the admin panel.
