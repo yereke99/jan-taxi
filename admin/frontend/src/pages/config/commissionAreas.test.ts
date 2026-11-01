@@ -61,6 +61,8 @@ async function click(w: VueWrapper, text: string): Promise<void> {
 
 beforeEach(() => {
   i18n.global.locale.value = 'ru'
+  // Nothing matches in the database unless a test says otherwise.
+  vi.spyOn(commissionAreasApi, 'check').mockResolvedValue({ name_taken: null, covering: [], overlapping: [], nearest: null })
 })
 
 afterEach(() => {
@@ -209,6 +211,42 @@ describe('CommissionAreasPage', () => {
     map(w).vm.$emit('update:center', { lat: 48.83, lon: 58.15 })
     await flushPromises()
     expect(suggest).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws a village search does not know: map point, ready radius, database check, opening the existing one', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const w = await mountPage([area()])
+    vi.spyOn(commissionAreasApi, 'suggest').mockRejectedValue(new ApiError(503, 'internal', 'down'))
+    const check = vi.spyOn(commissionAreasApi, 'check').mockResolvedValue({
+      name_taken: { id: 'a1', name: 'Шұбарқұдық', commission_bps: 700, is_active: true, distance_m: null },
+      covering: [{ id: 'a1', name: 'Шұбарқұдық', commission_bps: 700, is_active: true, distance_m: 900 }],
+      overlapping: [],
+      nearest: { id: 'a1', name: 'Шұбарқұдық', commission_bps: 700, is_active: true, distance_m: 900 },
+    })
+
+    await click(w, 'Новое село')
+    map(w).vm.$emit('update:center', { lat: 49.15, lon: 56.49 })
+    await flushPromises()
+    await click(w, `5${NBSP}км`)
+    expect(map(w).props('radius')).toBe(5000)
+    await w.findAll('input.input')[0]!.setValue('шұбарқұдық')
+    await vi.advanceTimersByTimeAsync(400)
+    await flushPromises()
+    expect(check).toHaveBeenLastCalledWith(
+      { name: 'шұбарқұдық', center: { lat: 49.15, lon: 56.49 }, shape: 'circle', radius_m: 5000 },
+      expect.any(AbortSignal),
+    )
+    expect(w.text()).toContain('Село «Шұбарқұдық» уже есть в базе')
+    expect(w.text()).toContain(`Точка уже внутри села «Шұбарқұдық»`)
+
+    // «Открыть» asks before dropping the drawn village, then opens the saved one.
+    await click(w, 'Открыть')
+    expect(activeConfirm.value?.title).toBeTruthy()
+    activeConfirm.value!.resolve(true)
+    await flushPromises()
+    expect((w.findAll('input.input')[0]!.element as HTMLInputElement).value).toBe('Шұбарқұдық')
+    expect(map(w).props('center')).toEqual({ lat: 49.1436, lon: 56.4867 })
+    vi.useRealTimers()
   })
 
   it('shows the API field errors next to the fields', async () => {

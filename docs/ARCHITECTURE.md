@@ -883,7 +883,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET/POST | /admin/cities ; PATCH /admin/cities/{id} | dashboard.view (GET) / config.manage | cities |
 | GET/POST | /admin/cities/{id}/zones ; PATCH/DELETE /admin/zones/{id} | config.manage | cities |
 | GET/POST | /admin/places ; PATCH/DELETE /admin/places/{id} | config.manage | cities |
-| GET/POST | /admin/commission-areas ; PATCH/DELETE /admin/commission-areas/{id} ; GET …/resolve, …/suggest, …/search (§22.9) | config.manage | commissionareas |
+| GET/POST | /admin/commission-areas ; PATCH/DELETE /admin/commission-areas/{id} ; POST …/check ; GET …/resolve, …/suggest, …/search (§22.9) | config.manage | commissionareas |
 | GET | /admin/tariffs?city_id=&vehicle_class= ; POST /admin/tariffs (new version, `vehicle_class`) | dashboard.view / config.manage | pricing |
 | GET/POST | /admin/vehicle-classes ; PATCH /admin/vehicle-classes/{code} (§21) | config.manage | vehicleclasses |
 | GET/PATCH | /admin/settings | config.manage | settings |
@@ -1232,4 +1232,10 @@ offers) where they conflict.
   kilometre) and rounded to 100 m. The administrator can change it (drag the edge, type km) or draw
   the exact boundary instead. `GET /admin/commission-areas/resolve` answers which village (if any) a
   point belongs to; `GET /admin/commission-areas/search` finds a village by name.
+- **Villages the map search does not know** (owner, 2026-11-01): the administrator clicks the map to
+  put the village point, types the name, takes a ready radius (1, 3, 5, 10 or 15 km), drags the edge
+  or draws the boundary. While drawing, `POST /admin/commission-areas/check` checks the database: a
+  village with the same name (any status; a save is refused), villages whose area already holds the
+  point, villages the new area overlaps (allowed: the nearest centre decides) and the nearest other
+  village; the editor shows these lines and opens the existing village on request.
 - Audit: `commission_area.create`, `commission_area.update`, `commission_area.delete`.

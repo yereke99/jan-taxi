@@ -266,6 +266,40 @@ export interface RadiusSuggestion {
   neighbor: { name: string; distance_m: number; source: 'area' | 'osm' } | null
 }
 
+/** A village being drawn, sent for the database check: whatever is filled in is checked. */
+export interface CommissionAreaCheckInput {
+  name?: string
+  shape?: CommissionAreaShape
+  center?: LatLon
+  /** Circle only, 200..50000 m. */
+  radius_m?: number
+  /** Polygon only. */
+  boundary?: PolygonGeometry | MultiPolygonGeometry
+  /** The village being edited (never its own duplicate). */
+  exclude_id?: string
+}
+
+/** An existing village found by the check; distance_m from the checked centre. */
+export interface CommissionAreaCheckItem {
+  id: string
+  name: string
+  commission_bps: number
+  is_active: boolean
+  distance_m: number | null
+}
+
+/**
+ * The database check of a village being drawn: the same name (any status),
+ * villages already holding its point, villages its area overlaps (allowed:
+ * the nearest centre decides) and the nearest other village.
+ */
+export interface CommissionAreaCheck {
+  name_taken: CommissionAreaCheckItem | null
+  covering: CommissionAreaCheckItem[]
+  overlapping: CommissionAreaCheckItem[]
+  nearest: CommissionAreaCheckItem | null
+}
+
 /** A village or place in Kazakhstan found by name. */
 export interface SettlementHit {
   title: string
@@ -287,6 +321,10 @@ export const commissionAreasApi = {
   },
   remove(id: string): Promise<void> {
     return api.delete(`/admin/commission-areas/${encodeURIComponent(id)}`)
+  },
+  /** Checks a village being drawn against the saved ones. */
+  check(body: CommissionAreaCheckInput, signal?: AbortSignal): Promise<CommissionAreaCheck> {
+    return api.post('/admin/commission-areas/check', body, { signal })
   },
   resolve(point: LatLon, signal?: AbortSignal): Promise<CommissionAreaResolve> {
     return api.get('/admin/commission-areas/resolve', { query: { lat: point.lat, lon: point.lon }, signal })

@@ -3700,6 +3700,42 @@ paths:
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/commission-areas/check:
+    post:
+      operationId: adminCheckCommissionArea
+      tags: [admin-cities]
+      summary: Check a village being drawn against the database
+      description: |
+        For a village the map search does not know, drawn by hand: whatever is sent is checked,
+        what is missing is skipped (a name alone, a point alone, or the whole circle or
+        boundary). `name_taken`: a village with the same name, case-insensitively, active or not
+        (a save would be refused with `name = duplicate`); `covering`: villages whose area
+        already holds the centre (the same village, or one inside another), nearest first;
+        `overlapping`: other villages the circle or boundary meets — allowed, the nearest
+        centre decides (§22.9); `nearest`: the closest other village centre. `exclude_id`
+        leaves out the village being edited. `fields`: `name` = `too_long | invalid`, `center` =
+        `invalid`, `shape` = `invalid`, `radius_m` = `out_of_range`, `boundary` = a
+        zone-geometry reason.
+      x-jantaxi-permission: config.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommissionAreaCheckRequest'}
+      responses:
+        '200':
+          description: The findings; empty lists when nothing matches.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommissionAreaCheck'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
   /admin/commission-areas/resolve:
     get:
       operationId: adminResolveCommissionArea
@@ -6245,6 +6281,46 @@ components:
         is_active: {type: boolean}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    CommissionAreaCheck:
+      type: object
+      required: [name_taken, covering, overlapping, nearest]
+      properties:
+        name_taken:
+          oneOf:
+            - $ref: '#/components/schemas/CommissionAreaCheckItem'
+            - type: 'null'
+        covering:
+          type: array
+          items: {$ref: '#/components/schemas/CommissionAreaCheckItem'}
+        overlapping:
+          type: array
+          items: {$ref: '#/components/schemas/CommissionAreaCheckItem'}
+        nearest:
+          oneOf:
+            - $ref: '#/components/schemas/CommissionAreaCheckItem'
+            - type: 'null'
+    CommissionAreaCheckItem:
+      type: object
+      required: [id, name, commission_bps, is_active, distance_m]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        commission_bps: {type: integer, minimum: 0, maximum: 5000}
+        is_active: {type: boolean}
+        distance_m: {type: [integer, 'null'], minimum: 0, description: From the checked centre to this village's centre; `null` without a centre.}
+    CommissionAreaCheckRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {type: string, maxLength: 120}
+        shape: {type: string, enum: [circle, polygon]}
+        center: {$ref: '#/components/schemas/LatLon'}
+        radius_m: {type: integer, minimum: 200, maximum: 50000}
+        boundary:
+          oneOf:
+            - $ref: '#/components/schemas/GeoJsonPolygon'
+            - $ref: '#/components/schemas/GeoJsonMultiPolygon'
+        exclude_id: {type: string, format: uuid, description: The village being edited.}
     CommissionAreaCreateRequest:
       type: object
       additionalProperties: false

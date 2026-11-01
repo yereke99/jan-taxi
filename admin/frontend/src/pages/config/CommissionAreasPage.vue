@@ -3,16 +3,28 @@
   from the driver who accepts an order whose pickup A lies in the village.
   List (commission, circle or boundary, active switch, edit, delete) and a map
   editor: find the village by name (OpenStreetMap) and take the suggested
-  radius, adjust the circle (drag the centre or the edge point, type km) or
-  draw the exact boundary. «Check a point» asks the API which commission an
-  order picked up there gets.
+  radius, or — for a village search does not know — click its centre on the
+  map, type the name and take a ready radius; adjust the circle (drag the
+  centre or the edge point, type km) or draw the exact boundary. While
+  drawing, the village is checked against the database (same name, a point
+  already inside a village, overlaps, the nearest village). «Check a point»
+  asks the API which commission an order picked up there gets.
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onBeforeRouteLeave } from 'vue-router'
 import type { LatLon } from '../../api/common'
-import { commissionAreasApi, type CommissionArea, type CommissionAreaResolve, type CommissionAreaShape, type RadiusSuggestion, type SettlementHit } from '../../api/config'
+import {
+  commissionAreasApi,
+  type CommissionArea,
+  type CommissionAreaCheck,
+  type CommissionAreaCheckInput,
+  type CommissionAreaResolve,
+  type CommissionAreaShape,
+  type RadiusSuggestion,
+  type SettlementHit,
+} from '../../api/config'
 import { AppButton, DebouncedInput, FormField, StateView, Tabs, TextInput, ToggleSwitch, confirmAction, toast } from '../../components'
 import { useErrors } from '../../composables/useErrors'
 import { useFormat } from '../../composables/useFormat'
@@ -24,8 +36,11 @@ import CommissionAreaMap from './CommissionAreaMap.vue'
 import {
   DEFAULT_RADIUS_M,
   MAX_COMMISSION_BPS,
+  RADIUS_PRESETS_KM,
   areaForm,
   boundaryCenter,
+  checkBody,
+  checkLines,
   drawnRadius,
   metersToRadiusInput,
   resolveText,
@@ -219,6 +234,81 @@ function onRadius(m: number): void {
   dirty.value = true
 }
 
+/** A ready radius for a village drawn by hand. */
+function presetRadius(km: number): void {
+  form.radiusKm = String(km)
+  dirty.value = true
+  fitMap()
+}
+
+// --- database check ------------------------------------------------------
+
+/** Pause after the last change before the village is checked against the database. */
+const DB_CHECK_DELAY_MS = 400
+
+const dbSent = ref<CommissionAreaCheckInput | null>(null)
+const dbResult = ref<CommissionAreaCheck | null>(null)
+const dbLoading = ref(false)
+const dbFailed = ref(false)
+let dbTimer: ReturnType<typeof setTimeout> | undefined
+let dbCtrl: AbortController | null = null
+
+const dbLines = computed(() => (dbResult.value && dbSent.value ? checkLines(dbResult.value, dbSent.value, words) : []))
+
+function stopDbCheck(): void {
+  clearTimeout(dbTimer)
+  dbCtrl?.abort()
+  dbCtrl = null
+  dbLoading.value = false
+}
+
+async function runDbCheck(body: CommissionAreaCheckInput): Promise<void> {
+  dbCtrl?.abort()
+  const ctrl = new AbortController()
+  dbCtrl = ctrl
+  dbLoading.value = true
+  dbFailed.value = false
+  try {
+    const r = await commissionAreasApi.check(body, ctrl.signal)
+    if (dbCtrl !== ctrl) return
+    dbSent.value = body
+    dbResult.value = r
+  } catch (err) {
+    if (isAbortError(err) || dbCtrl !== ctrl) return
+    dbResult.value = null
+    dbFailed.value = true
+  } finally {
+    if (dbCtrl === ctrl) {
+      dbLoading.value = false
+      dbCtrl = null
+    }
+  }
+}
+
+// Every change of the name, the point or the area is checked once the
+// administrator pauses.
+watch(
+  () => (editing.value === null ? null : JSON.stringify(checkBody(form, editing.value === 'new' ? null : editing.value))),
+  (key) => {
+    stopDbCheck()
+    if (key === null || key === 'null') {
+      dbResult.value = null
+      dbSent.value = null
+      dbFailed.value = false
+      return
+    }
+    const body = JSON.parse(key) as CommissionAreaCheckInput
+    dbTimer = setTimeout(() => void runDbCheck(body), DB_CHECK_DELAY_MS)
+  },
+)
+
+/** Opens a saved village named by the check, after confirming unsaved edits. */
+async function openExisting(id: string): Promise<void> {
+  const a = areas.value.find((x) => x.id === id)
+  if (!a || (unsaved.value && !(await confirmDiscard()))) return
+  open(a)
+}
+
 const shape = computed<CommissionAreaShape>({
   get: () => form.shape,
   set: (v) => {
@@ -381,6 +471,7 @@ onBeforeRouteLeave(async () => !unsaved.value || (await confirmDiscard()))
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey)
+  stopDbCheck()
   searchCtrl?.abort()
   suggestCtrl?.abort()
   checkCtrl?.abort()
@@ -476,6 +567,18 @@ onBeforeUnmount(() => {
               <TextInput :id="f.id" v-model="form.radiusKm" inputmode="decimal" :invalid="f.invalid" @update:model-value="dirty = true" />
               <AppButton size="sm" :disabled="!form.center" :loading="suggesting" @click="suggest">{{ t('commission_areas.suggest_radius') }}</AppButton>
             </div>
+            <div class="presets" role="group" :aria-label="t('commission_areas.radius_presets')">
+              <button
+                v-for="km in RADIUS_PRESETS_KM"
+                :key="km"
+                type="button"
+                class="preset"
+                :aria-pressed="radius === km * 1000"
+                @click="presetRadius(km)"
+              >
+                {{ t('commission_areas.preset_km', { km }) }}
+              </button>
+            </div>
           </FormField>
           <template v-else>
             <div class="draw">
@@ -510,6 +613,18 @@ onBeforeUnmount(() => {
             <span v-if="form.center" class="jt-mono">{{ form.center.lat.toFixed(6) }}, {{ form.center.lon.toFixed(6) }}</span>
             <p class="jt-muted group__hint">{{ form.center ? t('commission_areas.center_hint') : t('commission_areas.center_missing') }}</p>
             <p v-if="fieldErrors.center" class="group__error" role="alert">{{ fieldErrors.center }}</p>
+          </div>
+
+          <div v-if="dbLoading || dbFailed || dbLines.length" class="group db" aria-live="polite">
+            <span class="group__label">{{ t('commission_areas.db_check') }}</span>
+            <p v-if="dbLoading && !dbLines.length" class="jt-muted">{{ t('commission_areas.db_checking') }}</p>
+            <p v-else-if="dbFailed" class="jt-muted">{{ t('commission_areas.db_failed') }}</p>
+            <ul v-else class="db__lines" :class="{ 'is-stale': dbLoading }">
+              <li v-for="(line, i) in dbLines" :key="i" class="db__line" :class="`db__line--${line.tone}`">
+                <span>{{ line.text }}</span>
+                <button v-if="line.open" type="button" class="jt-link-button" @click="openExisting(line.open)">{{ t('commission_areas.db_open') }}</button>
+              </li>
+            </ul>
           </div>
 
           <ToggleSwitch v-model="form.active" :label="t('commission_areas.active')" @update:model-value="dirty = true" />
@@ -707,6 +822,57 @@ onBeforeUnmount(() => {
 
 .radius .input {
   max-width: 120px;
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--jt-space-2);
+}
+
+.preset {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--jt-color-fill-secondary);
+  color: var(--jt-color-label);
+  font: var(--jt-font-small);
+}
+
+.preset[aria-pressed='true'] {
+  background: var(--jt-color-label);
+  color: var(--jt-color-bg);
+}
+
+.db__lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: var(--jt-font-small);
+}
+
+.db__lines.is-stale {
+  opacity: 0.55;
+}
+
+.db__line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--jt-space-2);
+  color: var(--jt-color-label-secondary);
+}
+
+.db__line--error {
+  color: var(--jt-color-red-text);
+}
+
+.db__line--warning {
+  color: var(--jt-color-orange-text);
+}
+
+.db__line--ok {
+  color: var(--jt-color-green-text);
 }
 
 .draw {

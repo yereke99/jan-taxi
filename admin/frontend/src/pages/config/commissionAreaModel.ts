@@ -4,7 +4,16 @@
 // CommissionAreasPage and CommissionAreaMap render them.
 
 import type { LatLon } from '../../api/common'
-import type { CommissionArea, CommissionAreaInput, CommissionAreaResolve, CommissionAreaShape, MultiPolygonGeometry, RadiusSuggestion } from '../../api/config'
+import type {
+  CommissionArea,
+  CommissionAreaCheck,
+  CommissionAreaCheckInput,
+  CommissionAreaInput,
+  CommissionAreaResolve,
+  CommissionAreaShape,
+  MultiPolygonGeometry,
+  RadiusSuggestion,
+} from '../../api/config'
 import { bpsToPercentInput, parseDecimal } from '../../forms/numbers'
 import type { FieldErrors } from '../../forms/validation'
 import { inKazakhstanBBox } from '../../maps/constants'
@@ -17,6 +26,8 @@ export const RADIUS_MIN_M = 200
 export const RADIUS_MAX_M = 50_000
 /** Circle radius when no suggestion could be loaded. */
 export const DEFAULT_RADIUS_M = 2000
+/** Ready circle radii for a village drawn by hand, km. */
+export const RADIUS_PRESETS_KM = [1, 3, 5, 10, 15] as const
 export const NAME_MAX = 120
 export const SEARCH_MIN = 2
 export const SEARCH_MAX = 120
@@ -169,3 +180,65 @@ export function shapeText(a: Pick<CommissionArea, 'shape' | 'radius_m'>, w: Word
 export function resolveText(r: CommissionAreaResolve, w: Words): string {
   return r.area ? w.t('commission_areas.check_inside', { name: r.area.name, percent: w.percent(r.area.commission_bps) }) : w.t('commission_areas.check_outside')
 }
+
+/**
+ * What the database check gets from the form: whatever is filled in (a name,
+ * the point, the whole circle or boundary), null while nothing is. The
+ * village being edited is left out of the comparison.
+ */
+export function checkBody(f: AreaForm, excludeId: string | null): CommissionAreaCheckInput | null {
+  const body: CommissionAreaCheckInput = {}
+  const name = cleanName(f.name)
+  if (name && codePoints(name) <= NAME_MAX) body.name = name
+  const c = f.center
+  if (c) body.center = { lat: c.lat, lon: c.lon }
+  if (f.shape === 'circle') {
+    const r = radiusInputToMeters(f.radiusKm)
+    if (c && r !== null && r >= RADIUS_MIN_M && r <= RADIUS_MAX_M) {
+      body.shape = 'circle'
+      body.radius_m = r
+    }
+  } else {
+    const b = toGeometry(f.polygons)
+    if (b) {
+      body.shape = 'polygon'
+      body.boundary = b
+    }
+  }
+  if (body.name === undefined && body.center === undefined && body.shape === undefined) return null
+  if (excludeId) body.exclude_id = excludeId
+  return body
+}
+
+export type CheckTone = 'error' | 'warning' | 'info' | 'ok'
+
+/** One line of the database check; `open` is a saved village to open from it. */
+export interface CheckLine {
+  tone: CheckTone
+  text: string
+  open?: string
+}
+
+/**
+ * The database check as lines: a taken name (a save would be refused), the
+ * villages already holding the point (likely the same village), the villages
+ * the area overlaps (allowed: the nearest centre decides), else that the
+ * village is new, and the nearest village for orientation.
+ */
+export function checkLines(r: CommissionAreaCheck, sent: CommissionAreaCheckInput, w: Words): CheckLine[] {
+  const off = (a: { is_active: boolean }): string => (a.is_active ? '' : w.t('commission_areas.db_inactive'))
+  const lines: CheckLine[] = []
+  if (r.name_taken) lines.push({ tone: 'error', text: w.t('commission_areas.db_name_taken', { name: r.name_taken.name }) + off(r.name_taken), open: r.name_taken.id })
+  for (const a of r.covering) {
+    lines.push({
+      tone: 'warning',
+      text: w.t('commission_areas.db_covering', { name: a.name, percent: w.percent(a.commission_bps), distance: w.distance(a.distance_m ?? 0) }) + off(a),
+      open: a.id,
+    })
+  }
+  if (r.overlapping.length > 0) lines.push({ tone: 'info', text: w.t('commission_areas.db_overlapping', { names: r.overlapping.map((a) => a.name + off(a)).join(', ') }) })
+  if (lines.length === 0) lines.push({ tone: 'ok', text: w.t(sent.shape ? 'commission_areas.db_clear' : sent.center ? 'commission_areas.db_clear_point' : 'commission_areas.db_clear_name') })
+  if (r.nearest && r.covering.length === 0) lines.push({ tone: 'info', text: w.t('commission_areas.db_nearest', { name: r.nearest.name, distance: w.distance(r.nearest.distance_m ?? 0) }) })
+  return lines
+}
+

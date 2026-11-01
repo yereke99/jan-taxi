@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import type { CommissionArea, RadiusSuggestion } from '../../api/config'
+import type { CommissionArea, CommissionAreaCheck, RadiusSuggestion } from '../../api/config'
 import { bpsToPercentInput } from '../../forms/numbers'
 import { i18n } from '../../i18n'
 import type { Position } from '../../maps/polygon'
 import { formatDistance, type Locale } from '../../utils/format'
 import {
+  RADIUS_PRESETS_KM,
   areaForm,
   boundaryCenter,
+  checkBody,
+  checkLines,
   dragRadius,
   drawnRadius,
   metersToRadiusInput,
@@ -212,3 +215,55 @@ describe('texts', () => {
     expect(resolveText({ area: null, distance_m: null }, w)).toBe('Вне сёл — общая комиссия из Настроек')
   })
 })
+
+describe('database check of a village drawn by hand', () => {
+  const empty = form({ name: '', center: null, radiusKm: '', polygons: [] })
+
+  it('sends whatever is filled in, never the village being edited, nothing while the form is empty', () => {
+    expect(checkBody(empty, null)).toBeNull()
+    expect(checkBody({ ...empty, name: '  Жаңа   ауыл ' }, null)).toEqual({ name: 'Жаңа ауыл' })
+    expect(checkBody({ ...empty, center: { lat: 48.8, lon: 58.1 } }, null)).toEqual({ center: { lat: 48.8, lon: 58.1 } })
+    // A circle is checked once it has a point and a radius within the limits.
+    expect(checkBody({ ...empty, center: { lat: 48.8, lon: 58.1 }, radiusKm: '5' }, 'a1')).toEqual({
+      center: { lat: 48.8, lon: 58.1 },
+      shape: 'circle',
+      radius_m: 5000,
+      exclude_id: 'a1',
+    })
+    expect(checkBody({ ...empty, center: { lat: 48.8, lon: 58.1 }, radiusKm: '0.1' }, null)).toEqual({ center: { lat: 48.8, lon: 58.1 } })
+    const drawn = checkBody({ ...empty, shape: 'polygon', polygons: [[[A, B, C]]] }, null)
+    expect(drawn?.shape).toBe('polygon')
+    expect(drawn?.boundary?.type).toBe('MultiPolygon')
+  })
+
+  it('offers the ready radii the owner asked for', () => {
+    expect([...RADIUS_PRESETS_KM]).toEqual([1, 3, 5, 10, 15])
+  })
+
+  it('turns the answer into lines: a taken name, the point inside a village, overlaps, else new', () => {
+    const w = words('ru')
+    const item = (name: string, extra: Partial<CommissionAreaCheck['covering'][number]> = {}) => ({
+      id: name, name, commission_bps: 700, is_active: true, distance_m: 1200, ...extra,
+    })
+    const busy: CommissionAreaCheck = {
+      name_taken: item('Ақкөл', { is_active: false, distance_m: null }),
+      covering: [item('Ақкөл')],
+      overlapping: [item('Жаңажол'), item('Сағыз', { is_active: false })],
+      nearest: item('Ақкөл'),
+    }
+    expect(checkLines(busy, { name: 'Ақкөл', shape: 'circle', center: { lat: 48.8, lon: 58.1 }, radius_m: 3000 }, w)).toEqual([
+      { tone: 'error', text: 'Село «Ақкөл» уже есть в базе (выключено)', open: 'Ақкөл' },
+      { tone: 'warning', text: `Точка уже внутри села «Ақкөл»: 7%, 1,2${NBSP}км от центра`, open: 'Ақкөл' },
+      { tone: 'info', text: 'Пересекается с: Жаңажол, Сағыз (выключено). В общей части действует комиссия села с ближайшим центром.' },
+    ])
+
+    const free: CommissionAreaCheck = { name_taken: null, covering: [], overlapping: [], nearest: item('Жаңажол', { distance_m: 8400 }) }
+    expect(checkLines(free, { name: 'Жаңа ауыл', shape: 'circle', center: { lat: 48.8, lon: 58.1 }, radius_m: 3000 }, w)).toEqual([
+      { tone: 'ok', text: 'Такого села в базе нет, с другими сёлами не пересекается.' },
+      { tone: 'info', text: `Ближайшее село: Жаңажол, 8,4${NBSP}км` },
+    ])
+    expect(checkLines({ ...free, nearest: null }, { name: 'Жаңа ауыл' }, w)).toEqual([{ tone: 'ok', text: 'Села с таким названием в базе нет.' }])
+    expect(checkLines({ ...free, nearest: null }, { center: { lat: 48.8, lon: 58.1 } }, w)[0]?.text).toBe('Эта точка не входит ни в одно село.')
+  })
+})
+

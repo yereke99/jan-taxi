@@ -57,6 +57,7 @@ func (h *AdminHandler) MountAdmin(r chi.Router) {
 		r.Use(auth.Permit(auth.PermConfigManage))
 		r.Get("/commission-areas", httpx.H(h.list))
 		r.Post("/commission-areas", httpx.H(h.create))
+		r.Post("/commission-areas/check", httpx.H(h.check))
 		r.Get("/commission-areas/resolve", httpx.H(h.resolve))
 		r.Get("/commission-areas/suggest", httpx.H(h.suggest))
 		r.Get("/commission-areas/search", httpx.H(h.search))

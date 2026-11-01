@@ -251,3 +251,80 @@ func TestAdminCommissionAreasNeedConfigPermission(t *testing.T) {
 		t.Fatalf("create as operator: %d", status)
 	}
 }
+
+// A village being drawn is checked against the database: a taken name, the
+// villages that already hold its point, the villages it overlaps and the
+// nearest one; the village being edited is never its own duplicate.
+func TestAdminCheckVillage(t *testing.T) {
+	pool := testutil.NewDB(t)
+	c := newAdminClient(t, pool, auth.RoleSuperAdmin, nil)
+	_, a1 := c.do(http.MethodPost, "/commission-areas", village1)
+	c.do(http.MethodPost, "/commission-areas", village2)
+	c.do(http.MethodPost, "/commission-areas", boundary)
+	id1 := a1["id"].(string)
+
+	names := func(v any) []string {
+		var out []string
+		list, _ := v.([]any)
+		for _, x := range list {
+			out = append(out, x.(map[string]any)["name"].(string))
+		}
+		return out
+	}
+	check := func(body string) map[string]any {
+		t.Helper()
+		status, res := c.do(http.MethodPost, "/commission-areas/check", body)
+		if status != http.StatusOK {
+			t.Fatalf("check %s: %d %v", body, status, res)
+		}
+		return res
+	}
+
+	// The name is taken whatever its case; the edited village does not count.
+	res := check(`{"name":"  ауыл-1 "}`)
+	if taken, _ := res["name_taken"].(map[string]any); taken == nil || taken["name"] != "Ауыл-1" || taken["is_active"] != true {
+		t.Fatalf("name taken: %v", res)
+	}
+	if res := check(`{"name":"Ауыл-1","exclude_id":"` + id1 + `"}`); res["name_taken"] != nil {
+		t.Fatalf("own name: %v", res)
+	}
+
+	// A point inside both circles: both hold it, nearest first.
+	res = check(`{"center":{"lat":48.84,"lon":58.15}}`)
+	if got := names(res["covering"]); len(got) != 2 || got[0] != "Ауыл-1" || got[1] != "Ауыл-2" {
+		t.Fatalf("covering: %v", res)
+	}
+	if n, _ := res["nearest"].(map[string]any); n == nil || n["name"] != "Ауыл-1" || n["distance_m"].(float64) < 1000 {
+		t.Fatalf("nearest: %v", res)
+	}
+
+	// A 2 km circle 3.3 km south of Ауыл-1 overlaps it without holding its point.
+	res = check(`{"shape":"circle","center":{"lat":48.80,"lon":58.15},"radius_m":2000}`)
+	if got := names(res["overlapping"]); len(got) != 1 || got[0] != "Ауыл-1" || len(names(res["covering"])) != 0 {
+		t.Fatalf("circle overlap: %v", res)
+	}
+	// A drawn boundary next to Шекара overlaps it.
+	res = check(`{"shape":"polygon","boundary":{"type":"Polygon","coordinates":[[[58.38,48.95],[58.45,48.95],[58.45,49.05],[58.38,49.05],[58.38,48.95]]]}}`)
+	if got := names(res["overlapping"]); len(got) != 1 || got[0] != "Шекара" {
+		t.Fatalf("boundary overlap: %v", res)
+	}
+
+	// A free place: nothing taken, nothing overlapped, the nearest village named.
+	res = check(`{"name":"Жаңа ауыл","shape":"circle","center":{"lat":48.5,"lon":58.15},"radius_m":1000}`)
+	if res["name_taken"] != nil || len(names(res["covering"])) != 0 || len(names(res["overlapping"])) != 0 {
+		t.Fatalf("free place: %v", res)
+	}
+	if n, _ := res["nearest"].(map[string]any); n == nil || n["name"] != "Ауыл-1" || n["distance_m"].(float64) < 30000 {
+		t.Fatalf("free place nearest: %v", res)
+	}
+
+	for _, tc := range []struct{ body, field, want string }{
+		{`{"shape":"circle","center":{"lat":48.5,"lon":58.15},"radius_m":100}`, "radius_m", "out_of_range"},
+		{`{"shape":"square"}`, "shape", "invalid"},
+		{`{"center":{"lat":95,"lon":58.15}}`, "center", "invalid"},
+	} {
+		if status, body := c.do(http.MethodPost, "/commission-areas/check", tc.body); status != http.StatusUnprocessableEntity || fieldsOf(body)[tc.field] != tc.want {
+			t.Errorf("%s: %d %v", tc.body, status, body)
+		}
+	}
+}

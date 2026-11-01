@@ -23,6 +23,9 @@ ARCHITECTURE §5 and §22.9, findings and checks in [docs/DRIVER_SYSTEM_AUDIT.md
   nearest neighbour) or boundaries and set a percentage of the fare; an order whose pickup A lies
   in a village gets that percentage at creation (nearest centre wins on overlaps), charged at
   acceptance; outside every village the general commission applies. Admin page «Сёла и комиссия»;
+  villages the map search does not know are drawn by hand (map point, typed name, ready radii
+  1–15 km or a boundary) and checked against the database while drawing (`POST
+  /admin/commission-areas/check`: same name, point already inside a village, overlaps, nearest);
   the order view shows the village; `orders.csv` gains `via_addresses`, `passenger_written_stops`
   and `commission_area`, and its formula guard also covers `;`-separated cells.
 - Deploy as before: `make build` and `make up` (the migrate service applies 00014 and 00015; no
@@ -158,7 +161,7 @@ changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
     one reservation, one ledger reserve row (`admin/backend/internal/orders/concurrency_test.go`).
   - Commission charged exactly once under concurrent completes; wallet ledger reconciliation; idempotent top-up credit;
     duplicate Kaspi transaction id rejected; phone/plate uniqueness; geofence (Kazakhstan in, Orenburg/Tashkent/Bishkek out).
-- Frontend (2026-11-01): `vue-tsc` clean, lint and `vite build` ok; vitest → driver 546, passenger 398, admin 146
+- Frontend (2026-11-01): `vue-tsc` clean, lint and `vite build` ok; vitest → driver 546, passenger 398, admin 150
   tests passing; `verify-shared` → shared core identical (87 files).
 - Upgrade (2026-11-01): the previous release `5070b9c` with orders, updated through `make preflight`, `make config`,
   `make build`, `make up`, `make health` → migrations 13 → 15, API ready, both bots healthy and answering `/start`.

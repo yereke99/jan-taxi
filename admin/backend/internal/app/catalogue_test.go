@@ -125,6 +125,7 @@ var endpointCatalogue = []string{
 	"DELETE /api/v1/admin/places/{}",
 	"GET /api/v1/admin/commission-areas",
 	"POST /api/v1/admin/commission-areas",
+	"POST /api/v1/admin/commission-areas/check",
 	"GET /api/v1/admin/commission-areas/resolve",
 	"GET /api/v1/admin/commission-areas/suggest",
 	"GET /api/v1/admin/commission-areas/search",
