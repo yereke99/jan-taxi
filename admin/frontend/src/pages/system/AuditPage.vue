@@ -10,7 +10,30 @@ import { usePagedList } from '../../composables/usePagedList'
 import { useResource } from '../../composables/useResource'
 import { useAuthStore } from '../../stores/auth'
 
-const ENTITY_TYPES = ['order', 'dispute', 'driver', 'topup', 'city', 'service_zone', 'place', 'commission_area', 'tariff', 'app_setting', 'notification', 'notification_template', 'admin', 'report', 'file']
+const ENTITY_TYPES = [
+  'order',
+  'dispute',
+  'driver',
+  'topup',
+  'city',
+  'service_zone',
+  'place',
+  'commission_area',
+  'tariff',
+  'app_setting',
+  'notification',
+  'notification_template',
+  'admin',
+  'report',
+  'file',
+  'marketing_campaign',
+  'marketing_coupon',
+  'passenger_bonus',
+  'referral_attribution',
+  'order_promotion',
+  'marketing_segment',
+  'marketing_broadcast',
+]
 
 const { t, te } = useI18n()
 const fmt = useFormat()
@@ -57,6 +80,12 @@ function entityLink(r: AuditRecord): RouteLocationRaw | null {
   if (r.entity_type === 'order' && auth.can('orders.view')) return { name: 'order-detail', params: { id: r.entity_id } }
   if (r.entity_type === 'driver' && auth.can('drivers.view')) return { name: 'driver-detail', params: { id: r.entity_id } }
   if (r.entity_type === 'topup' && auth.can('finance.view')) return { name: 'topup-detail', params: { id: r.entity_id } }
+  if (auth.can('marketing.view')) {
+    if (r.entity_type === 'marketing_campaign') return { name: 'campaign-detail', params: { id: r.entity_id } }
+    if (r.entity_type === 'marketing_broadcast') return { name: 'broadcast-detail', params: { id: r.entity_id } }
+    // Bonus corrections are logged under the passenger's user id.
+    if (r.entity_type === 'passenger_bonus') return { name: 'marketing-user', params: { id: r.entity_id } }
+  }
   return null
 }
 

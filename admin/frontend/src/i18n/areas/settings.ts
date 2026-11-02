@@ -70,6 +70,14 @@ const kk = {
   preview_invalid: 'Алдын ала қарау үшін мәндерді түзетіңіз.',
   open_link: 'Сілтемені ашу',
   read_only: 'Тек оқу үшін',
+  group_marketing: 'Маркетинг',
+  group_marketing_hint: 'Акциялардың апаттық ажыратқыштары және тарату баптаулары. Оларды себебін жазып өзгерту үшін «Маркетинг → Қауіпсіздік» бетін пайдаланыңыз.',
+  key_marketing_awards_enabled: 'Купон мен бонус беру',
+  key_marketing_redemptions_enabled: 'Купон мен бонусты тапсырыста қолдану',
+  key_marketing_broadcasts_enabled: 'Жарнамалық таратулар',
+  key_marketing_broadcast_rate_per_s: 'Тарату жылдамдығы, секундына хабарлама',
+  key_marketing_broadcast_approval_threshold: 'Таратуды бекіту шегі, алушы',
+  key_marketing_test_recipients: 'Сынақ хабарламасын алушылар, Telegram ID',
 }
 
 export type SettingsMessages = typeof kk
@@ -144,6 +152,14 @@ const ru: SettingsMessages = {
   preview_invalid: 'Исправьте значения, чтобы увидеть расчёт.',
   open_link: 'Открыть ссылку',
   read_only: 'Только чтение',
+  group_marketing: 'Маркетинг',
+  group_marketing_hint: 'Аварийные выключатели акций и настройки рассылок. Чтобы изменить их с указанием причины, откройте «Маркетинг → Безопасность».',
+  key_marketing_awards_enabled: 'Выдача купонов и бонусов',
+  key_marketing_redemptions_enabled: 'Применение купонов и бонусов к заказам',
+  key_marketing_broadcasts_enabled: 'Рекламные рассылки',
+  key_marketing_broadcast_rate_per_s: 'Скорость рассылки, сообщений в секунду',
+  key_marketing_broadcast_approval_threshold: 'Порог утверждения рассылки, получателей',
+  key_marketing_test_recipients: 'Получатели тестовых рассылок, Telegram ID',
 }
 
 const en: SettingsMessages = {
@@ -216,6 +232,14 @@ const en: SettingsMessages = {
   preview_invalid: 'Fix the values to see the schedule.',
   open_link: 'Open link',
   read_only: 'Read-only',
+  group_marketing: 'Marketing',
+  group_marketing_hint: 'Emergency switches of the promotions and broadcast settings. To change them with a reason, open Marketing → Safety.',
+  key_marketing_awards_enabled: 'Issue coupons and bonuses',
+  key_marketing_redemptions_enabled: 'Use coupons and bonuses on orders',
+  key_marketing_broadcasts_enabled: 'Marketing broadcasts',
+  key_marketing_broadcast_rate_per_s: 'Broadcast speed, messages per second',
+  key_marketing_broadcast_approval_threshold: 'Broadcast approval threshold, recipients',
+  key_marketing_test_recipients: 'Test broadcast recipients, Telegram IDs',
 }
 
 export const settingsArea = { kk, ru, en }

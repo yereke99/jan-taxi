@@ -117,6 +117,20 @@ const kk = {
   refund_commission_note: 'Белгі қойылмаса, комиссия жүргізушіде қайтарылмайды.',
   refund_nothing: 'Бұл тапсырыс үшін жүргізушіден комиссия ұсталмаған.',
   assign_need: 'Тапсырысқа қажет: {need}. Көлігі сай емес жүргізушіні сервер қабылдамайды.',
+  promotion: 'Акция',
+  promo_kind: 'Түрі',
+  promo_kind_coupon: 'Купон',
+  promo_kind_bonus: 'Бонус балансы',
+  promo_campaign: 'Акция атауы',
+  promo_gross_fare: 'Тапсырыс бағасы',
+  promo_discount: 'Жеңілдік',
+  promo_cash_due: 'Жолаушы жүргізушіге төлейді',
+  promo_compensation: 'Jan Taxi жүргізушіге өтейді',
+  promo_compensation_after: '{amount} — сапар аяқталғанда балансқа',
+  promo_compensation_done: '{amount} балансқа есептелді',
+  promo_compensation_reversed: '{amount} есептелген, кейін кері қайтарылды',
+  promo_settled_at: 'Есептелген уақыт',
+  promo_note: 'Жол ақысы мен комиссия акцияға байланысты өзгермейді.',
 }
 
 export type OrdersMessages = typeof kk
@@ -238,6 +252,20 @@ const ru: OrdersMessages = {
   refund_commission_note: 'Без отметки комиссия водителю не возвращается.',
   refund_nothing: 'По этому заказу комиссия с водителя не списывалась.',
   assign_need: 'Заказу нужно: {need}. Водителя с неподходящей машиной сервер не примет.',
+  promotion: 'Акция',
+  promo_kind: 'Тип',
+  promo_kind_coupon: 'Купон',
+  promo_kind_bonus: 'Бонусный баланс',
+  promo_campaign: 'Название акции',
+  promo_gross_fare: 'Цена заказа',
+  promo_discount: 'Скидка',
+  promo_cash_due: 'Пассажир платит водителю',
+  promo_compensation: 'Jan Taxi возмещает водителю',
+  promo_compensation_after: '{amount} — на баланс после поездки',
+  promo_compensation_done: '{amount} зачислено на баланс',
+  promo_compensation_reversed: '{amount} было зачислено, затем сторнировано',
+  promo_settled_at: 'Проведено',
+  promo_note: 'Цена поездки и комиссия от акции не меняются.',
 }
 
 const en: OrdersMessages = {
@@ -357,6 +385,20 @@ const en: OrdersMessages = {
   refund_commission_note: 'Without the tick the commission is not refunded.',
   refund_nothing: 'No commission was charged to the driver for this order.',
   assign_need: 'The order needs: {need}. The server rejects a driver whose vehicle does not fit.',
+  promotion: 'Promotion',
+  promo_kind: 'Type',
+  promo_kind_coupon: 'Coupon',
+  promo_kind_bonus: 'Bonus balance',
+  promo_campaign: 'Campaign',
+  promo_gross_fare: 'Fare',
+  promo_discount: 'Discount',
+  promo_cash_due: 'Passenger pays the driver',
+  promo_compensation: 'Jan Taxi pays the driver',
+  promo_compensation_after: '{amount} — to the balance after the ride',
+  promo_compensation_done: '{amount} credited to the balance',
+  promo_compensation_reversed: '{amount} credited, then reversed',
+  promo_settled_at: 'Settled at',
+  promo_note: 'The fare and the commission never change because of a promotion.',
 }
 
 export const orders = { kk, ru, en }

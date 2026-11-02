@@ -188,6 +188,7 @@ const kk = {
   desc_welcome_bonus: 'Жаңа жүргізушіге бонус',
   desc_bonus: 'Компаниядан бонус',
   desc_assignment: 'Тапсырысты алғандағы комиссия (№{n})',
+  desc_promo_compensation: 'Жолаушының купоны не бонусы үшін өтемақы',
 }
 
 export type FinanceMessages = typeof kk
@@ -380,6 +381,7 @@ const ru: FinanceMessages = {
   desc_welcome_bonus: 'Бонус новому водителю',
   desc_bonus: 'Бонус от компании',
   desc_assignment: 'Комиссия при принятии заказа (№{n})',
+  desc_promo_compensation: 'Компенсация за купон или бонус пассажира',
 }
 
 const en: FinanceMessages = {
@@ -570,6 +572,7 @@ const en: FinanceMessages = {
   desc_welcome_bonus: 'Welcome bonus',
   desc_bonus: 'Company bonus',
   desc_assignment: 'Commission when the order was taken (#{n})',
+  desc_promo_compensation: 'Compensation for the passenger’s coupon or bonus',
 }
 
 export const finance = { kk, ru, en }

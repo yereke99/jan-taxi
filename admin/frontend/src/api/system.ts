@@ -132,6 +132,9 @@ export const NOTIFICATION_TEMPLATE_KEYS = [
   'dispute_opened',
   'dispute_resolved',
   'phone_verified',
+  'promo_coupon_issued',
+  'promo_referral_reward',
+  'promo_bonus_granted',
 ] as const
 
 export type OutboxStatus = 'pending' | 'sending' | 'sent' | 'dead' | 'cancelled'
@@ -235,12 +238,20 @@ export const dashboardApi = {
   },
 }
 
-export type ReportKind = 'orders' | 'ledger' | 'topups'
+export type ReportKind = 'orders' | 'ledger' | 'topups' | 'marketing'
+
+/** CSV path per report; the marketing figures (daily aggregates, no personal data) live with the marketing routes. */
+const REPORT_PATHS: Record<ReportKind, string> = {
+  orders: '/admin/reports/orders.csv',
+  ledger: '/admin/reports/ledger.csv',
+  topups: '/admin/reports/topups.csv',
+  marketing: '/admin/marketing/reports.csv',
+}
 
 export const reportsApi = {
   /** Streams the CSV export for the current filters to a browser download. */
   download(kind: ReportKind, query: Record<string, string | undefined>): Promise<string> {
-    return downloadFile(`/admin/reports/${kind}.csv`, query, `jantaxi-${kind}.csv`)
+    return downloadFile(REPORT_PATHS[kind], query, `jantaxi-${kind}.csv`)
   },
 }
 

@@ -50,6 +50,27 @@ const detailRoutes: RouteRecordRaw[] = [
     props: true,
     meta: { perm: 'finance.view', titleKey: 'nav.topup_detail', navParent: 'topups' },
   },
+  {
+    path: 'campaigns/:id',
+    name: 'campaign-detail',
+    component: DETAIL_COMPONENTS['campaign-detail']!,
+    props: true,
+    meta: { perm: 'marketing.view', titleKey: 'nav.campaign_detail', navParent: 'campaigns' },
+  },
+  {
+    path: 'broadcasts/:id',
+    name: 'broadcast-detail',
+    component: DETAIL_COMPONENTS['broadcast-detail']!,
+    props: true,
+    meta: { perm: 'marketing.view', titleKey: 'nav.broadcast_detail', navParent: 'broadcasts' },
+  },
+  {
+    path: 'marketing-users/:id',
+    name: 'marketing-user',
+    component: DETAIL_COMPONENTS['marketing-user']!,
+    props: true,
+    meta: { perm: 'marketing.view', titleKey: 'nav.marketing_user', navParent: 'coupons' },
+  },
 ]
 
 const routes: RouteRecordRaw[] = [

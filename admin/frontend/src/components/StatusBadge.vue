@@ -1,4 +1,4 @@
-<!-- Status pill for orders, moderation, top-ups, disputes and notifications. -->
+<!-- Status pill for orders, moderation, top-ups, disputes, notifications and marketing records. -->
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'

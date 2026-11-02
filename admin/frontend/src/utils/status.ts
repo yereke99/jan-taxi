@@ -35,6 +35,27 @@ export type DisputeStatus = (typeof DISPUTE_STATUSES)[number]
 export const NOTIFICATION_STATUSES = ['pending', 'sending', 'sent', 'dead', 'cancelled'] as const
 export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number]
 
+// Marketing (§23): campaigns, coupons, referrals, promotions applied to
+// orders, broadcasts and their deliveries.
+
+export const CAMPAIGN_STATUSES = ['draft', 'scheduled', 'active', 'paused', 'ended', 'archived'] as const
+export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number]
+
+export const COUPON_STATUSES = ['issued', 'reserved', 'redeemed', 'expired', 'voided'] as const
+export type CouponStatus = (typeof COUPON_STATUSES)[number]
+
+export const REFERRAL_STATUSES = ['attributed', 'review', 'rewarded', 'capped', 'rejected'] as const
+export type ReferralStatus = (typeof REFERRAL_STATUSES)[number]
+
+export const PROMOTION_STATUSES = ['reserved', 'released', 'settled', 'reversed'] as const
+export type PromotionStatus = (typeof PROMOTION_STATUSES)[number]
+
+export const BROADCAST_STATUSES = ['draft', 'scheduled', 'sending', 'paused', 'completed', 'cancelled', 'failed'] as const
+export type BroadcastStatus = (typeof BROADCAST_STATUSES)[number]
+
+export const RECIPIENT_STATUSES = ['queued', 'sending', 'sent', 'failed', 'blocked', 'suppressed', 'cancelled'] as const
+export type RecipientStatus = (typeof RECIPIENT_STATUSES)[number]
+
 const ORDER_TONES: Record<OrderStatus, Tone> = {
   draft: 'neutral',
   searching: 'neutral',
@@ -74,7 +95,72 @@ const NOTIFICATION_TONES: Record<NotificationStatus, Tone> = {
   cancelled: 'neutral',
 }
 
-export type StatusKind = 'order' | 'moderation' | 'topup' | 'dispute' | 'notification'
+// Green marks money that reached someone or a finished success; red a stop
+// or a problem; black something in progress that holds money or messages.
+const CAMPAIGN_TONES: Record<CampaignStatus, Tone> = {
+  draft: 'neutral',
+  scheduled: 'info',
+  active: 'success',
+  paused: 'dark',
+  ended: 'neutral',
+  archived: 'neutral',
+}
+
+const COUPON_TONES: Record<CouponStatus, Tone> = {
+  issued: 'info',
+  reserved: 'dark',
+  redeemed: 'success',
+  expired: 'neutral',
+  voided: 'danger',
+}
+
+const REFERRAL_TONES: Record<ReferralStatus, Tone> = {
+  attributed: 'neutral',
+  review: 'info',
+  rewarded: 'success',
+  capped: 'neutral',
+  rejected: 'danger',
+}
+
+const PROMOTION_TONES: Record<PromotionStatus, Tone> = {
+  reserved: 'dark',
+  released: 'neutral',
+  settled: 'success',
+  reversed: 'danger',
+}
+
+const BROADCAST_TONES: Record<BroadcastStatus, Tone> = {
+  draft: 'neutral',
+  scheduled: 'info',
+  sending: 'dark',
+  paused: 'dark',
+  completed: 'success',
+  cancelled: 'neutral',
+  failed: 'danger',
+}
+
+const RECIPIENT_TONES: Record<RecipientStatus, Tone> = {
+  queued: 'neutral',
+  sending: 'info',
+  sent: 'success',
+  failed: 'danger',
+  blocked: 'danger',
+  suppressed: 'neutral',
+  cancelled: 'neutral',
+}
+
+export type StatusKind =
+  | 'order'
+  | 'moderation'
+  | 'topup'
+  | 'dispute'
+  | 'notification'
+  | 'campaign'
+  | 'coupon'
+  | 'referral'
+  | 'promotion'
+  | 'broadcast'
+  | 'recipient'
 
 /** Tone for any status kind shown in the admin tables. */
 export function statusTone(kind: StatusKind, status: string): Tone {
@@ -89,6 +175,18 @@ export function statusTone(kind: StatusKind, status: string): Tone {
       return DISPUTE_TONES[status as DisputeStatus] ?? 'neutral'
     case 'notification':
       return NOTIFICATION_TONES[status as NotificationStatus] ?? 'neutral'
+    case 'campaign':
+      return CAMPAIGN_TONES[status as CampaignStatus] ?? 'neutral'
+    case 'coupon':
+      return COUPON_TONES[status as CouponStatus] ?? 'neutral'
+    case 'referral':
+      return REFERRAL_TONES[status as ReferralStatus] ?? 'neutral'
+    case 'promotion':
+      return PROMOTION_TONES[status as PromotionStatus] ?? 'neutral'
+    case 'broadcast':
+      return BROADCAST_TONES[status as BroadcastStatus] ?? 'neutral'
+    case 'recipient':
+      return RECIPIENT_TONES[status as RecipientStatus] ?? 'neutral'
   }
 }
 

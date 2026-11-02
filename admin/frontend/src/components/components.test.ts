@@ -1,8 +1,10 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { i18n } from '../i18n'
+import { ApiError } from '../services/api'
 import DataTable from './DataTable.vue'
 import Pagination from './Pagination.vue'
+import ReasonDialog from './ReasonDialog.vue'
 import type { Column } from './types'
 
 interface Row {
@@ -71,5 +73,47 @@ describe('Pagination', () => {
     await buttons.at(-1)!.trigger('click')
     expect(wrapper.emitted('update:page')?.[0]).toEqual([2])
     expect(wrapper.text()).toContain('5')
+  })
+})
+
+describe('ReasonDialog', () => {
+  afterEach(() => {
+    i18n.global.locale.value = 'kk'
+    document.body.innerHTML = ''
+  })
+
+  async function confirmWith(text: string): Promise<void> {
+    const area = document.querySelector<HTMLTextAreaElement>('.modal textarea')!
+    area.value = text
+    area.dispatchEvent(new Event('input'))
+    await flushPromises()
+    ;[...document.querySelectorAll<HTMLButtonElement>('.modal__foot button')].at(-1)!.click()
+    await flushPromises()
+  }
+
+  it('refuses a reason shorter than minLength before calling submit', async () => {
+    i18n.global.locale.value = 'en'
+    const submit = vi.fn(async () => {})
+    const wrapper = mount(ReasonDialog, { props: { open: true, title: 'Pause', maxLength: 300, minLength: 3, submit }, global, attachTo: document.body })
+    await flushPromises()
+    await confirmWith(' ok ')
+    expect(submit).not.toHaveBeenCalled()
+    expect(document.querySelector('.modal')?.textContent).toContain('Too short.')
+    await confirmWith('Fraud check')
+    expect(submit).toHaveBeenCalledWith('Fraud check')
+    wrapper.unmount()
+  })
+
+  it('lets the page explain an API error in its own words', async () => {
+    i18n.global.locale.value = 'en'
+    const submit = vi.fn(async () => {
+      throw new ApiError(422, 'validation_failed', 'invalid', { ends_at: 'in_past' })
+    })
+    const errorText = (err: unknown) => (err instanceof ApiError && err.fields.ends_at ? 'The window is over.' : null)
+    const wrapper = mount(ReasonDialog, { props: { open: true, title: 'Switch on', maxLength: 300, submit, errorText }, global, attachTo: document.body })
+    await flushPromises()
+    await confirmWith('Launch agreed')
+    expect(document.querySelector('.modal [role="alert"]')?.textContent).toBe('The window is over.')
+    wrapper.unmount()
   })
 })

@@ -1,8 +1,10 @@
 <!--
   Order detail for operators: route map, stops, parties, vehicle class and
-  load, money, cargo, history, offers, wallet ledger, the passenger's cancel
-  reason and the dispute, with the operator actions (cancel with an optional
-  commission refund, assign/reassign, open/resolve dispute).
+  load, money (and the passenger's promotion: discount, cash due, the
+  driver's compensation), cargo, history, offers, wallet ledger, the
+  passenger's cancel reason and the dispute, with the operator actions
+  (cancel with an optional commission refund, assign/reassign, open/resolve
+  dispute).
 -->
 <script setup lang="ts">
 import { MapPin } from '@lucide/vue'
@@ -104,6 +106,33 @@ const fareItems = computed<KeyValueItem[]>(() => {
     { key: 'category', label: t('orders.category'), value: t(`category.${o.category}`) },
     { key: 'class', label: t('classes.class'), value: className.value },
     { key: 'load', label: o.category === 'taxi' ? t('orders.passengers') : t('orders.cargo_size'), value: loadText.value },
+  ]
+})
+
+/** The passenger's coupon or bonus (§23.6): the fare and commission stay; the passenger pays cash_due and Jan Taxi credits the discount to the driver. */
+const promoDiscount = computed(() => order.value?.promo_discount ?? 0)
+
+const promotionItems = computed<KeyValueItem[]>(() => {
+  const o = order.value
+  if (!o || promoDiscount.value <= 0) return []
+  const p = o.promotion ?? null
+  const gross = p?.gross_fare ?? o.fare
+  const cashDue = p?.cash_due ?? o.cash_due ?? gross - promoDiscount.value
+  let compensation: string
+  if (p?.compensation !== null && p?.compensation !== undefined) {
+    // A reversal (finance's decision) took the credited compensation back.
+    const amount = fmt.money(p.compensation)
+    compensation = p.status === 'reversed' ? t('orders.promo_compensation_reversed', { amount }) : t('orders.promo_compensation_done', { amount })
+  } else if (!p || p.status === 'reserved') compensation = t('orders.promo_compensation_after', { amount: fmt.money(promoDiscount.value) })
+  else compensation = '—'
+  return [
+    ...(p ? [{ key: 'kind', label: t('orders.promo_kind'), value: t(`orders.promo_kind_${p.kind}`) }] : []),
+    ...(p?.title ? [{ key: 'campaign', label: t('orders.promo_campaign'), value: fmt.name(p.title) }] : []),
+    { key: 'gross', label: t('orders.promo_gross_fare'), value: fmt.money(gross) },
+    { key: 'discount', label: t('orders.promo_discount'), value: `−${fmt.money(promoDiscount.value)}` },
+    { key: 'cash_due', label: t('orders.promo_cash_due'), value: fmt.money(cashDue) },
+    { key: 'compensation', label: t('orders.promo_compensation'), value: compensation },
+    ...(p?.settled_at ? [{ key: 'settled', label: t('orders.promo_settled_at'), value: fmt.dateTime(p.settled_at) }] : []),
   ]
 })
 
@@ -286,6 +315,18 @@ useResync(() => void res.reload({ silent: true }))
                 </span>
               </template>
             </KeyValueList>
+          </Card>
+
+          <Card v-if="promoDiscount > 0" :title="t('orders.promotion')">
+            <template v-if="order.promotion" #actions>
+              <StatusBadge kind="promotion" :status="order.promotion.status" />
+            </template>
+            <KeyValueList :items="promotionItems">
+              <template #value-cash_due="{ item }">
+                <strong class="jt-num">{{ item.value }}</strong>
+              </template>
+            </KeyValueList>
+            <p class="jt-muted promotion__note">{{ t('orders.promo_note') }}</p>
           </Card>
 
           <Card v-if="order.status === 'cancelled'" :title="t('orders.cancellation')">
@@ -517,5 +558,10 @@ useResync(() => void res.reload({ silent: true }))
 
 .side-action {
   margin-top: var(--jt-space-3);
+}
+
+.promotion__note {
+  margin-top: var(--jt-space-3);
+  font: var(--jt-font-small);
 }
 </style>

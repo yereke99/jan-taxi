@@ -38,6 +38,7 @@ function describe(text: string | null): string {
   if (text === 'order re-assigned by operator') return t('finance.desc_reassigned')
   if (text === 'welcome bonus') return t('finance.desc_welcome_bonus')
   if (text === 'bonus') return t('finance.desc_bonus')
+  if (text === 'promotion compensation') return t('finance.desc_promo_compensation')
   const assignment = /^order assignment (\d+)$/.exec(text)
   if (assignment) return t('finance.desc_assignment', { n: assignment[1] })
   return text

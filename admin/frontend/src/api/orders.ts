@@ -200,6 +200,23 @@ export interface OrderRating {
   created_at: string
 }
 
+/**
+ * The passenger's coupon or bonus on an order (§23.6, openapi OrderPromotion):
+ * the fare stays gross_fare, the passenger pays cash_due and Jan Taxi credits
+ * the discount to the driver (compensation) once the order completes.
+ */
+export interface OrderPromotion {
+  kind: 'coupon' | 'bonus'
+  /** Campaign title of the version that applied; null for the bonus balance without one. */
+  title: LocalizedText | null
+  discount: number
+  gross_fare: number
+  cash_due: number
+  status: 'reserved' | 'released' | 'settled' | 'reversed'
+  compensation: number | null
+  settled_at: string | null
+}
+
 export interface AdminOrder extends OrderLoad, OrderPlace {
   id: string
   number: number
@@ -220,6 +237,12 @@ export interface AdminOrder extends OrderLoad, OrderPlace {
   /** Village whose commission applied (pickup A inside it); null for the general commission, absent in older payloads. */
   commission_area?: OrderCommissionArea | null
   payment_method: PaymentMethod
+  /** Promotional discount (coupon or bonus); 0 without one, absent in older payloads. The fare and commission never change. */
+  promo_discount?: number
+  /** What the passenger pays the driver: fare − promo_discount. */
+  cash_due?: number
+  /** Set when promo_discount > 0. */
+  promotion?: OrderPromotion | null
   tariff_id: string
   quote_id: string | null
   distance_m: number | null

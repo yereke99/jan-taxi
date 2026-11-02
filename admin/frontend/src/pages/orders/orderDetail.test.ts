@@ -1,6 +1,7 @@
 // Order detail: the commission row names the village whose commission
-// applied, and stops the passenger wrote (manual stops and a typed pickup A)
-// carry the "written by the passenger" label.
+// applied, stops the passenger wrote (manual stops and a typed pickup A)
+// carry the "written by the passenger" label, and a passenger's promotion
+// shows the discount, the cash due and the driver's compensation.
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -147,6 +148,58 @@ describe('OrderDetailPage', () => {
     delete older.commission_area
     w = await mountDetail(older)
     expect(commissionValue(w)).toBe('70\u00a0₸ · 7%')
+  })
+
+  it('shows the passenger’s promotion: discount, cash due and the driver’s compensation', async () => {
+    const w = await mountDetail(
+      order({
+        status: 'completed',
+        fare: 1500,
+        promo_discount: 400,
+        cash_due: 1100,
+        promotion: {
+          kind: 'coupon',
+          title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' },
+          discount: 400,
+          gross_fare: 1500,
+          cash_due: 1100,
+          status: 'settled',
+          compensation: 400,
+          settled_at: '2026-11-01T09:00:00Z',
+        },
+      }),
+    )
+    const card = w.findAll('section.card').find((c) => c.text().startsWith('Акция'))!
+    expect(card.text()).toContain('Первая поездка')
+    expect(card.text()).toContain('1 500 ₸')
+    expect(card.text()).toContain('−400 ₸')
+    expect(card.text()).toContain('Пассажир платит водителю1 100 ₸')
+    expect(card.text()).toContain('400 ₸ зачислено на баланс')
+    expect(card.text()).toContain('Проведена')
+    expect(card.text()).toContain('Цена поездки и комиссия от акции не меняются.')
+    // The fare and the commission stay as they were.
+    expect(commissionValue(w)).toBe('70 ₸ · 7% · Шұбарқұдық')
+  })
+
+  it('says when a credited compensation was reversed', async () => {
+    const w = await mountDetail(
+      order({
+        status: 'completed',
+        fare: 1500,
+        promo_discount: 300,
+        cash_due: 1200,
+        promotion: { kind: 'bonus', title: null, discount: 300, gross_fare: 1500, cash_due: 1200, status: 'reversed', compensation: 300, settled_at: '2026-11-01T09:00:00Z' },
+      }),
+    )
+    const card = w.findAll('section.card').find((c) => c.text().startsWith('Акция'))!
+    expect(card.text()).toContain('Бонусный баланс')
+    expect(card.text()).toContain('300 ₸ было зачислено, затем сторнировано')
+    expect(card.text()).not.toContain('зачислено на баланс')
+  })
+
+  it('shows no promotion block without a discount', async () => {
+    const w = await mountDetail(order({ promo_discount: 0, cash_due: 1000, promotion: null }))
+    expect(w.findAll('section.card').some((c) => c.text().startsWith('Акция'))).toBe(false)
   })
 
   it('marks the typed pickup and the manual stop as written by the passenger', async () => {

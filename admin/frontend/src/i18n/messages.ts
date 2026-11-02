@@ -8,6 +8,7 @@ import { commissionAreasArea } from './areas/commissionAreas'
 import { dashboard } from './areas/dashboard'
 import { drivers } from './areas/drivers'
 import { finance } from './areas/finance'
+import { marketingArea } from './areas/marketing'
 import { orders } from './areas/orders'
 import { settingsArea } from './areas/settings'
 import { system } from './areas/system'
@@ -26,6 +27,7 @@ function compose(locale: 'kk' | 'ru' | 'en') {
     classes: classesArea[locale],
     bonus: bonusArea[locale],
     commission_areas: commissionAreasArea[locale],
+    marketing: marketingArea[locale],
   }
 }
 

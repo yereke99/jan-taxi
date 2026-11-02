@@ -21,6 +21,8 @@ export const SETTING_GROUPS: ReadonlyArray<{ id: string; prefixes: string[] }> =
   { id: 'delivery', prefixes: ['delivery.'] },
   { id: 'support', prefixes: ['support.'] },
   { id: 'navigation', prefixes: ['navigation.'] },
+  // Emergency switches and broadcast settings of the promotions (§23.9); Marketing → Safety changes them with a reason.
+  { id: 'marketing', prefixes: ['marketing.'] },
 ]
 
 export function groupOf(key: string): string {
@@ -72,6 +74,15 @@ export function intOutOfRange(item: SettingItem, value: unknown): boolean {
   if (item.type !== 'int' || typeof value !== 'number') return false
   const { min, max } = item.constraints
   return (min !== undefined && value < min) || (max !== undefined && value > max)
+}
+
+/** Client copy of the API rules for int_list settings: too_many, out_of_range or duplicate; null when the list fits. */
+export function intListProblem(item: SettingItem, value: unknown): string | null {
+  if (item.type !== 'int_list' || !Array.isArray(value)) return null
+  const { min, max, max_items: maxItems } = item.constraints
+  if (maxItems !== undefined && value.length > maxItems) return 'too_many'
+  if (value.some((n) => typeof n === 'number' && ((min !== undefined && n < min) || (max !== undefined && n > max)))) return 'out_of_range'
+  return new Set(value).size === value.length ? null : 'duplicate'
 }
 
 /** Dispatch radius settings (ARCHITECTURE §7). */

@@ -148,6 +148,11 @@ export const LEDGER_TYPES = [
   'adjustment_credit',
   'adjustment_debit',
   'bonus_credit',
+  // A passenger's coupon or bonus paid part of the fare: Jan Taxi credits the
+  // discount to the driver when the order completes (§23.6); finance may take
+  // it back on a decision.
+  'promo_compensation',
+  'promo_compensation_reversal',
 ] as const
 export type LedgerEntryType = (typeof LEDGER_TYPES)[number]
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SettingItem } from '../../api/config'
-import { commissionBounds, groupOf, intOutOfRange, radiusSchedule, welcomeBonusOn } from './settingsModel'
+import { commissionBounds, fromDraft, groupOf, intListProblem, intOutOfRange, radiusSchedule, welcomeBonusOn } from './settingsModel'
 
 function item(key: string, value: unknown, constraints: SettingItem['constraints'] = {}): SettingItem {
   return {
@@ -62,6 +62,20 @@ describe('bonus and commission rules', () => {
     expect(intOutOfRange(amount, 120)).toBe(true)
     expect(intOutOfRange(amount, 40)).toBe(true)
     expect(intOutOfRange(item('driver.welcome_bonus', 500, { min: 0, max: 100000 }), 0)).toBe(false)
+  })
+
+  it('checks an id list the way the API does: length, range, repeats', () => {
+    const ids: SettingItem = { ...item('marketing.test_recipients', []), type: 'int_list', constraints: { min: 1, max: 9_999_999_999_999, max_items: 2 } }
+    expect(fromDraft(ids, '987654321, 123456789')).toEqual({ value: [987654321, 123456789] })
+    expect(fromDraft(ids, '')).toEqual({ value: [] })
+    expect(intListProblem(ids, [987654321, 123456789])).toBeNull()
+    expect(intListProblem(ids, [])).toBeNull()
+    expect(intListProblem(ids, [1, 2, 3])).toBe('too_many')
+    expect(intListProblem(ids, [0])).toBe('out_of_range')
+    expect(intListProblem(ids, [10_000_000_000_000])).toBe('out_of_range')
+    expect(intListProblem(ids, [5, 5])).toBe('duplicate')
+    // Other types are left to their own checks.
+    expect(intListProblem(item('topup.min_amount', 100), [5, 5])).toBeNull()
   })
 })
 

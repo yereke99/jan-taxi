@@ -7,7 +7,8 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useErrors } from '../composables/useErrors'
-import { validateReason } from '../forms/validation'
+import { cleanText, validateReason } from '../forms/validation'
+import { codePoints } from '../utils/text'
 import AppButton from './AppButton.vue'
 import FormField from './FormField.vue'
 import Modal from './Modal.vue'
@@ -21,13 +22,17 @@ const props = withDefaults(
     label?: string
     placeholder?: string
     maxLength: number
+    /** Shortest reason the API accepts (marketing decisions need 3 characters); 0 = any. */
+    minLength?: number
     confirmLabel?: string
     destructive?: boolean
     /** Suggested reasons the operator can pick with one click. */
     presets?: string[]
     submit: (reason: string) => Promise<void>
+    /** Text for an API error the page explains better than the error code does. */
+    errorText?: (err: unknown) => string | null
   }>(),
-  { message: '', label: '', placeholder: '', confirmLabel: '', destructive: false, presets: () => [] },
+  { message: '', label: '', placeholder: '', minLength: 0, confirmLabel: '', destructive: false, presets: () => [], errorText: undefined },
 )
 const emit = defineEmits<{ 'update:open': [open: boolean]; done: [] }>()
 
@@ -53,7 +58,8 @@ const canSubmit = computed(() => reason.value.trim().length > 0 && !busy.value)
 
 async function submitReason(): Promise<void> {
   formError.value = ''
-  const problem = validateReason(reason.value, props.maxLength)
+  let problem = validateReason(reason.value, props.maxLength)
+  if (!problem && codePoints(cleanText(reason.value)) < props.minLength) problem = 'too_short'
   fieldError.value = problem ? errors.reason(problem) : ''
   if (problem || busy.value) return
   busy.value = true
@@ -64,7 +70,7 @@ async function submitReason(): Promise<void> {
   } catch (err) {
     const f = errors.fields(err)
     fieldError.value = f.reason ?? ''
-    formError.value = errors.text(err)
+    formError.value = props.errorText?.(err) ?? errors.text(err)
   } finally {
     busy.value = false
   }
