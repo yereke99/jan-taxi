@@ -81,6 +81,7 @@ var texts = runtime.Catalog{
 		"trip_title":  "<b>Ағымдағы сапар №%d</b>",
 		"trip_status": "Күйі: %s",
 		"trip_fare":   "Бағасы: %s",
+		"promo_cash":  "💵 Жолаушыдан алу: <b>%s</b> · 🎁 +%s Jan Taxi акциясы",
 		"trip_none":   "Қазір ағымдағы сапарыңыз жоқ.",
 		"btn_trip":    "Сапарды ашу",
 
@@ -287,6 +288,7 @@ var texts = runtime.Catalog{
 		"trip_title":  "<b>Текущая поездка №%d</b>",
 		"trip_status": "Статус: %s",
 		"trip_fare":   "Стоимость: %s",
+		"promo_cash":  "💵 Получить с пассажира: <b>%s</b> · 🎁 +%s акция Jan Taxi",
 		"trip_none":   "Сейчас у вас нет текущей поездки.",
 		"btn_trip":    "Открыть поездку",
 
@@ -493,6 +495,7 @@ var texts = runtime.Catalog{
 		"trip_title":  "<b>Current trip #%d</b>",
 		"trip_status": "Status: %s",
 		"trip_fare":   "Fare: %s",
+		"promo_cash":  "💵 Collect from the passenger: <b>%s</b> · 🎁 +%s Jan Taxi promotion",
 		"trip_none":   "You have no current trip.",
 		"btn_trip":    "Open trip",
 

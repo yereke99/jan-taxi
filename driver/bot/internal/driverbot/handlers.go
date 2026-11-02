@@ -291,6 +291,10 @@ func (b *Bot) needLocation(ctx context.Context, s *session, key string) error {
 // withholds it until the driver accepts).
 func orderCard(s *session, o botapi.OrderCard) string {
 	lines := []string{s.t("order_head", o.Number, runtime.Esc(s.t("category_"+o.Category)), runtime.Esc(runtime.FormatMoney(o.Fare)))}
+	if o.PromoDiscount > 0 {
+		lines = append(lines, s.t("promo_cash", runtime.Esc(runtime.FormatMoney(o.CashDue)),
+			runtime.Esc(runtime.FormatMoney(o.PromoDiscount))))
+	}
 	if l := localityLine(o.Locality); l != "" {
 		lines = append(lines, l)
 	}
@@ -406,6 +410,11 @@ func (b *Bot) trip(ctx context.Context, s *session) error {
 		lines = append(lines, s.t("order_manual"))
 	}
 	lines = append(lines, s.t("trip_fare", runtime.Esc(runtime.FormatMoney(o.Fare))))
+	if o.PromoDiscount > 0 {
+		// The cash to take: the rest comes from Jan Taxi after the ride (§23.6).
+		lines = append(lines, s.t("promo_cash", runtime.Esc(runtime.FormatMoney(o.CashDue)),
+			runtime.Esc(runtime.FormatMoney(o.PromoDiscount))))
+	}
 	return b.send(ctx, s, strings.Join(lines, "\n"), runtime.Inline(b.appButton(ctx, s, "btn_trip", "trip")))
 }
 

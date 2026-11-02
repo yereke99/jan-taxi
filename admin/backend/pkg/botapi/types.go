@@ -44,18 +44,22 @@ type SyncUserResponse struct {
 
 // OrderSummary is a short order description for bot replies.
 type OrderSummary struct {
-	ID                 string    `json:"id"`
-	Number             int64     `json:"number"`
-	Status             string    `json:"status"`
-	Category           string    `json:"category"`
-	VehicleClass       string    `json:"vehicle_class"`
-	VehicleClassName   Localized `json:"vehicle_class_name"`
-	PassengerCount     *int      `json:"passenger_count"`
-	CargoSize          *string   `json:"cargo_size"`
-	Fare               int64     `json:"fare"`
-	Currency           string    `json:"currency"`
-	PickupAddress      string    `json:"pickup_address"`
-	DestinationAddress string    `json:"destination_address"`
+	ID               string    `json:"id"`
+	Number           int64     `json:"number"`
+	Status           string    `json:"status"`
+	Category         string    `json:"category"`
+	VehicleClass     string    `json:"vehicle_class"`
+	VehicleClassName Localized `json:"vehicle_class_name"`
+	PassengerCount   *int      `json:"passenger_count"`
+	CargoSize        *string   `json:"cargo_size"`
+	Fare             int64     `json:"fare"`
+	Currency         string    `json:"currency"`
+	// PromoDiscount is a passenger's coupon or bonus; CashDue is what the
+	// passenger pays the driver (ARCHITECTURE §23.6).
+	PromoDiscount      int64  `json:"promo_discount"`
+	CashDue            int64  `json:"cash_due"`
+	PickupAddress      string `json:"pickup_address"`
+	DestinationAddress string `json:"destination_address"`
 	// PickupTyped: A's address is the passenger's own words (A keeps its
 	// map point); DestinationManual: B is the passenger's words without one.
 	PickupTyped       bool `json:"pickup_typed"`
@@ -198,6 +202,8 @@ type OrderCard struct {
 	CargoDescription *string       `json:"cargo_description"`
 	Fare             int64         `json:"fare"`
 	Currency         string        `json:"currency"`
+	PromoDiscount    int64         `json:"promo_discount"`
+	CashDue          int64         `json:"cash_due"`
 	CommissionAmount int64         `json:"commission_amount"`
 	PaymentMethod    string        `json:"payment_method"`
 	// DistanceM and DurationS are nil for a route with a manually typed stop.

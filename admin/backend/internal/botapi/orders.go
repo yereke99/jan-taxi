@@ -16,18 +16,22 @@ import (
 
 // orderSummary is the OpenAPI BotOrderSummary.
 type orderSummary struct {
-	ID                 uuid.UUID           `json:"id"`
-	Number             int64               `json:"number"`
-	Status             string              `json:"status"`
-	Category           string              `json:"category"`
-	VehicleClass       string              `json:"vehicle_class"`
-	VehicleClassName   vehicleclasses.Name `json:"vehicle_class_name"`
-	PassengerCount     *int                `json:"passenger_count"`
-	CargoSize          *string             `json:"cargo_size"`
-	Fare               int64               `json:"fare"`
-	Currency           string              `json:"currency"`
-	PickupAddress      string              `json:"pickup_address"`
-	DestinationAddress string              `json:"destination_address"`
+	ID               uuid.UUID           `json:"id"`
+	Number           int64               `json:"number"`
+	Status           string              `json:"status"`
+	Category         string              `json:"category"`
+	VehicleClass     string              `json:"vehicle_class"`
+	VehicleClassName vehicleclasses.Name `json:"vehicle_class_name"`
+	PassengerCount   *int                `json:"passenger_count"`
+	CargoSize        *string             `json:"cargo_size"`
+	Fare             int64               `json:"fare"`
+	Currency         string              `json:"currency"`
+	// PromoDiscount is a passenger's coupon or bonus (§23.6); CashDue is
+	// what the passenger pays the driver.
+	PromoDiscount      int64  `json:"promo_discount"`
+	CashDue            int64  `json:"cash_due"`
+	PickupAddress      string `json:"pickup_address"`
+	DestinationAddress string `json:"destination_address"`
 	// PickupTyped: A's address is the passenger's own words (A keeps its
 	// map point); DestinationManual: B is the passenger's words without one.
 	PickupTyped       bool `json:"pickup_typed"`
@@ -52,7 +56,7 @@ var orderSummarySelect = fmt.Sprintf(`
 	       COALESCE(%s, ''), COALESCE(%s, ''), o.created_at,
 	       o.vehicle_class, ovc.name_kk, ovc.name_ru, ovc.name_en, o.passenger_count, o.cargo_size,
 	       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en,
-	       COALESCE(p.address_typed, false), COALESCE(d.mode = 'manual', false)
+	       COALESCE(p.address_typed, false), COALESCE(d.mode = 'manual', false), o.promo_discount
 	FROM orders o
 	JOIN vehicle_classes ovc ON ovc.code = o.vehicle_class
 	JOIN cities trc ON trc.id = o.city_id
@@ -75,9 +79,10 @@ func queryOrderSummaries(ctx context.Context, q db.Querier, where string, args .
 			&o.PickupAddress, &o.DestinationAddress, &o.CreatedAt, &o.VehicleClass, &o.VehicleClassName.KK,
 			&o.VehicleClassName.RU, &o.VehicleClassName.EN, &o.PassengerCount, &o.CargoSize, &o.Locality,
 			&o.TariffRegion.Code, &o.TariffRegion.Name.KK, &o.TariffRegion.Name.RU, &o.TariffRegion.Name.EN,
-			&o.PickupTyped, &o.DestinationManual); err != nil {
+			&o.PickupTyped, &o.DestinationManual, &o.PromoDiscount); err != nil {
 			return nil, fmt.Errorf("scan order summary: %w", err)
 		}
+		o.CashDue = o.Fare - o.PromoDiscount
 		out = append(out, o)
 	}
 	if err := rows.Err(); err != nil {

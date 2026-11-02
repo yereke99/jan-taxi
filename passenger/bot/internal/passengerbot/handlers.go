@@ -79,8 +79,9 @@ func (b *Bot) orders(ctx context.Context, s *session) error {
 	var rows [][]telegram.InlineKeyboardButton
 	var row []telegram.InlineKeyboardButton
 	for _, o := range items {
+		// With a coupon or bonus the passenger pays the cash due (§23.6).
 		lines = append(lines, s.t("order_line", o.Number,
-			runtime.Esc(s.t("status_"+o.Status)), runtime.Esc(runtime.FormatMoney(o.Fare)),
+			runtime.Esc(s.t("status_"+o.Status)), runtime.Esc(runtime.FormatMoney(o.Fare-o.PromoDiscount)),
 			runtime.Esc(runtime.PlaceLabel(o.PickupAddress, s.t("map_point"))),
 			runtime.Esc(runtime.PlaceLabel(o.DestinationAddress, s.t("map_point")))))
 		row = append(row, runtime.WebAppButton(s.t("btn_order", o.Number), b.miniAppURL(ctx, "order_"+o.ID)))
