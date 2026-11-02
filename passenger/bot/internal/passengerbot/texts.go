@@ -66,10 +66,11 @@ var texts = runtime.Catalog{
 		"support_none":  "Қолдау қызметінің байланыс деректері әлі жарияланбаған.",
 		"btn_support":   "Қолдауға жазу",
 
-		"language_set": "Тіл өзгертілді: қазақша.",
-		"help":         "Төмендегі мәзірден әрекетті таңдаңыз немесе қосымшаны ашыңыз.",
-		"blocked":      "Аккаунтыңыз шектелген. Толығырақ ақпаратты қолдау қызметінен біліңіз.",
-		"error":        "Қызмет уақытша қолжетімсіз. Біраздан соң қайталап көріңіз.",
+		"language_set":  "Тіл өзгертілді: қазақша.",
+		"marketing_off": "Жарнамалық хабарламалар өшірілді. Тапсырыс туралы хабарламалар келе береді.",
+		"help":          "Төмендегі мәзірден әрекетті таңдаңыз немесе қосымшаны ашыңыз.",
+		"blocked":       "Аккаунтыңыз шектелген. Толығырақ ақпаратты қолдау қызметінен біліңіз.",
+		"error":         "Қызмет уақытша қолжетімсіз. Біраздан соң қайталап көріңіз.",
 
 		"phone_saved":    "<b>Рахмет!</b> Телефон нөміріңіз сақталды: <b>%s</b>.\nТапсырысыңызды алған жүргізуші сізге қоңырау шала алады.",
 		"phone_own_only": "Тек өз нөміріңізді бөлісе аласыз. Қосымшадағы «Нөмірді бөлісу» батырмасын басыңыз.",
@@ -136,10 +137,11 @@ var texts = runtime.Catalog{
 		"support_none":  "Контакты поддержки ещё не опубликованы.",
 		"btn_support":   "Написать в поддержку",
 
-		"language_set": "Язык изменён: русский.",
-		"help":         "Выберите действие в меню ниже или откройте приложение.",
-		"blocked":      "Ваш аккаунт ограничен. Подробности можно узнать в поддержке.",
-		"error":        "Сервис временно недоступен. Попробуйте чуть позже.",
+		"language_set":  "Язык изменён: русский.",
+		"marketing_off": "Рекламные рассылки отключены. Сообщения о заказах будут приходить как прежде.",
+		"help":          "Выберите действие в меню ниже или откройте приложение.",
+		"blocked":       "Ваш аккаунт ограничен. Подробности можно узнать в поддержке.",
+		"error":         "Сервис временно недоступен. Попробуйте чуть позже.",
 
 		"phone_saved":    "<b>Спасибо!</b> Номер телефона сохранён: <b>%s</b>.\nВодитель, принявший ваш заказ, сможет вам позвонить.",
 		"phone_own_only": "Можно поделиться только своим номером. Нажмите «Поделиться номером» в приложении.",
@@ -206,10 +208,11 @@ var texts = runtime.Catalog{
 		"support_none":  "Support contacts have not been published yet.",
 		"btn_support":   "Message support",
 
-		"language_set": "Language changed: English.",
-		"help":         "Choose an action from the menu below or open the app.",
-		"blocked":      "Your account is restricted. Please contact support for details.",
-		"error":        "The service is temporarily unavailable. Please try again shortly.",
+		"language_set":  "Language changed: English.",
+		"marketing_off": "Marketing messages are off. Order messages still arrive.",
+		"help":          "Choose an action from the menu below or open the app.",
+		"blocked":       "Your account is restricted. Please contact support for details.",
+		"error":         "The service is temporarily unavailable. Please try again shortly.",
 
 		"phone_saved":    "<b>Thank you!</b> Your phone number is saved: <b>%s</b>.\nThe driver who takes your order will be able to call you.",
 		"phone_own_only": "You can only share your own number. Tap “Share phone number” in the app.",

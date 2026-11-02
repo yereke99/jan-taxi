@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/yereke99/jantaxi/admin/backend/pkg/botapi"
 	"github.com/yereke99/jantaxi/admin/backend/pkg/botapi/runtime"
 	"github.com/yereke99/jantaxi/admin/backend/pkg/telegram"
 )
@@ -141,8 +142,12 @@ func (b *Bot) languagePicker(ctx context.Context, s *session) error {
 	return b.send(ctx, s, s.t("pick_language"), runtime.Inline(languageRow()))
 }
 
-// onCallback handles inline button presses (only the language picker).
+// onCallback handles inline button presses: the language picker and the
+// unsubscribe button of marketing messages.
 func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) error {
+	if q.Data == botapi.MarketingOptOutCallback {
+		return b.onMarketingOff(ctx, q)
+	}
 	lang, ok := strings.CutPrefix(q.Data, "lang:")
 	if !ok || runtime.Lang(lang) != lang {
 		return b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
@@ -169,4 +174,19 @@ func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) error {
 	s.lang = lang
 	_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: s.t("language_set")})
 	return b.send(ctx, s, s.t("language_set"), b.keyboard(lang))
+}
+
+// onMarketingOff turns marketing messages off for the person who pressed
+// «Жарнамадан бас тарту» under a broadcast; order messages are unaffected.
+func (b *Bot) onMarketingOff(ctx context.Context, q *telegram.CallbackQuery) error {
+	lang := runtime.DefaultLanguage
+	if user, err := b.api.SyncUser(ctx, syncRequest(&q.From)); err == nil {
+		lang = runtime.Lang(user.Language)
+	}
+	if err := b.api.SetMarketingOptOut(ctx, q.From.ID, true); err != nil {
+		_ = b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: texts.T(lang, "error")})
+		return fmt.Errorf("marketing opt-out: %w", err)
+	}
+	return b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryParams{CallbackQueryID: q.ID,
+		Text: texts.T(lang, "marketing_off"), ShowAlert: true})
 }

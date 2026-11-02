@@ -181,10 +181,11 @@ var texts = runtime.Catalog{
 		"support_none":  "Қолдау қызметінің байланыс деректері әлі жарияланбаған.",
 		"btn_support":   "Қолдауға жазу",
 
-		"language_set": "Тіл өзгертілді: қазақша.",
-		"help":         "Төмендегі мәзірден әрекетті таңдаңыз немесе қосымшаны ашыңыз.",
-		"blocked":      "Аккаунтыңыз шектелген. Толығырақ ақпаратты қолдау қызметінен біліңіз.",
-		"error":        "Қызмет уақытша қолжетімсіз. Біраздан соң қайталап көріңіз.",
+		"language_set":  "Тіл өзгертілді: қазақша.",
+		"marketing_off": "Жарнамалық хабарламалар өшірілді. Тапсырыстар бұрынғыдай келеді.",
+		"help":          "Төмендегі мәзірден әрекетті таңдаңыз немесе қосымшаны ашыңыз.",
+		"blocked":       "Аккаунтыңыз шектелген. Толығырақ ақпаратты қолдау қызметінен біліңіз.",
+		"error":         "Қызмет уақытша қолжетімсіз. Біраздан соң қайталап көріңіз.",
 
 		"btn_take":              "✅ Тапсырысты алу",
 		"btn_take_order":        "✅ №%d алу",
@@ -386,10 +387,11 @@ var texts = runtime.Catalog{
 		"support_none":  "Контакты поддержки ещё не опубликованы.",
 		"btn_support":   "Написать в поддержку",
 
-		"language_set": "Язык изменён: русский.",
-		"help":         "Выберите действие в меню ниже или откройте приложение.",
-		"blocked":      "Ваш аккаунт ограничен. Подробности можно узнать в поддержке.",
-		"error":        "Сервис временно недоступен. Попробуйте чуть позже.",
+		"language_set":  "Язык изменён: русский.",
+		"marketing_off": "Рекламные рассылки отключены. Заказы приходят как прежде.",
+		"help":          "Выберите действие в меню ниже или откройте приложение.",
+		"blocked":       "Ваш аккаунт ограничен. Подробности можно узнать в поддержке.",
+		"error":         "Сервис временно недоступен. Попробуйте чуть позже.",
 
 		"btn_take":              "✅ Забрать заказ",
 		"btn_take_order":        "✅ Забрать №%d",
@@ -591,10 +593,11 @@ var texts = runtime.Catalog{
 		"support_none":  "Support contacts have not been published yet.",
 		"btn_support":   "Message support",
 
-		"language_set": "Language changed: English.",
-		"help":         "Choose an action from the menu below or open the app.",
-		"blocked":      "Your account is restricted. Please contact support for details.",
-		"error":        "The service is temporarily unavailable. Please try again shortly.",
+		"language_set":  "Language changed: English.",
+		"marketing_off": "Marketing messages are off. Orders still arrive.",
+		"help":          "Choose an action from the menu below or open the app.",
+		"blocked":       "Your account is restricted. Please contact support for details.",
+		"error":         "The service is temporarily unavailable. Please try again shortly.",
 
 		"btn_take":              "✅ Accept order",
 		"btn_take_order":        "✅ Accept #%d",

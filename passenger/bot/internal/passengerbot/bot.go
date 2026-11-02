@@ -25,6 +25,8 @@ type API interface {
 	SetLanguage(ctx context.Context, tgID int64, lang string) (string, error)
 	PassengerOrders(ctx context.Context, tgID int64, limit int) ([]botapi.OrderSummary, error)
 	VerifyPassengerContact(ctx context.Context, tgID int64, phone string, contactUserID int64) (botapi.ContactResult, error)
+	CaptureReferral(ctx context.Context, tgID int64, payload string) (botapi.ReferralResult, error)
+	SetMarketingOptOut(ctx context.Context, tgID int64, optOut bool) error
 	Config(ctx context.Context) (botapi.Config, error)
 }
 
@@ -156,6 +158,13 @@ func (b *Bot) onMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.onContact(ctx, s, msg)
 	}
 	if cmd == "start" {
+		if strings.HasPrefix(payload, "ref_") {
+			// A friend's invitation link (§23.5): the API decides whether
+			// it binds; the greeting never depends on it.
+			if _, err := b.api.CaptureReferral(ctx, s.tgID, payload); err != nil {
+				b.log.Warn("referral capture failed", slog.Any("err", err))
+			}
+		}
 		return b.start(ctx, s, payload)
 	}
 	action := commands[cmd]

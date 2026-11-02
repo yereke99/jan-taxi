@@ -214,6 +214,17 @@ type AvailableOrders struct {
 	Eligibility Eligibility `json:"eligibility"`
 }
 
+// ReferralResult is the outcome of a referral capture.
+type ReferralResult struct {
+	Attributed bool   `json:"attributed"`
+	Outcome    string `json:"outcome"`
+	Reason     string `json:"reason"`
+}
+
+// MarketingOptOutCallback is the callback data of a broadcast's unsubscribe
+// button (marketing.OptOutCallback).
+const MarketingOptOutCallback = "mkt_off"
+
 // ContactResult is the outcome of a phone verification.
 type ContactResult struct {
 	Phone         string  `json:"phone"`

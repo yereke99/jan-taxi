@@ -34,6 +34,7 @@ type API interface {
 	VerifyContact(ctx context.Context, tgID int64, phone string, contactUserID int64) (botapi.ContactResult, error)
 	ReportLocation(ctx context.Context, tgID int64, in botapi.LocationReport) error
 	UploadTopUpReceipt(ctx context.Context, tgID int64, fileName string, data []byte) (botapi.TopUpReceiptResult, error)
+	SetMarketingOptOut(ctx context.Context, tgID int64, optOut bool) error
 	Config(ctx context.Context) (botapi.Config, error)
 }
 

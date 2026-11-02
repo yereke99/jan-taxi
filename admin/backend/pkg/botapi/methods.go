@@ -123,6 +123,23 @@ func (c *Client) VerifyPassengerContact(ctx context.Context, tgID int64, phone s
 	return out, err
 }
 
+// CaptureReferral passes a "/start ref_<code>" the passenger bot received;
+// the API binds the new passenger to the inviter when the referral rules
+// allow (ARCHITECTURE §23.5). Retried: a capture is idempotent.
+func (c *Client) CaptureReferral(ctx context.Context, tgID int64, payload string) (ReferralResult, error) {
+	var out ReferralResult
+	err := c.do(ctx, http.MethodPost, tgPath("/passenger", tgID, "/referral"), nil,
+		map[string]string{"payload": payload}, &out, true)
+	return out, err
+}
+
+// SetMarketingOptOut records the person's marketing choice (the unsubscribe
+// button of a broadcast, §23.7).
+func (c *Client) SetMarketingOptOut(ctx context.Context, tgID int64, optOut bool) error {
+	return c.do(ctx, http.MethodPost, tgPath("/bots/"+c.Bot+"/users", tgID, "/marketing"), nil,
+		map[string]bool{"opt_out": optOut}, nil, true)
+}
+
 // ReportLocation stores a location shared in the driver bot. It is not
 // retried: a newer location will follow.
 func (c *Client) ReportLocation(ctx context.Context, tgID int64, in LocationReport) error {
