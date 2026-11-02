@@ -1,11 +1,98 @@
-# Jan Taxi — Handoff (status as of 2026-11-01, Asia/Aqtobe)
+# Jan Taxi — Handoff (status as of 2026-11-02, Asia/Aqtobe)
 
 This file tells the next engineer exactly what is done, what is verified,
 and what is left. Read `docs/ARCHITECTURE.md` first — it is the binding design contract
 (module boundaries, order state machine, money model, auth, realtime, endpoint catalogue §19,
 cross-package Go APIs §20, iOS 26 design system §15/§15.1).
 
-## 0. Latest status (2026-11-01)
+## 0. Latest status (2026-11-02)
+
+Marketing and promotions: the customer's two launch promotions «Алғашқы сапар» (first ride) and
+«Досыңды шақыр» (invite a friend) and the tools around them. Contract in ARCHITECTURE §23; the
+owner's guide in Russian is [docs/MARKETING.md](docs/MARKETING.md); the runbook is OPERATIONS
+«Marketing».
+
+- Package `admin/backend/internal/marketing` (wiring `internal/app/wire_marketing.go`) and
+  migration **00016** (additive; its down step refuses to drop marketing data):
+  - versioned campaigns with typed rules;
+  - the first-ride coupon: 400 ₸, 72 h, fare ≥ 400, taxi;
+  - the passenger bonus balance with its own append-only ledger;
+  - referrals: opaque 8-character codes, captured from `?start=ref_<CODE>` in the passenger bot or
+    `?startapp=ref_<CODE>` in the signed Mini App initData; 300 ₸ once per referrer;
+  - promotions on orders: reserved in the creation transaction, released by every cancellation,
+    settled once at completion with `promo_compensation` to the driver's wallet;
+  - segments, and broadcasts with their own rate-limited worker and an unsubscribe button in both
+    bots;
+  - budgets checked under the campaign row lock; reconciliation (endpoint and hourly job).
+- Nothing runs after the upgrade. The seeded campaigns `first_ride_coupon_400` and
+  `referral_300_once` and the system bucket `manual_adjustments` are drafts; an administrator with
+  `marketing.approve` switches each campaign on in Marketing. `marketing.awards_enabled`,
+  `marketing.redemptions_enabled` and `marketing.broadcasts_enabled` are emergency stops (on by
+  default). Pilot budgets: 100 000 ₸ per launch campaign.
+- Money: the fare and the commission do not change (commission on the gross fare, charged at
+  acceptance); the passenger pays `cash_due = fare − promo_discount`; the discount is credited to
+  the driver's wallet (`promo_compensation`, key `promo:<application_id>`) and pays future
+  commissions. There are no payouts: **owner decision pending** on whether drivers need a cash
+  payout (MARKETING.md §6, item 5).
+- Admin roles: new role `marketing_manager` and permissions `marketing.view`, `marketing.edit`,
+  `marketing.approve`, `marketing.broadcast`; bonus corrections and promotion reversals need
+  `finance.manage`. Every mutation is audited; people are masked in marketing views.
+- API: `POST /orders` takes `promotion` and `promotion_discount` (`409 promotion_changed`); order
+  DTOs gain `promo_discount`, `cash_due` and `promotion`. New routes: `/promotions*` (4),
+  `/admin/marketing/*` (35), `/internal/v1/passenger/{tg_id}/referral` and
+  `/internal/v1/bots/{bot}/users/{tg_id}/marketing`, all in ARCHITECTURE §19 and `openapi.yaml`.
+- Jobs: `marketing_events` (2 s), `marketing_coupon_expiry` (1 min), `marketing_campaign_schedule`
+  (30 s), `marketing_grants` (5 s), `marketing_reconcile` (1 h); worker `broadcast_worker` next to
+  the notification worker.
+- Messages and events: templates `promo_coupon_issued`, `promo_referral_reward`,
+  `promo_bonus_granted`; optional `discount`, `cash_due` and `promo_compensation` on the order
+  messages; realtime `promotions.updated`; passenger start parameters `coupons`, `bonus`,
+  `invite` and `ref_<CODE>`.
+- Approvals and disputes (follow-up review): test broadcasts reach only the Telegram ids in the new
+  setting `marketing.test_recipients` (empty after the upgrade: an approver lists the staff ids on
+  Marketing → Safety before the first test, the super admin also in Settings → Marketing), never
+  someone who opted out or blocked the bot,
+  and stop with `marketing.broadcasts_enabled` (`409 broadcasts_disabled`); a scheduled broadcast
+  keeps the targeting that was checked and is not sent (`failed`, note `approval_required`) when
+  its audience grew past the threshold and no approver scheduled it; above the threshold a
+  broadcast needs both `marketing.broadcast` and `marketing.approve` (only `super_admin` by
+  default). A `passenger_credit` campaign freezes its audience when it is scheduled; approver
+  actions carry the reviewed `expected_version` (required; `409 version_conflict`); the system
+  campaigns (the two launch promotions and `manual_adjustments`) are switched, paused, archived and
+  changed by approvers only, and `manual_adjustments` cannot be archived at all. A first ride cancelled by a dispute loses its coupon
+  (`qualifying_ride_cancelled`; a coupon redeemed on a later completed order is flagged
+  `coupon_source_cancelled`); its referral is rejected while under review or flagged once paid. The
+  bots' order summaries (`BotOrderSummary`) carry `promo_discount` and `cash_due`.
+- Docs: ARCHITECTURE §23 (and §2, §4.2, §6, §8, §9, §16–§20), docs/MARKETING.md (new),
+  OPERATIONS «Marketing», `openapi.yaml` (every new path and schema).
+- Verification:
+  - `JT_CHECK_OPENAPI=1 go test -count=1 -run 'TestRoutesDocumented|TestSpecOperationsParser'
+    ./admin/backend/internal/app` passes: every mounted route, the 41 new ones included, is in
+    `openapi.yaml`. The spec parses as strict YAML with no dangling `$ref`, and its schemas list the
+    same fields as the Go JSON tags of the marketing and order DTOs and of the bots' order summary.
+  - Full suites on 2026-11-02 after the last change: `gofmt -l` empty, `go vet ./...` clean,
+    `go test -race -count=1 ./...` 45 packages ok; admin panel typecheck, lint, 208 tests, build;
+    passenger Mini App typecheck, lint, 492 tests (ten runs in a row without an unhandled error),
+    build and demo build; driver Mini App typecheck, lint, 581 tests, build; `verify-shared` 87
+    files.
+  - Upgrade on a local stack: a database at migration 15 with orders, a driver wallet and
+    commissions, upgraded with `make build && make up && make health` (00016 applied, every
+    service healthy): old orders have `promo_discount = 0`, wallet equals ledger, both
+    reconciliations clean, the old web build still works against the new API.
+  - The same stack with a Telegram stub: the admin Marketing section with a super admin and a
+    marketing manager (the launch campaign switch on and off, the manager's switch locked, every
+    page loading without errors), a broadcast sent through the worker («Принято Telegram» 1), and
+    the passenger `/promotions*` answers read by the Mini App's own parsers.
+- Open points: the owner's decision on driver payouts (above); there is no admin button yet to
+  disable a passenger's referral code (`referral_codes.disabled_at`, database only, OPERATIONS
+  «Marketing»); a promotion flagged for review that finance decides to keep cannot be dismissed, so
+  it stays counted in the overview's `review_promotions`.
+- Deploy as before: `make backup && git pull --ff-only origin main && make build && make up &&
+  make health` (the migrate service applies 00016; no `.env` change). Then switch the campaigns on
+  in the admin panel (MARKETING.md §8). Before a rollback switch `marketing.redemptions_enabled`
+  off and let orders with a discount finish (OPERATIONS «Marketing»).
+
+### 2026-11-01
 
 Passenger-written addresses and village commissions (owner, 01.11.2026); details in
 ARCHITECTURE §5 and §22.9, findings and checks in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md) §8.
@@ -149,8 +236,8 @@ changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
 |---|---|
 | `admin/backend/cmd/api` | Central Go API binary: `api serve`, `api migrate up\|status`, `api admin create`, `api healthcheck` |
 | `admin/backend/cmd/devlink` | Dev tool: prints locally signed Telegram Mini App URLs (no real Telegram needed) |
-| `admin/backend/internal/*` | Domain packages: auth, users, cities, settings, audit, realtime, notifications, wallets, routing, pricing, orders(+lifecycle), dispatch, stops, drivers, vehicles, moderation, payments, reports, botapi, app (wiring), platform/* |
-| `admin/backend/migrations` | goose SQL migrations 00001–00013 (schema, Kazakhstan boundary, seed for Embi, driver consent, retention indexes, Kaspi receipts + payee seed, vehicle classes, business rules, nationwide region KAZ + locality; 00010 manual destinations (a typed last stop without coordinates), 00011 driver verification (document-check tables and ID PDFs; the check was retired on 2026-10-31, rows kept), 00012 manual intermediate stops, 00013 simplified registration (`driver_profiles.iin` with a partial unique index over live statuses, `patronymic`)) |
+| `admin/backend/internal/*` | Domain packages: auth, users, cities, settings, audit, realtime, notifications, wallets, routing, pricing, orders(+lifecycle), dispatch, stops, drivers, vehicles, moderation, payments, reports, commissionareas, marketing, botapi, app (wiring), platform/* |
+| `admin/backend/migrations` | goose SQL migrations 00001–00013 (schema, Kazakhstan boundary, seed for Embi, driver consent, retention indexes, Kaspi receipts + payee seed, vehicle classes, business rules, nationwide region KAZ + locality; 00010 manual destinations (a typed last stop without coordinates), 00011 driver verification (document-check tables and ID PDFs; the check was retired on 2026-10-31, rows kept), 00012 manual intermediate stops, 00013 simplified registration (`driver_profiles.iin` with a partial unique index over live statuses, `patronymic`); 00014 typed pickup address (`order_stops.address_typed`), 00015 village commissions, 00016 marketing (campaigns, coupons, passenger bonus balance, referrals, promotions on orders, segments, broadcasts)) |
 | `admin/backend/api/openapi.yaml` | OpenAPI 3.1 contract (served at `/api/v1/openapi.yaml`) |
 | `admin/backend/pkg/telegram` | Bot API client (used by API notification worker and both bots) |
 | `admin/backend/pkg/botapi` (+`/runtime`) | Internal-API client + shared long-polling bot runtime |
@@ -158,7 +245,7 @@ changes are in [docs/DRIVER_SYSTEM_AUDIT.md](docs/DRIVER_SYSTEM_AUDIT.md).
 | `passenger/miniapp`, `driver/miniapp` | Vue 3 + TS Mini Apps (shared core duplicated on purpose; `node passenger/miniapp/scripts/verify-shared.mjs`) |
 | `admin/frontend` | Vue 3 admin panel |
 | `compose.yaml`, `Dockerfile.*`, `Caddyfile`, `Makefile`, `deploy/`, `.env.example` | Deployment |
-| `docs/` | ARCHITECTURE, DEPLOYMENT, OPERATIONS, TELEGRAM_SETUP, DATA_PROTECTION, DIAGRAMS, CUSTOMER_OVERVIEW_KK (Kazakh), TESTING, `design-preview/` PNG mockups |
+| `docs/` | ARCHITECTURE, DEPLOYMENT, OPERATIONS, TELEGRAM_SETUP, DATA_PROTECTION, DIAGRAMS, CUSTOMER_OVERVIEW_KK (Kazakh), MARKETING (Russian, for the owner), TESTING, `design-preview/` PNG mockups |
 
 ## 2. Verified state (commands actually run, all green)
 

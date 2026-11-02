@@ -90,9 +90,19 @@ info:
     | dispute resolved as cancelled after completion | +commission | 0 | `commission_refund:<order_id>` |
     | admin adjustment | ±amount | 0 | `adjust:<idempotency_key>` |
     | top-up refunded | −amount | 0 | `topup_refund:<topup_id>` |
+    | order with a passenger's promotion completed (`promo_compensation`) | +discount | 0 | `promo:<application_id>` |
+    | that compensation reversed by finance (`promo_compensation_reversal`) | −discount | 0 | `promo:<application_id>:reversal` |
 
     `available = balance - reserved`. Accepting an order requires `available >= commission_amount`
     (`402 insufficient_balance` otherwise).
+
+    ## Promotions
+    The server decides eligibility and computes every discount (ARCHITECTURE §23); the apps only
+    display what `GET /promotions` and the order DTOs return. A coupon or the passenger bonus
+    balance lowers what the passenger pays the driver in cash (`cash_due = fare - promo_discount`);
+    the fare and the commission never change, and the discount is credited to the driver's wallet
+    when the ride completes. The passenger bonus balance has its own ledger
+    (`PassengerBonusEntry`), separate from driver wallets.
 
     ## Mini App start parameters
     Deep links `https://t.me/<bot>?startapp=<param>&mode=fullscreen`, `<param>` matching
@@ -107,6 +117,10 @@ info:
     | passenger | `order_<uuid>` | order detail / live trip (`GET /orders/{id}`) |
     | passenger | `support` | support |
     | passenger | `driver` | "become a driver" screen |
+    | passenger | `coupons` | promotions: the passenger's coupons (`GET /promotions`) |
+    | passenger | `bonus` | promotions: bonus balance and history (`GET /promotions/bonus/history`) |
+    | passenger | `invite` | «Досыңды шақыр» (`GET /promotions/referral`) |
+    | passenger | `ref_<CODE>` | a friend's invitation link: captured from the signed `initData.start_param` at sign-in; opens like `home` |
     | driver | `home` (default) | driver home |
     | driver | `register` | registration / corrections (`GET /driver/registration`) |
     | driver | `orders` | available orders (`GET /driver/orders`) |
@@ -147,6 +161,8 @@ tags:
     description: Route preview and fare quotes.
   - name: orders
     description: Passenger orders (taxi, parcel, other delivery).
+  - name: promotions
+    description: The passenger's coupons, bonus balance, invitations and marketing subscription.
   - name: driver-registration
     description: Driver onboarding (two pages, automatic approval on submission) and corrections of older applications.
   - name: driver
@@ -187,6 +203,8 @@ tags:
     description: Notification templates and the Telegram outbox.
   - name: admin-audit
     description: Admin audit log.
+  - name: admin-marketing
+    description: Campaigns, coupons, passenger bonus balances, referrals, promotions on orders, segments, broadcasts, reconciliation and reports.
   - name: internal
     description: |
       Bot-to-API calls on the internal listener (`:8081`, never proxied). Authenticated with the
@@ -194,9 +212,9 @@ tags:
       update the bot received; the principal is the bot service.
 x-tagGroups:
   - name: Mini Apps
-    tags: [system, auth, me, config, realtime, geo, routes, orders, driver-registration, driver, driver-orders, wallet, topups, payments]
+    tags: [system, auth, me, config, realtime, geo, routes, orders, promotions, driver-registration, driver, driver-orders, wallet, topups, payments]
   - name: Admin panel
-    tags: [admin-auth, admin-admins, admin-dashboard, admin-reports, admin-orders, admin-disputes, admin-drivers, admin-topups, admin-ledger, admin-cities, admin-tariffs, admin-settings, admin-notifications, admin-audit]
+    tags: [admin-auth, admin-admins, admin-dashboard, admin-reports, admin-orders, admin-disputes, admin-drivers, admin-topups, admin-ledger, admin-cities, admin-tariffs, admin-settings, admin-notifications, admin-audit, admin-marketing]
   - name: Internal
     tags: [internal]
 paths:
@@ -712,12 +730,28 @@ paths:
         commission — within the last 24 hours gets `409 conflict` with
         `details {reason: too_many_cancellations, limit}`.
 
+        Promotion (ARCHITECTURE §23.6): `promotion` = `coupon` (the passenger's usable coupon) or
+        `bonus` (the bonus balance, taxi only) with `promotion_discount` = the discount the app
+        showed. The server locks the coupon or the bonus account in the creation transaction and
+        computes the discount itself — a coupon's amount when the fare reaches its
+        `min_order_fare`, or `min(available bonus, fare)`. When that is not what the app showed,
+        nothing is created: `409 promotion_changed` with `details {reason, discount}` (`reason` =
+        `redemptions_disabled`, `no_coupon`, `coupon_expired`, `coupon_frozen`,
+        `category_not_eligible`, `fare_below_minimum`, `no_bonus`, `no_promotion`,
+        `discount_changed` or `coupon_unavailable`; `discount` = what the server would apply, 0 for
+        none); the app re-reads `GET /promotions` and asks the passenger again. One promotion per
+        order. The discount is reserved with the order (`promo_discount`, `cash_due`,
+        `promotion`), released by any cancellation and settled once at completion, when the driver
+        is credited the same amount. The fare and the commission are unchanged. An idempotent
+        replay returns the original order without planning the promotion again.
+
         `fields`: `quote_id` = `required | invalid`, `idempotency_key` = `required | invalid`,
         `fare` = `required | invalid`, `payment_method` = `required | invalid`,
         `comment` = `too_long | invalid | prohibited_content`,
         `cargo_description` = `required | too_long | invalid | not_allowed | prohibited_content`,
         `recipient_phone` = `required | invalid | not_allowed`,
-        `prohibited_items_ack` = `must_be_true | not_allowed`.
+        `prohibited_items_ack` = `must_be_true | not_allowed`,
+        `promotion` / `promotion_discount` = `invalid`.
         An unknown quote or another user's quote is `404 not_found`; an expired quote
         `422 quote_expired`, an already used one `422 quote_expired` with
         `details.reason = quote_used`.
@@ -744,7 +778,7 @@ paths:
         '403': {$ref: '#/components/responses/AppForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409':
-          description: '`conflict` with `details.reason` = `active_order_exists` (+ `active_order_id`), `idempotency_key_reused` or `too_many_cancellations` (+ `limit`).'
+          description: '`conflict` with `details.reason` = `active_order_exists` (+ `active_order_id`), `idempotency_key_reused` or `too_many_cancellations` (+ `limit`); `promotion_changed` with `details {reason, discount}` when the server would apply another discount than the app showed.'
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -761,6 +795,12 @@ paths:
                       code: conflict
                       message: idempotency key already used for a different order
                       details: {reason: idempotency_key_reused}
+                promotionChanged:
+                  value:
+                    error:
+                      code: promotion_changed
+                      message: the promotion changed; review the price
+                      details: {reason: coupon_expired, discount: 0}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '422': {$ref: '#/components/responses/UnprocessableOrder'}
@@ -986,6 +1026,114 @@ paths:
         '401': {$ref: '#/components/responses/AppUnauthorized'}
         '403': {$ref: '#/components/responses/AppForbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  # -------------------------------------------------------------- promotions
+  /promotions:
+    get:
+      operationId: getMyPromotions
+      tags: [promotions]
+      summary: My coupons, bonus balance, offers and invitation state
+      description: |
+        Everything the passenger app shows about promotions (ARCHITECTURE §23.11). The server
+        decides eligibility; the app only displays it. `coupons` are the latest 10, newest first,
+        with `status` computed against the database clock (`issued` past `expires_at` reads
+        `expired`); `server_time` lets the app count down without trusting the phone's clock.
+        `offers` holds the first-ride offer while it can still be earned (awards switched on, no
+        completed order and no coupon yet). `banners` are active informational campaigns.
+        `referral.state` says whether «Досыңды шақыр» is `unavailable`, `locked` (with
+        `lock_reason`) or `unlocked`. The app re-reads this after a `promotions.updated` event.
+      x-jantaxi-app: [passenger]
+      security: [{appToken: []}]
+      responses:
+        '200':
+          description: The passenger's promotions.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PassengerPromotions'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/AppForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /promotions/bonus/history:
+    get:
+      operationId: listMyBonusHistory
+      tags: [promotions]
+      summary: Bonus balance history
+      description: |
+        Credits, spends and adjustments of the passenger's bonus balance, newest first (the
+        reservations and releases of open orders are internal steps and are not listed).
+        `amount` is signed: positive for `grant` / `adjustment_credit`, negative for `spend` /
+        `adjustment_debit`. `fields`: `limit` / `before` = `invalid`.
+      x-jantaxi-app: [passenger]
+      security: [{appToken: []}]
+      parameters:
+        - $ref: '#/components/parameters/CursorLimit'
+        - $ref: '#/components/parameters/CursorBefore'
+      responses:
+        '200':
+          description: Page of bonus entries.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PassengerBonusHistory'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/AppForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /promotions/referral:
+    get:
+      operationId: getMyReferral
+      tags: [promotions]
+      summary: «Досыңды шақыр» — my invitation code and friends
+      description: |
+        The referral campaign's copy and the passenger's state (ARCHITECTURE §23.5). While
+        `unlocked`, the passenger's invitation code is created on the first call (8 characters
+        without 0/O/1/I) and returned with the links `https://t.me/<passenger bot>?start=ref_<CODE>`
+        (`link`) and `?startapp=ref_<CODE>` (`app_link`); without a configured bot username only
+        the code is returned. A disabled code reads `locked` with `lock_reason: disabled`.
+        `earned` is the sum of credited referral rewards; `friends` (up to 50, newest first) show
+        only a first name and a last-name initial; `review` and `rejected` attributions read
+        `not_counted`. One reward per referrer however many friends; the invitee gets nothing from
+        this campaign.
+      x-jantaxi-app: [passenger]
+      security: [{appToken: []}]
+      responses:
+        '200':
+          description: Referral view.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReferralView'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/AppForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /promotions/subscription:
+    put:
+      operationId: setMarketingSubscription
+      tags: [promotions]
+      summary: Marketing messages on or off
+      description: |
+        Stores the person's marketing choice (`user_preferences.marketing_opt_out_at`), shared by
+        both bots: an opted-out person receives no broadcasts. Order messages are not affected.
+        The unsubscribe button under every broadcast does the same from the bots.
+        `fields.subscribed = required`.
+      x-jantaxi-app: [passenger]
+      security: [{appToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingSubscriptionRequest'}
+      responses:
+        '200':
+          description: The stored choice.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingSubscription'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/AppForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
   # ----------------------------------------------------- driver-registration
@@ -4319,6 +4467,1169 @@ paths:
         '422': {$ref: '#/components/responses/ValidationFailed'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  # --------------------------------------------------------- admin-marketing
+  /admin/marketing/overview:
+    get:
+      operationId: adminMarketingOverview
+      tags: [admin-marketing]
+      summary: Marketing overview and health
+      description: |
+        Aggregates only, no personal data (ARCHITECTURE §23.10): the global switches, every
+        campaign (up to 100) with its budget usage, coupon / referral / broadcast counts by status,
+        the passenger bonus liability (`bonus.outstanding`, `bonus.reserved`, `bonus.accounts` with a
+        balance), driver compensation (`credited` = settled and reversed discounts, `pending` =
+        discounts reserved on open orders) and `health`: `events_pending`, `events_failed`,
+        `oldest_pending_s`, `stuck_reservations` (promotions still reserved on completed or
+        cancelled orders), `review_promotions` (settled promotions flagged for finance:
+        `order_cancelled_after_settlement` or `coupon_source_cancelled`), `review_referrals`
+        (attributions in `review`), `broadcast_queue` (deliveries queued or sending) and
+        `overdue_scheduled` (campaigns and broadcasts more than 5 minutes past their time).
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Overview.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingOverview'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/campaigns:
+    get:
+      operationId: adminListMarketingCampaigns
+      tags: [admin-marketing]
+      summary: Campaigns
+      description: |
+        Campaigns with their current version and budget `usage`: archived ones last, then by
+        `priority` (lower first) and newest first. `q` matches the key or the title.
+        `fields`: `page` / `page_size` = `invalid`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/MarketingCampaignStatus'}
+        - name: template
+          in: query
+          schema: {$ref: '#/components/schemas/MarketingTemplate'}
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of campaigns.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignPage'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      operationId: adminCreateMarketingCampaign
+      tags: [admin-marketing]
+      summary: Create a draft campaign
+      description: |
+        A new campaign in `draft` with version 1 (ARCHITECTURE §23.2); nothing runs until an
+        administrator with `marketing.approve` activates it. `rules` are typed by `template` and
+        validated by the server; unknown rule fields are refused. Without `key` the server makes
+        `<template>_<6 hex>`. A `budget_limit` sent by an admin without `marketing.approve` is
+        ignored. `manual_grant` is a system template.
+        `fields`: `template` = `invalid | system_only`, `key` = `invalid | taken`, `title` =
+        `required`, `title.<lang>` / `description.<lang>` = `required | too_long |
+        mentions_commission` (title ≤ 80, description ≤ 600 code points; the description is all
+        three languages or none; drivers read a `driver_milestone_bonus` campaign, so its copy may
+        not name the commission, §22.2), `rules` =
+        `invalid`, `rules.<name>` = `out_of_range | invalid | below_amount | required | not_found
+        | wrong_audience`, `ends_at` = `before_start | window_required`, `budget_limit` / `priority`
+        = `out_of_range`, `exclusivity_group` = `invalid`. Audit-logged
+        (`marketing.campaign.create`).
+      x-jantaxi-permission: marketing.edit
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingCampaignInput'}
+            example:
+              template: first_ride_coupon
+              title: {kk: Алғашқы сапар, ru: Первая поездка, en: First ride}
+              rules: {amount: 400, validity_hours: 72, min_order_fare: 400, categories: [taxi]}
+      responses:
+        '201':
+          description: Draft created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/campaigns/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      operationId: adminGetMarketingCampaign
+      tags: [admin-marketing]
+      summary: Campaign with usage and every version
+      description: The campaign, its budget `usage` and every version, newest first.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Campaign.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignDetail'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/campaigns/{id}/preview:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      operationId: adminPreviewMarketingCampaign
+      tags: [admin-marketing]
+      summary: Who a campaign reaches and what it may cost
+      description: |
+        An estimate before switching the campaign on: `audience` (first-ride coupon: unblocked
+        passengers without a completed order; referral: unblocked passengers who started the bot;
+        passenger credit: the segment's reachable passengers; driver milestone: approved drivers),
+        `per_person`, `max_liability` (audience × amount, capped by the budget; `null` for
+        templates without an amount), the budget and its `usage`, and `warnings`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Preview.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignPreview'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/campaigns/{id}/duplicate:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminDuplicateMarketingCampaign
+      tags: [admin-marketing]
+      summary: Copy a campaign into a new draft
+      description: |
+        The current version's copy, rules and window, the priority and the exclusivity group in a
+        new draft with a fresh key (`<template>_<6 hex>`) and no budget. `manual_grant` cannot be copied
+        (`fields.template = system_only`). No request body. Audit-logged
+        (`marketing.campaign.duplicate`).
+      x-jantaxi-permission: marketing.edit
+      security: [{adminSession: [], csrfHeader: []}]
+      responses:
+        '201':
+          description: Draft created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignDetail'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/campaigns/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminCreateMarketingCampaignVersion
+      tags: [admin-marketing]
+      summary: New version of a campaign's copy, rules or window
+      description: |
+        Stores the next version: the current one with the fields sent (all optional). Coupons,
+        grants and attributions already created keep their own version. Drafts and ended
+        campaigns need `marketing.edit`; scheduled, active and paused ones, and the system
+        campaigns in any status (the launch promotions, and the `manual_adjustments` bucket whose
+        `max_amount` caps finance's credits), need `marketing.approve` (`403 forbidden` otherwise);
+        an archived campaign is `409
+        invalid_transition`. `template` and `key` cannot change (`immutable`); `budget_limit`,
+        `priority` and `exclusivity_group` are refused (`fields.budget_limit =
+        use_budget_endpoint`); the rules of a `passenger_credit` campaign are locked once it leaves
+        `draft` (`fields.rules = locked_after_activation`). Other `fields` as on create.
+        Audit-logged (`marketing.campaign.version`, before and after).
+      x-jantaxi-permission: marketing.edit | marketing.approve
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingCampaignInput'}
+            example:
+              rules: {reward_amount: 300, categories: [taxi], attribution_window_minutes: 60, unlock: coupon_redeemed_or_expired, min_ride_seconds: 60}
+              change_note: Expired coupons also unlock invitations
+      responses:
+        '200':
+          description: The campaign with its new current version.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/InvalidTransition'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/campaigns/{id}/transition:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminTransitionMarketingCampaign
+      tags: [admin-marketing]
+      summary: Switch a campaign on or off
+      description: |
+        Status machine (ARCHITECTURE §23.2):
+        ```
+        draft ──schedule*──▶ scheduled ──(at scheduled_at)──▶ active
+        scheduled ──unschedule──▶ draft          scheduled ──(cannot be activated at its time)──▶ draft
+        draft | scheduled ──activate*──▶ active ──pause──▶ paused ──resume*──▶ active
+        active | paused | scheduled ──end*──▶ ended       (also the schedule job once ends_at passed)
+        draft | ended ──archive──▶ archived
+        freeze_redemptions* / unfreeze_redemptions*: any status but archived
+        ```
+        Actions marked * need `marketing.approve`, a `reason` (3..300 code points) and
+        `confirm: true`; `unschedule`, `pause` and `archive` need `marketing.edit` or
+        `marketing.approve` (the reason is optional), except on a system campaign (the launch
+        promotions, `manual_adjustments`), where every action needs `marketing.approve`. An
+        approver action carries `expected_version`, the version the approver reviewed (`422
+        fields.expected_version = required` without it): a campaign that has a newer version by
+        then is refused (`409 version_conflict {current_version}`). `activate` and `resume`
+        start a new active period (`active_since = now()`): rides completed before it never earn.
+        `pause` stops new awards (issued coupons stay usable); `freeze_redemptions` makes the
+        campaign's coupons unusable on new orders. `passenger_credit`: `schedule` (or `activate`,
+        when nothing was frozen at scheduling) freezes the segment's reachable passengers as
+        pending grants, paid only while the campaign is active; the segment and the budget are
+        checked at that moment. `unschedule`, or a scheduled campaign that cannot be activated at
+        its time (it returns to `draft`), drops those grants; `end`, by an approver or by the
+        schedule job, skips them. The `manual_adjustments` bucket has no lifecycle: every action
+        that would change its status, `archive` included, is `409 campaign_conflict` (or
+        `invalid_transition` when its status does not allow the action);
+        `freeze_redemptions` / `unfreeze_redemptions` are accepted and change nothing.
+        Errors: `409 invalid_transition {from, action}`; `409 campaign_conflict` (another campaign
+        of the launch template is live, or a status action on `manual_adjustments`); `409
+        budget_insufficient {needed, remaining, recipients}` (a `passenger_credit` audience over the
+        budget, on `schedule` or `activate`); `409 version_conflict {current_version}`. `fields`:
+        `action` = `invalid`, `reason` = `required | too_short | too_long`, `confirm` =
+        `required`, `scheduled_at` = `must_be_future`, `ends_at` = `in_past`, `rules.segment_id` =
+        `not_found | wrong_audience | invalid`. Audit-logged (`marketing.campaign.<action>`, with
+        the reason).
+      x-jantaxi-permission: marketing.edit | marketing.approve
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingCampaignTransitionRequest'}
+            example: {action: activate, reason: Акцияны іске қосу, confirm: true, expected_version: 1}
+      responses:
+        '200':
+          description: The campaign after the action.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/MarketingConflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/campaigns/{id}/budget:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    patch:
+      operationId: adminSetMarketingCampaignBudget
+      tags: [admin-marketing]
+      summary: Change a campaign's budget
+      description: |
+        `budget_limit` (0..1 000 000 000 KZT) or `unlimited: true`, with a `reason` and
+        `confirm: true`. The budget caps `committed + spent` (ARCHITECTURE §23.8); lowering it
+        below the usage only stops new awards. `fields`: `budget_limit` = `out_of_range`, `reason`
+        = `required | too_short | too_long`, `confirm` = `required`. Audit-logged
+        (`marketing.campaign.budget`, before and after).
+      x-jantaxi-permission: marketing.approve
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingBudgetRequest'}
+            example: {budget_limit: 150000, reason: Пилоттың бюджетін ұлғайту, confirm: true}
+      responses:
+        '200':
+          description: The campaign with its new budget.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCampaignDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/coupons:
+    get:
+      operationId: adminListMarketingCoupons
+      tags: [admin-marketing]
+      summary: Coupons
+      description: |
+        Newest first. `status` filters the computed status (an `issued` coupon past `expires_at`
+        reads `expired`). `fields`: `campaign_id` / `user_id` / `page` / `page_size` = `invalid`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: campaign_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: user_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/MarketingCouponStatus'}
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of coupons.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCouponPage'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/coupons/{id}/void:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminVoidMarketingCoupon
+      tags: [admin-marketing]
+      summary: Void an unused coupon
+      description: |
+        For abuse or a mistake: only an `issued` coupon can be voided (`409 invalid_transition
+        {from, action: void}` otherwise); it no longer counts against the budget. `reason` is
+        required (3..300 code points). The passenger's app gets `promotions.updated`.
+        Audit-logged (`marketing.coupon.void`).
+      x-jantaxi-permission: marketing.approve
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingReasonRequest'}
+      responses:
+        '200':
+          description: The voided coupon.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingCoupon'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/InvalidTransition'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/bonus-ledger:
+    get:
+      operationId: adminListPassengerBonusLedger
+      tags: [admin-marketing]
+      summary: Passenger bonus ledger
+      description: |
+        The append-only journal of passenger bonus balances, newest first (ARCHITECTURE §23.5).
+        `fields`: `user_id` / `type` / `page` / `page_size` = `invalid`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: user_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: type
+          in: query
+          schema: {$ref: '#/components/schemas/PassengerBonusEntryType'}
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of ledger rows.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PassengerBonusLedgerPage'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/users:
+    get:
+      operationId: adminFindMarketingUsers
+      tags: [admin-marketing]
+      summary: Find a person
+      description: |
+        By Telegram id, the last 10 digits of a phone in any format, or a referral code. A query
+        shorter than 3 characters returns no items. At most 20, newest accounts first, masked
+        (first name and last initial, the phone's last four digits).
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: q
+          in: query
+          description: Telegram id, phone or referral code.
+          schema: {type: string, maxLength: 100}
+          example: '87011234567'
+      responses:
+        '200':
+          description: Matching people.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingUserList'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      operationId: adminGetMarketingUser
+      tags: [admin-marketing]
+      summary: A person's promotions
+      description: |
+        The bonus account, the latest 20 coupons, the latest 50 bonus ledger rows, the referral
+        code, who invited the person, whom they invited (up to 100) and their promotions on orders
+        (up to 50). People appear masked (`MarketingUserRef`).
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: The person's promotions.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingUser'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/users/{id}/bonus-adjustments:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminAdjustPassengerBonus
+      tags: [admin-marketing]
+      summary: Credit or debit a passenger's bonus balance
+      description: |
+        A signed `amount` (credit > 0, debit < 0, within ±1 000 000) with a `reason` (3..300 code
+        points), `confirm: true` and an `idempotency_key` (a UUID, optionally prefixed
+        `bonus_adjust:`; ledger key `bonus_adjust:<uuid>`). A credit goes through the
+        `manual_adjustments` campaign: at most its `max_amount` per operation (50 000;
+        `422 fields.amount = above_max` with `details.max_amount`), within its budget
+        (`409 budget_insufficient`), recorded as a `manual` grant; the passenger gets
+        `promo_bonus_granted`. A debit takes only available money (`409 insufficient_balance`).
+        The same key and amount again is a no-op (`200`, nothing sent); the key with another
+        effect is `409 idempotency_key_reused`. The bucket cannot be archived (ARCHITECTURE
+        §23.2); its budget (none by default, `PATCH …/budget`) caps manual credits, a budget of 0
+        stops them, and its `max_amount` changes only through a new version by
+        `marketing.approve`. `fields`: `amount` = `out_of_range | above_max`, `reason` = `required
+        | too_short | too_long`, `idempotency_key` = `invalid`, `confirm` = `required`.
+        Audit-logged (`marketing.bonus.adjust`, before and after).
+      x-jantaxi-permission: finance.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingBonusAdjustmentRequest'}
+            example: {amount: 200, reason: Шағым бойынша өтемақы, idempotency_key: 6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8, confirm: true}
+      responses:
+        '200':
+          description: The passenger's bonus account after the adjustment (or the replay).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PassengerBonusAccount'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/MarketingConflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/referrals:
+    get:
+      operationId: adminListReferrals
+      tags: [admin-marketing]
+      summary: Referral attributions
+      description: |
+        Who invited whom, newest first; people masked. `status=review` lists the rewards waiting
+        for a decision (`reason` `short_ride` or `budget_exhausted`). A `rewarded` attribution
+        with `reason = qualifying_ride_cancelled` was paid for a first ride that a dispute
+        cancelled afterwards: nothing is taken back automatically, finance decides (ARCHITECTURE
+        §23.5). `fields`: `referrer_id` / `page` / `page_size` = `invalid`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/MarketingReferralStatus'}
+        - name: referrer_id
+          in: query
+          description: The inviting passenger's user id.
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of attributions.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingReferralPage'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/referrals/{id}/review:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminReviewReferral
+      tags: [admin-marketing]
+      summary: Approve or reject a referral reward under review
+      description: |
+        Only an attribution in `review` (`409 invalid_transition` otherwise). `approve` pays the
+        reward like the award worker — still once per referrer (a referrer already rewarded ends
+        `capped`), from the campaign that judged the ride and within its budget (`409
+        budget_insufficient`); `reject` closes it. `reason` is required (3..300 code points).
+        `fields`: `decision` = `invalid`, `reason` = `required | too_short | too_long`.
+        Audit-logged (`marketing.referral.approve | reject`).
+      x-jantaxi-permission: marketing.approve
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingReferralReviewRequest'}
+            example: {decision: approve, reason: Сапар тексерілді}
+      responses:
+        '200':
+          description: Outcome.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingReferralReviewResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/MarketingConflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/applications:
+    get:
+      operationId: adminListOrderPromotions
+      tags: [admin-marketing]
+      summary: Promotions applied to orders
+      description: |
+        Coupons and bonus spends on orders with the driver's compensation, newest first.
+        `review=true` lists the promotions flagged for finance to decide (`review_reason`):
+        `order_cancelled_after_settlement` (a dispute cancelled the order after it completed) or
+        `coupon_source_cancelled` (the order completed with a coupon whose own qualifying ride a
+        dispute had cancelled; the driver was compensated as usual). A reversed promotion keeps
+        its flag. `fields`: `page` / `page_size` = `invalid`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/OrderPromotionStatus'}
+        - name: review
+          in: query
+          description: Only promotions flagged for review.
+          schema: {type: boolean, default: false}
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of promotions.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingApplicationPage'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/applications/{id}/reverse:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminReverseOrderPromotion
+      tags: [admin-marketing]
+      summary: Reverse a settled promotion
+      description: |
+        Finance's decision, e.g. after a dispute cancelled a completed order (ARCHITECTURE §23.6):
+        the driver's compensation is debited (`promo_compensation_reversal`, key
+        `promo:<application_id>:reversal`, only from the available balance — `409
+        insufficient_balance` otherwise), a spent bonus is refunded to the passenger
+        (`adjustment_credit`, key `bonus_refund:<application_id>`), a redeemed coupon stays
+        redeemed. Only `settled` promotions (`409 invalid_transition`). `reason` (3..300 code
+        points) and `confirm: true` are required. The driver's apps get `wallet.updated`.
+        Audit-logged (`marketing.promotion.reverse`).
+      x-jantaxi-permission: finance.manage
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingReverseRequest'}
+      responses:
+        '200':
+          description: Reversed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingReverseResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/MarketingConflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/segments:
+    get:
+      operationId: adminListMarketingSegments
+      tags: [admin-marketing]
+      summary: Segments
+      description: Up to 200 segments, live ones first, newest first; each live segment carries its `count` estimate.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Segments.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingSegmentList'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      operationId: adminCreateMarketingSegment
+      tags: [admin-marketing]
+      summary: Create a segment
+      description: |
+        A saved audience: `name` (1..120), `audience` and typed `filters` (ARCHITECTURE §23.7).
+        `fields`: `name` = `required | too_long`, `audience` = `invalid`, `filters` = `invalid |
+        driver_only_filter | passenger_only_filter`, `filters.<name>` = `invalid | out_of_range |
+        below_min | too_many`. Audit-logged (`marketing.segment.create`).
+      x-jantaxi-permission: marketing.edit
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingSegmentInput'}
+            example: {name: Бір айдан бері сапар жоқ, audience: passengers, filters: {completed_rides_min: 1, no_ride_for_days: 30}}
+      responses:
+        '201':
+          description: Segment created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingSegment'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/segments/preview:
+    post:
+      operationId: adminPreviewMarketingAudience
+      tags: [admin-marketing]
+      summary: Count an audience before saving it
+      description: Counts only (`matching`, `reachable`, `suppressed`); no person is returned. Same `fields` as segment creation.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingAudiencePreviewRequest'}
+      responses:
+        '200':
+          description: Audience estimate.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingAudienceCount'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/segments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    patch:
+      operationId: adminUpdateMarketingSegment
+      tags: [admin-marketing]
+      summary: Rename, re-filter or archive a segment
+      description: |
+        Every field optional; the audience cannot change (`fields.audience = immutable`);
+        `archived: true` archives, `false` restores. A broadcast follows its segment only while it
+        is a draft: `schedule` and `send_now` store the resolved filters on the broadcast, so later
+        edits never change a scheduled or running broadcast (nor a `passenger_credit` campaign,
+        whose audience is frozen when it is scheduled or activated). Same `fields` as creation.
+        Audit-logged (`marketing.segment.update`).
+      x-jantaxi-permission: marketing.edit
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingSegmentInput'}
+      responses:
+        '200':
+          description: Segment.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingSegment'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/broadcasts:
+    get:
+      operationId: adminListMarketingBroadcasts
+      tags: [admin-marketing]
+      summary: Broadcasts
+      description: |
+        Newest first, each with delivery counts by status (`stats`; test deliveries as
+        `test_<status>`). `fields`: `page` / `page_size` = `invalid`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/MarketingBroadcastStatus'}
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of broadcasts.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingBroadcastPage'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    post:
+      operationId: adminCreateMarketingBroadcast
+      tags: [admin-marketing]
+      summary: Create a draft broadcast
+      description: |
+        A marketing message to one bot's audience (ARCHITECTURE §23.7), sent by its own worker at
+        a low rate, never through the order-message outbox. Target a saved `segment_id` (same
+        audience, not archived) or inline `filters`. `content` is required in kk, ru and en
+        (≤ 3000 characters each after cleaning; sent as escaped plain text). The optional `button`
+        opens the audience's Mini App at `start_param`. Every message also carries the unsubscribe
+        button. `fields`: `title` = `required | too_long`, `audience` = `invalid`, `segment_id` =
+        `not_found | wrong_audience | archived`, `filters…` as for segments, `content.<lang>` =
+        `required | too_long | mentions_commission` (a message to drivers may not name the
+        commission, §22.2), `button.label.<lang>` / `button.start_param` = `invalid`,
+        `campaign_id` = `not_found`. Audit-logged (`marketing.broadcast.create`).
+      x-jantaxi-permission: marketing.broadcast
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingBroadcastInput'}
+            example:
+              title: Алғашқы сапар — 400 ₸ купон
+              audience: passengers
+              filters: {completed_rides_max: 0}
+              content: {kk: Алғашқы сапарыңыздан кейін 400 ₸ купон аласыз!, ru: После первой поездки — купон 400 ₸!, en: Get a 400 ₸ coupon after your first ride!}
+              button: {label: {kk: Тапсырыс беру, ru: Заказать, en: Order}, start_param: taxi}
+      responses:
+        '201':
+          description: Draft created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingBroadcastDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/broadcasts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      operationId: adminGetMarketingBroadcast
+      tags: [admin-marketing]
+      summary: Broadcast with delivery counts
+      description: The broadcast, its delivery counts and, while `draft` or `scheduled`, the audience `estimate` and the `approval_threshold` in force.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Broadcast.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingBroadcastDetail'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      operationId: adminUpdateMarketingBroadcast
+      tags: [admin-marketing]
+      summary: Edit a draft broadcast
+      description: |
+        Only a `draft` (`409 invalid_transition {from, action: edit}` otherwise). Every field
+        optional; a nil UUID in `segment_id` or `campaign_id` clears it, `no_button: true` removes
+        the button. Same `fields` as creation. Audit-logged (`marketing.broadcast.update`).
+      x-jantaxi-permission: marketing.broadcast
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingBroadcastInput'}
+      responses:
+        '200':
+          description: Broadcast.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingBroadcastDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/InvalidTransition'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/broadcasts/{id}/recipients:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      operationId: adminListMarketingBroadcastRecipients
+      tags: [admin-marketing]
+      summary: Deliveries of a broadcast
+      description: |
+        Test deliveries first, then by id. No names or phones — user id, language and delivery
+        state only. `fields`: `page` / `page_size` = `invalid`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/MarketingRecipientStatus'}
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Page of deliveries.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingBroadcastRecipientPage'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/broadcasts/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminTestMarketingBroadcast
+      tags: [admin-marketing]
+      summary: Send a test message to one listed staff account
+      description: |
+        One extra delivery (`is_test`, prefixed «🧪 TEST») of a `draft` or `scheduled` broadcast to
+        one Telegram id listed in `marketing.test_recipients` (an approver's setting, empty by
+        default, ARCHITECTURE §23.9) who started the audience's bot and neither opted out nor
+        blocked it; never sent to anyone else. Test sends stop with the broadcast switch: none is
+        queued while `marketing.broadcasts_enabled` is off, a queued one waits until it is on
+        again, and suppression is checked again just before sending. At most 10 per broadcast and
+        30 in total per hour (`429 too_many_requests`). `409 broadcasts_disabled` (the switch is
+        off), `409 invalid_transition {from, action: test}` (the broadcast is neither `draft` nor
+        `scheduled`). `fields`: `telegram_user_id` = `required | not_test_recipient |
+        bot_not_started | suppressed`. Audit-logged (`marketing.broadcast.test`).
+      x-jantaxi-permission: marketing.broadcast
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingBroadcastTestRequest'}
+      responses:
+        '201':
+          description: Test delivery queued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingBroadcastTestResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: '`broadcasts_disabled` (`marketing.broadcasts_enabled` is off) or `invalid_transition` (the broadcast is neither `draft` nor `scheduled`).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              examples:
+                disabled:
+                  value: {error: {code: broadcasts_disabled, message: marketing broadcasts are switched off}}
+                transition:
+                  value: {error: {code: invalid_transition, message: only a draft or scheduled broadcast can be tested, details: {from: completed, action: test}}}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/broadcasts/{id}/transition:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      operationId: adminTransitionMarketingBroadcast
+      tags: [admin-marketing]
+      summary: Schedule, send, pause, resume or cancel a broadcast
+      description: |
+        ```
+        draft ──schedule──▶ scheduled ──(at scheduled_at: snapshot)──▶ sending ──(nothing left)──▶ completed
+        draft | scheduled ──send_now (snapshot now)──▶ sending ──pause──▶ paused ──resume──▶ sending
+        draft | scheduled | sending | paused ──cancel──▶ cancelled
+        scheduled ──(at scheduled_at: snapshot failed, or over the threshold without an approver)──▶ failed
+        ```
+        `schedule` and `send_now` need `confirm: true`; the optional `reason` is kept as the
+        approval note. An audience larger than `marketing.broadcast_approval_threshold` (default
+        100) needs an admin who holds `marketing.approve` as well as `marketing.broadcast` (with
+        the default roles only `super_admin`): `403 approval_required {recipients, threshold}`,
+        checked against the estimate when scheduling and the snapshot when sending now.
+        `schedule` freezes the targeting it checked: the resolved filters (a segment's included)
+        are stored on the broadcast, so later segment edits do not move it. `approved_by` records
+        an approver who scheduled or sent the broadcast and stays `null` for anyone else. At
+        `scheduled_at` the worker snapshots the recipients; a broadcast without an approver whose
+        audience is then above the threshold in force is not sent: it becomes `failed` with
+        `approval_note = approval_required` and its deliveries `cancelled`. The snapshot freezes
+        the recipients: reachable people are queued, opted-out or blocked ones recorded as
+        `suppressed`. `cancel` stops the queued deliveries; messages Telegram already accepted
+        cannot be recalled. `409 invalid_transition {from, action}`; `fields`: `action` =
+        `invalid`, `confirm` = `required`, `scheduled_at` = `must_be_future`, `reason` =
+        `too_long`. Audit-logged (`marketing.broadcast.<action>`).
+      x-jantaxi-permission: marketing.broadcast
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingBroadcastTransitionRequest'}
+            example: {action: send_now, confirm: true}
+      responses:
+        '200':
+          description: The broadcast after the action.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingBroadcastDetail'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403':
+          description: '`forbidden` (permission, CSRF) or `approval_required` (the audience is above the approval threshold).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+              example:
+                error:
+                  code: approval_required
+                  message: this audience needs marketing.approve
+                  details: {recipients: 1840, threshold: 100}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/InvalidTransition'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/reconciliation:
+    get:
+      operationId: adminMarketingReconciliation
+      tags: [admin-marketing]
+      summary: Promotions reconciliation
+      description: |
+        One consistent read-only snapshot (ARCHITECTURE §23.8): every settled promotion has exactly
+        one driver compensation of the same amount; bonus accounts equal their ledger and their
+        reservations equal their reserved promotions; coupons and promotions agree with their
+        orders; credited grants have their ledger rows; at most one referral reward per referrer.
+        `ok` is true without findings; each check reports at most 100, ids only.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Reconciliation result.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingReconciliation'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/reports:
+    get:
+      operationId: adminMarketingReport
+      tags: [admin-marketing]
+      summary: Daily marketing figures
+      description: |
+        Business days in Asia/Aqtobe; default the last 30 days, at most 366. Per day: coupons
+        issued, redeemed and expired, referrals attributed, referral rewards, bonus granted to
+        passengers, discounts settled, broadcast messages sent and failed; plus the referral and
+        coupon funnel of the period. `fields`: `from` / `to` = `invalid`, `to` = `out_of_range`.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      parameters:
+        - name: from
+          in: query
+          description: First day, `YYYY-MM-DD`.
+          schema: {type: string, format: date}
+          example: '2026-11-01'
+        - name: to
+          in: query
+          description: Last day (inclusive), `YYYY-MM-DD`.
+          schema: {type: string, format: date}
+          example: '2026-11-30'
+      responses:
+        '200':
+          description: Report.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingReport'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/reports.csv:
+    get:
+      operationId: adminExportMarketingCsv
+      tags: [admin-marketing]
+      summary: Export the daily marketing figures as CSV
+      description: |
+        The days of `GET /admin/marketing/reports` (same parameters), aggregates only — no
+        personal data. Columns: `date, coupons_issued, coupons_redeemed, coupons_expired,
+        referrals, referral_rewards, bonus_granted, discounts_settled, messages_sent,
+        messages_failed`. Needs both `marketing.view` and `reports.export`.
+      x-jantaxi-permission: marketing.view + reports.export
+      security: [{adminSession: []}]
+      parameters:
+        - name: from
+          in: query
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          schema: {type: string, format: date}
+      responses:
+        '200':
+          description: CSV file.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="marketing.csv"`.'
+              schema: {type: string}
+            Cache-Control:
+              description: Always `private, no-store`.
+              schema: {type: string, const: 'private, no-store'}
+          content:
+            text/csv:
+              schema: {type: string}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/settings:
+    get:
+      operationId: adminGetMarketingSettings
+      tags: [admin-marketing]
+      summary: Marketing switches and broadcast limits
+      description: |
+        The `marketing.*` settings (ARCHITECTURE §23.9): `marketing.awards_enabled`,
+        `marketing.redemptions_enabled`, `marketing.broadcasts_enabled` (emergency stops, on by
+        default), `marketing.broadcast_rate_per_s` (1..20, default 4),
+        `marketing.broadcast_approval_threshold` (default 100) and `marketing.test_recipients`
+        (`int_list`: up to 20 Telegram ids of staff who may receive test broadcasts; empty by
+        default, so no test can be sent until an approver lists someone).
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Marketing settings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingList'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+    patch:
+      operationId: adminUpdateMarketingSettings
+      tags: [admin-marketing]
+      summary: Change marketing switches
+      description: |
+        Only the `marketing.*` keys (`fields.<key> = unknown_setting` for others), each validated
+        like `PATCH /admin/settings` (`invalid_type`, `out_of_range`; for
+        `marketing.test_recipients` also `too_many` and `duplicate`; the list is stored sorted),
+        with a required `reason` (3..300 code points). No empty update (`400`). Every key is
+        written and audited (`settings.update`, with the reason) in one transaction; other API
+        replicas see the change within 5 seconds. Returns the marketing settings.
+      x-jantaxi-permission: marketing.approve
+      security: [{adminSession: [], csrfHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarketingSettingsUpdateRequest'}
+            examples:
+              stop:
+                value: {marketing.redemptions_enabled: false, reason: Купондарды уақытша тоқтату}
+              testers:
+                value: {marketing.test_recipients: [784512369], reason: Тест үшін Telegram ID қосу}
+      responses:
+        '200':
+          description: Marketing settings after the update.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   # ---------------------------------------------------------------- internal
   # Internal listener only. Path keys carry the full /internal/v1 prefix and each path item
   # overrides `servers`, so they never resolve against the public /api/v1 base.
@@ -4471,6 +5782,41 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '422': {$ref: '#/components/responses/ValidationFailed'}
+  /internal/v1/bots/{bot}/users/{tg_id}/marketing:
+    servers:
+      - url: http://api:8081
+        description: Internal bot API listener (compose network only; never published or proxied).
+    parameters:
+      - $ref: '#/components/parameters/BotPath'
+      - $ref: '#/components/parameters/TgIdPath'
+      - $ref: '#/components/parameters/BotHeader'
+    post:
+      operationId: botSetMarketingOptOut
+      tags: [internal]
+      summary: Marketing messages off (or on) from a bot
+      description: |
+        The unsubscribe button (callback data `mkt_off`) under every broadcast, in either bot
+        (ARCHITECTURE §23.7): `opt_out: true` stores `user_preferences.marketing_opt_out_at` (kept
+        when already set), `false` clears it. The choice belongs to the person and is shared by
+        both bots and the passenger Mini App (`PUT /promotions/subscription`); order messages are
+        unaffected. `fields.opt_out = required`, `fields.tg_id = invalid`; an unknown user is `404`.
+      security: [{serviceSecret: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BotMarketingOptOutRequest'}
+      responses:
+        '200':
+          description: The stored choice.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarketingSubscription'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
   /internal/v1/passenger/{tg_id}/orders:
     servers:
       - url: http://api:8081
@@ -4530,6 +5876,45 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/BotPassengerContactResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+  /internal/v1/passenger/{tg_id}/referral:
+    servers:
+      - url: http://api:8081
+        description: Internal bot API listener (compose network only; never published or proxied).
+    parameters:
+      - $ref: '#/components/parameters/TgIdPath'
+      - $ref: '#/components/parameters/BotHeader'
+    post:
+      operationId: botCaptureReferral
+      tags: [internal]
+      summary: Capture a referral from /start ref_<CODE>
+      description: |
+        Called by the passenger bot when `/start` carries `ref_<CODE>` (a friend's link
+        `https://t.me/<passenger bot>?start=ref_<CODE>`, ARCHITECTURE §23.5). The API binds the
+        new passenger to the code's owner when every rule holds and records the attempt in
+        `referral_events`; the bot greets the passenger the same way whatever the outcome.
+        `outcome`: `attributed`, `duplicate` (`already_attributed`: the first code wins and is
+        never rewritten) or `rejected` with `reason` `invalid_code`, `campaign_inactive`,
+        `unknown_code`, `self_referral`, `referrer_blocked`, `referrer_locked`,
+        `invitee_has_orders`, `invitee_is_driver` or `invitee_not_new`. Safe to retry: a repeated
+        call answers `duplicate`. Requires `X-Jantaxi-Bot: passenger` (`403` otherwise); an
+        unknown Telegram user is `404`; `fields.tg_id = invalid`.
+      security: [{serviceSecret: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BotReferralRequest'}
+      responses:
+        '200':
+          description: Capture outcome.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BotReferralResult'}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -5319,6 +6704,32 @@ components:
               code: validation_failed
               message: validation failed
               fields: {comment: too_long}
+    MarketingConflict:
+      description: |
+        Marketing state conflict: `invalid_transition` (the status does not allow the action;
+        `details {from, action}`), `campaign_conflict` (another campaign of the launch template is
+        live, a status action on `manual_adjustments`, or that bucket is missing),
+        `budget_insufficient` (the budget does not cover it), `version_conflict` (the campaign
+        has a newer version than the `expected_version` the approver reviewed; `details
+        {current_version}`), `insufficient_balance` (a bonus debit or a compensation reversal
+        above the available balance), `idempotency_key_reused` (the adjustment key was used with
+        another effect) or `conflict` (no compensation to reverse).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+          examples:
+            transition:
+              value: {error: {code: invalid_transition, message: campaign cannot activate from ended, details: {from: ended, action: activate}}}
+            live:
+              value: {error: {code: campaign_conflict, message: another campaign of this kind is already live}}
+            budget:
+              value: {error: {code: budget_insufficient, message: the segment does not fit the budget, details: {needed: 240000, remaining: 100000, recipients: 1200}}}
+            version:
+              value: {error: {code: version_conflict, message: the campaign changed since it was reviewed, details: {current_version: 3}}}
+            balance:
+              value: {error: {code: insufficient_balance, message: the bonus balance does not cover the debit}}
+            key:
+              value: {error: {code: idempotency_key_reused, message: idempotency key already used for another adjustment}}
 
   schemas:
     ActorType:
@@ -5516,7 +6927,7 @@ components:
     AdminOrder:
       type: object
       description: Complete order for operators, including commission and money trail.
-      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, prohibited_items_ack, comment, fare, currency, commission_bps, commission_amount, commission_mode, commission_area, payment_method, tariff_id, quote_id, distance_m, duration_s, stop_count, city, stops, route, passenger, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, offers, events, reservation, ledger, dispute, rating, cancel_reason, cancel_reason_code, cancelled_by, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
+      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, prohibited_items_ack, comment, fare, currency, commission_bps, commission_amount, commission_mode, commission_area, payment_method, promo_discount, cash_due, promotion, tariff_id, quote_id, distance_m, duration_s, stop_count, city, stops, route, passenger, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, offers, events, reservation, ledger, dispute, rating, cancel_reason, cancel_reason_code, cancelled_by, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
@@ -5553,6 +6964,13 @@ components:
             - $ref: '#/components/schemas/CommissionAreaOrderRef'
             - type: 'null'
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
+        promo_discount: {type: integer, format: int64, minimum: 0, description: 'Coupon or bonus taken off the fare, snapshotted at creation (§23.6); the fare and the commission are unchanged.', example: 0}
+        cash_due: {type: integer, format: int64, minimum: 0, description: 'What the passenger pays the driver: `fare - promo_discount`.', example: 800}
+        promotion:
+          description: The promotion with its status and the driver's compensation; `null` without one.
+          oneOf:
+            - $ref: '#/components/schemas/OrderPromotion'
+            - type: 'null'
         tariff_id: {type: string, format: uuid}
         quote_id: {type: [string, 'null'], format: uuid}
         distance_m: {type: [integer, 'null'], minimum: 0}
@@ -5734,7 +7152,16 @@ components:
         new_password: {type: string, minLength: 12, maxLength: 256, writeOnly: true, description: '12..256 characters, at most 1024 bytes, different from the current one.'}
     AdminPermission:
       type: string
-      enum: [dashboard.view, orders.view, orders.manage, drivers.view, drivers.moderate, drivers.manage, documents.view, finance.view, finance.manage, config.manage, admins.manage, audit.view, reports.export]
+      description: |
+        The marketing permissions (ARCHITECTURE §23.10): `marketing.view` (overview, campaigns,
+        coupons, bonus ledger, referrals, broadcasts, reconciliation, reports), `marketing.edit`
+        (draft campaigns and their versions, pause, segments), `marketing.approve` (activate,
+        resume, schedule, end, freeze, versions of live campaigns and of `manual_adjustments`,
+        budgets, switches and test recipients, coupon voids, referral decisions; broadcasts above
+        the approval threshold only together with `marketing.broadcast`), `marketing.broadcast`
+        (create, test, send, pause and cancel broadcasts). Passenger bonus corrections and
+        promotion reversals need `finance.manage`.
+      enum: [dashboard.view, orders.view, orders.manage, drivers.view, drivers.moderate, drivers.manage, documents.view, finance.view, finance.manage, config.manage, admins.manage, audit.view, reports.export, marketing.view, marketing.edit, marketing.approve, marketing.broadcast]
     AdminRef:
       type: object
       required: [id, email, full_name]
@@ -5748,11 +7175,12 @@ components:
         | Role | Permissions |
         |---|---|
         | `super_admin` | all |
-        | `operator` | dashboard.view, orders.view, orders.manage, drivers.view, drivers.manage, audit.view, reports.export |
+        | `operator` | dashboard.view, orders.view, orders.manage, drivers.view, drivers.manage, audit.view, reports.export, marketing.view |
         | `driver_moderator` | dashboard.view, orders.view, drivers.view, drivers.moderate, drivers.manage, documents.view |
-        | `finance_manager` | dashboard.view, orders.view, drivers.view, finance.view, finance.manage, audit.view, reports.export |
-        | `auditor` | dashboard.view, orders.view, drivers.view, finance.view, audit.view, reports.export |
-      enum: [super_admin, operator, driver_moderator, finance_manager, auditor]
+        | `finance_manager` | dashboard.view, orders.view, drivers.view, finance.view, finance.manage, audit.view, reports.export, marketing.view, marketing.approve |
+        | `auditor` | dashboard.view, orders.view, drivers.view, finance.view, audit.view, reports.export, marketing.view |
+        | `marketing_manager` | dashboard.view, marketing.view, marketing.edit, marketing.broadcast |
+      enum: [super_admin, operator, driver_moderator, finance_manager, auditor, marketing_manager]
     AdminSession:
       type: object
       required: [admin, csrf_token, expires_at]
@@ -6128,7 +7556,7 @@ components:
           items: {$ref: '#/components/schemas/BotOrderSummary'}
     BotOrderSummary:
       type: object
-      required: [id, number, status, category, fare, currency, pickup_address, destination_address, pickup_typed, destination_manual, created_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, locality, tariff_region]
+      required: [id, number, status, category, fare, currency, promo_discount, cash_due, pickup_address, destination_address, pickup_typed, destination_manual, created_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, locality, tariff_region]
       properties:
         pickup_typed: {type: boolean, description: 'Pickup A''s address is the passenger''s own words; A keeps its map point (§3).'}
         destination_manual: {type: boolean, description: The destination is the passenger's words without a map point (a manual stop).}
@@ -6147,6 +7575,8 @@ components:
             - type: 'null'
         fare: {type: integer, format: int64}
         currency: {$ref: '#/components/schemas/Currency'}
+        promo_discount: {type: integer, format: int64, minimum: 0, description: 'A passenger''s coupon or bonus (ARCHITECTURE §23.6): Jan Taxi credits it to the driver''s wallet when the ride completes; 0 without a promotion.', example: 400}
+        cash_due: {type: integer, format: int64, minimum: 0, description: 'What the passenger pays the driver in cash: `fare - promo_discount` (shown by the driver bot''s /trip and the passenger bot''s /orders).', example: 1100}
         pickup_address: {type: string}
         destination_address: {type: string}
         created_at: {type: string, format: date-time}
@@ -6738,7 +8168,7 @@ components:
     DriverOrderCard:
       type: object
       description: Available order as listed to an eligible driver (no passenger contact data).
-      required: [id, number, category, service_type, cargo_type, stops, stop_count, comment, cargo_description, fare, currency, commission_amount, payment_method, distance_m, duration_s, distance_to_pickup_m, created_at, search_expires_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
+      required: [id, number, category, service_type, cargo_type, stops, stop_count, comment, cargo_description, fare, currency, commission_amount, payment_method, promo_discount, cash_due, distance_m, duration_s, distance_to_pickup_m, created_at, search_expires_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
@@ -6772,6 +8202,8 @@ components:
           description: Commission reserved from the driver's wallet on acceptance.
           example: 80
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
+        promo_discount: {type: integer, format: int64, minimum: 0, description: 'A passenger''s coupon or bonus (§23.6): Jan Taxi credits it to the driver''s wallet when the ride completes; 0 without a promotion.', example: 400}
+        cash_due: {type: integer, format: int64, minimum: 0, description: 'What the driver collects from the passenger: `fare - promo_discount`.', example: 1100}
         distance_m: {type: [integer, 'null'], minimum: 0, example: 1840}
         duration_s: {type: [integer, 'null'], minimum: 0, example: 260}
         distance_to_pickup_m:
@@ -6786,7 +8218,7 @@ components:
         Order as seen by a driver. For an available order `is_mine` is `false`, and `passenger`,
         `recipient_phone`, `address_details` and `events` are withheld (`null` / empty) until the
         driver accepts it. Contact data is shown only while the order is active.
-      required: [id, number, status, is_mine, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, commission_bps, commission_amount, commission_charged, payment_method, distance_m, duration_s, distance_to_pickup_m, stop_count, stops, route, passenger, next_stop_id, events, rating, cancel_reason, cancelled_by, can_accept, can_arrive, can_start, can_complete, can_cancel, version, created_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
+      required: [id, number, status, is_mine, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, commission_bps, commission_amount, commission_charged, payment_method, promo_discount, cash_due, promotion, distance_m, duration_s, distance_to_pickup_m, stop_count, stops, route, passenger, next_stop_id, events, rating, cancel_reason, cancelled_by, can_accept, can_arrive, can_start, can_complete, can_cancel, version, created_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
@@ -6818,6 +8250,13 @@ components:
         commission_amount: {type: integer, format: int64, example: 80}
         commission_charged: {type: integer, format: int64, minimum: 0, example: 50, description: 'Commission the driver''s wallet paid for this order (charges minus refunds); 0 when the order is not theirs. Kept when the passenger cancels (§22.2).'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
+        promo_discount: {type: integer, format: int64, minimum: 0, description: 'A passenger''s coupon or bonus (§23.6), credited to the driver''s wallet when the ride completes; 0 without a promotion.', example: 400}
+        cash_due: {type: integer, format: int64, minimum: 0, description: 'What the driver collects from the passenger: `fare - promo_discount`.', example: 1100}
+        promotion:
+          description: The promotion on the order without `kind` and `title` (how the passenger paid is not shown to drivers); `null` without one.
+          oneOf:
+            - $ref: '#/components/schemas/OrderPromotion'
+            - type: 'null'
         distance_m: {type: [integer, 'null'], minimum: 0, example: 1840}
         duration_s: {type: [integer, 'null'], minimum: 0, example: 260}
         distance_to_pickup_m: {type: [integer, 'null'], example: 650}
@@ -6864,7 +8303,7 @@ components:
         cancelled_at: {type: [string, 'null'], format: date-time}
     DriverOrderSummary:
       type: object
-      required: [id, number, status, category, fare, currency, commission_amount, commission_charged, payment_method, pickup, destination, stop_count, distance_m, created_at, completed_at, cancelled_at, cancelled_by, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
+      required: [id, number, status, category, fare, currency, commission_amount, commission_charged, payment_method, promo_discount, cash_due, pickup, destination, stop_count, distance_m, created_at, completed_at, cancelled_at, cancelled_by, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
@@ -6886,6 +8325,8 @@ components:
         commission_amount: {type: integer, format: int64, example: 80}
         commission_charged: {type: integer, format: int64, minimum: 0, example: 50, description: 'Commission the driver''s wallet paid for this order (charges minus refunds); 0 when the order is not theirs. Kept when the passenger cancels (§22.2).'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
+        promo_discount: {type: integer, format: int64, minimum: 0, description: 'A passenger''s coupon or bonus credited to the driver''s wallet (§23.6); 0 without a promotion.', example: 0}
+        cash_due: {type: integer, format: int64, minimum: 0, description: 'What the driver collected: `fare - promo_discount`.', example: 800}
         pickup: {$ref: '#/components/schemas/StopSummary'}
         destination: {$ref: '#/components/schemas/StopSummary'}
         stop_count: {type: integer, minimum: 2, maximum: 5}
@@ -7179,7 +8620,9 @@ components:
             `fare_not_allowed` → `{"min": 500, "max": 1500, "step": 50}`;
             `invalid_transition` → `{"from": "completed", "action": "cancel"}`;
             `registration_incomplete` → `{"missing_fields": [...]}`;
-            `conflict` → `{"reason": "active_order_exists", "active_order_id": "..."}`.
+            `conflict` → `{"reason": "active_order_exists", "active_order_id": "..."}`;
+            `promotion_changed` → `{"reason": "discount_changed", "discount": 300}`;
+            `version_conflict` → `{"current_version": 3}`.
           additionalProperties: true
     ErrorCode:
       type: string
@@ -7188,8 +8631,9 @@ components:
         |---|---|---|
         | `bad_request` | 400 | Malformed JSON, unknown field, empty body, bad multipart. |
         | `unauthorized` | 401 | Missing/invalid/expired app token, initData, admin session or service secret; wrong admin credentials. |
-        | `insufficient_balance` | 402 | Wallet `available` below the required amount (accept, go online, refund, debit). |
+        | `insufficient_balance` | 402 / 409 | Wallet `available` below the required amount (accept, go online, refund, debit: 402); in marketing a passenger bonus debit or a promotion reversal above the available balance (409). |
         | `forbidden` | 403 | Wrong app for the route, blocked user, missing admin permission, bad CSRF token, wrong bot. |
+        | `approval_required` | 403 | A broadcast audience above `marketing.broadcast_approval_threshold` needs an admin who holds `marketing.approve` besides `marketing.broadcast`; `details {recipients, threshold}`. |
         | `driver_not_registered` | 403 | Driver route that needs a driver profile, before registration. |
         | `driver_not_approved` | 403 | Driver is not `approved` (or is suspended). |
         | `not_found` | 404 | Unknown or invisible resource, malformed id, unconfigured webhook provider. |
@@ -7203,6 +8647,12 @@ components:
         | `iin_taken` | 409 | IIN (ЖСН) held by another live driver. |
         | `payment_reference_used` | 409 | Kaspi transaction id already recorded for another top-up. |
         | `default_region_locked` | 409 | The nationwide default region `KAZ` cannot be deactivated and its zone cannot be changed. |
+        | `promotion_changed` | 409 | `POST /orders`: the server would apply another promotion discount than the app showed; `details {reason, discount}`. |
+        | `campaign_conflict` | 409 | Another campaign of a launch template is live, or a status action on the `manual_adjustments` bucket. |
+        | `budget_insufficient` | 409 | The campaign's budget does not cover the award, credit or snapshot; see `details`. |
+        | `idempotency_key_reused` | 409 | A bonus adjustment key was used before with another effect. |
+        | `version_conflict` | 409 | An approver's campaign action: the campaign has a newer version than the `expected_version` that was reviewed; `details {current_version}`. |
+        | `broadcasts_disabled` | 409 | A test broadcast while `marketing.broadcasts_enabled` is off. |
         | `payload_too_large` | 413 | Body over 64 KiB (JSON) / 10 MiB (upload). |
         | `unsupported_media_type` | 415 | Wrong `Content-Type`. |
         | `validation_failed` | 422 | Field validation; see `fields`. |
@@ -7242,6 +8692,13 @@ components:
         - too_many_requests
         - payment_reference_used
         - default_region_locked
+        - promotion_changed
+        - campaign_conflict
+        - budget_insufficient
+        - idempotency_key_reused
+        - version_conflict
+        - broadcasts_disabled
+        - approval_required
         - payload_too_large
         - unsupported_media_type
         - internal
@@ -7272,6 +8729,13 @@ components:
         too_many_requests: Rate limited.
         payment_reference_used: Provider transaction already recorded.
         default_region_locked: The nationwide default region cannot be deactivated or changed.
+        promotion_changed: The promotion the app showed is no longer what the server applies.
+        campaign_conflict: Another campaign of this kind is live, or the action does not apply to the campaign.
+        budget_insufficient: The campaign budget does not cover it.
+        idempotency_key_reused: The idempotency key was used with another effect.
+        version_conflict: The campaign changed since the approver reviewed it.
+        broadcasts_disabled: Marketing broadcasts are switched off.
+        approval_required: An administrator with marketing.approve must do this.
         payload_too_large: Request body too large.
         unsupported_media_type: Wrong Content-Type.
         internal: Unexpected server error.
@@ -7500,7 +8964,11 @@ components:
         `bonus_credit` (+balance; the welcome bonus `welcome_bonus:<driver_id>` or an operator's
         bonus `bonus:<key>`). Since v2 `commission_charge` is written when the driver takes the order
         (−balance only); reserve/release remain for orders accepted before.
-      enum: [topup_credit, topup_refund, commission_reserve, commission_release, commission_charge, commission_refund, adjustment_credit, adjustment_debit, bonus_credit]
+        `promo_compensation` (+balance, `promo:<application_id>`): the discount of a passenger's
+        coupon or bonus, credited when the ride completes (ARCHITECTURE §23.6);
+        `promo_compensation_reversal` (−balance, `promo:<application_id>:reversal`): finance took it
+        back. A driver milestone bonus (§23.2) is a `bonus_credit` with key `bonus:<grant_id>`.
+      enum: [topup_credit, topup_refund, commission_reserve, commission_release, commission_charge, commission_refund, adjustment_credit, adjustment_debit, bonus_credit, promo_compensation, promo_compensation_reversal]
     LocalizedNameInput:
       type: object
       additionalProperties: false
@@ -7650,6 +9118,7 @@ components:
         - order_cancelled_driver
         - order_no_driver
         - moderation_submitted
+        - moderation_review_required
         - moderation_approved
         - moderation_changes_requested
         - moderation_rejected
@@ -7667,6 +9136,10 @@ components:
         - order_offer_won
         - order_offer_taken
         - order_offer_cancelled
+        - order_offer_expired
+        - promo_coupon_issued
+        - promo_referral_reward
+        - promo_bonus_granted
     NotificationTemplateList:
       type: object
       required: [items, max_body_length]
@@ -7689,8 +9162,10 @@ components:
         `driver` and `vehicle` are set once a driver is assigned (they stay after a cancellation);
         `driver_location` only while the order is `accepted`, `driver_arriving` or `in_progress`;
         `driver.phone` only in those statuses too. `driver_eta_s` is the driver's estimated time
-        to pickup A (§22.6), recomputed at most every 30 s while `accepted`.
-      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, payment_method, distance_m, duration_s, stop_count, city, stops, route, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, events, rating, dispute, cancel_reason, cancel_reason_code, cancelled_by, can_cancel, can_rate, can_dispute, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
+        to pickup A (§22.6), recomputed at most every 30 s while `accepted`. With a coupon or the
+        bonus balance (§23.6) the passenger pays `cash_due = fare - promo_discount`; `promotion`
+        describes it.
+      required: [id, number, status, category, service_type, cargo_type, cargo_description, recipient_phone, comment, fare, currency, payment_method, promo_discount, cash_due, promotion, distance_m, duration_s, stop_count, city, stops, route, driver, vehicle, driver_location, driver_eta_s, driver_eta_at, events, rating, dispute, cancel_reason, cancel_reason_code, cancelled_by, can_cancel, can_rate, can_dispute, version, created_at, updated_at, search_expires_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
@@ -7715,6 +9190,13 @@ components:
         fare: {type: integer, format: int64, description: 'Agreed fare in KZT, paid to the driver directly.', example: 800}
         currency: {$ref: '#/components/schemas/Currency'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
+        promo_discount: {type: integer, format: int64, minimum: 0, description: 'Coupon or bonus taken off the fare, snapshotted at creation (§23.6); 0 without a promotion.', example: 0}
+        cash_due: {type: integer, format: int64, minimum: 0, description: 'What the passenger pays the driver: `fare - promo_discount`.', example: 800}
+        promotion:
+          description: The promotion on the order; `null` without one.
+          oneOf:
+            - $ref: '#/components/schemas/OrderPromotion'
+            - type: 'null'
         distance_m: {type: [integer, 'null'], minimum: 0}
         duration_s: {type: [integer, 'null'], minimum: 0}
         stop_count: {type: integer, minimum: 2, maximum: 5}
@@ -7787,6 +9269,9 @@ components:
         fare: 800
         currency: KZT
         payment_method: cash
+        promo_discount: 0
+        cash_due: 800
+        promotion: null
         distance_m: 1840
         duration_s: 260
         stop_count: 2
@@ -7876,6 +9361,24 @@ components:
           description: Kazakhstan mobile (`parcel` only); normalised to E.164.
           example: '+7 701 123 45 67'
         prohibited_items_ack: {type: [boolean, 'null'], description: Passenger confirms no prohibited items (delivery categories).}
+        promotion:
+          type: [string, 'null']
+          enum: [coupon, bonus, none, '', null]
+          default: none
+          description: |
+            The promotion the passenger confirmed (ARCHITECTURE §23.6): `coupon` (the usable
+            first-ride coupon; the app sends it by itself when `GET /promotions` lists one for this
+            order) or `bonus` (the bonus balance, taxi only). `none`, empty or absent: no promotion.
+        promotion_discount:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+          maximum: 10000000
+          description: |
+            The discount the app showed. The server computes the real one and refuses the order
+            with `409 promotion_changed` when they differ, so the passenger never pays more than
+            the confirmed price. A positive value without `promotion` is refused too.
+          example: 400
         idempotency_key: {type: string, format: uuid, description: Client-generated per order attempt.}
     OrderDisputeInfo:
       type: object
@@ -7995,7 +9498,7 @@ components:
       enum: [draft, searching, accepted, driver_arriving, in_progress, completed, cancelled, disputed]
     OrderSummary:
       type: object
-      required: [id, number, status, category, service_type, fare, currency, payment_method, pickup, destination, stop_count, distance_m, driver_first_name, rating, can_rate, created_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
+      required: [id, number, status, category, service_type, fare, currency, payment_method, promo_discount, cash_due, pickup, destination, stop_count, distance_m, driver_first_name, rating, can_rate, created_at, completed_at, cancelled_at, vehicle_class, vehicle_class_name, passenger_count, cargo_size, cargo_volume_l, locality, tariff_region]
       properties:
         locality: {type: [string, 'null'], minLength: 1, maxLength: 120, description: 'Real settlement of pickup A from reverse geocoding (city, town or village, else the district); `null` when unknown. Never coordinates.', example: Алматы}
         tariff_region: {$ref: '#/components/schemas/TariffRegion'}
@@ -8016,6 +9519,8 @@ components:
         fare: {type: integer, format: int64, example: 800}
         currency: {$ref: '#/components/schemas/Currency'}
         payment_method: {$ref: '#/components/schemas/PaymentMethod'}
+        promo_discount: {type: integer, format: int64, minimum: 0, description: 'Coupon or bonus taken off the fare (§23.6); 0 without a promotion.', example: 0}
+        cash_due: {type: integer, format: int64, minimum: 0, description: '`fare - promo_discount`: what the passenger pays the driver.', example: 800}
         pickup: {$ref: '#/components/schemas/StopSummary'}
         destination: {$ref: '#/components/schemas/StopSummary'}
         stop_count: {type: integer, minimum: 2, maximum: 5}
@@ -8402,6 +9907,8 @@ components:
             (seconds to pickup A, or `null`) while the order is `accepted` (§22.6).
             `order.unavailable` goes to every approved driver's app (scope `drivers`) the moment a
             searching order is taken, cancelled or expires: `{order_id, status}` only.
+            `promotions.updated` (`{user_id}`) tells the passenger app that its coupons, bonus
+            balance or referral state changed; it re-reads `GET /promotions`.
           additionalProperties: true
       example:
         type: order.accepted
@@ -8433,6 +9940,7 @@ components:
         - moderation.rejected
         - driver.phone_verified
         - user.phone_verified
+        - promotions.updated
     RealtimePingFrame:
       type: object
       description: 'Optional application-level ping; the server answers `{"type": "pong"}`. Other client frames are ignored.'
@@ -8775,7 +10283,13 @@ components:
         effective `commission.fixed_min..commission.fixed_max`, 50..100), `commission.fixed_min`
         and `commission.fixed_max` (read-only), `driver.welcome_bonus` (default 500; 0 = off),
         `orders.passenger_cancels_after_accept_per_day` (default 3, 0..100; 0 = no limit: how many
-        driver-accepted orders a passenger may cancel within 24 hours before new orders are refused).
+        driver-accepted orders a passenger may cancel within 24 hours before new orders are refused),
+        and the marketing keys (ARCHITECTURE §23.9, also edited through `/admin/marketing/settings`):
+        `marketing.awards_enabled`, `marketing.redemptions_enabled`, `marketing.broadcasts_enabled`
+        (emergency stops, default true), `marketing.broadcast_rate_per_s` (1..20, default 4),
+        `marketing.broadcast_approval_threshold` (1..10000000, default 100) and
+        `marketing.test_recipients` (`int_list` of up to 20 Telegram ids allowed to receive test
+        broadcasts, default empty).
       required: [key, type, value, default, source, has_env_default, overrides_env, description, constraints, read_only, updated_at, updated_by]
       properties:
         key: {type: string, pattern: '^[a-z0-9_.]+$', example: topup.min_amount}
@@ -9397,3 +10911,1014 @@ components:
             - $ref: '#/components/schemas/GeoJsonPolygon'
             - $ref: '#/components/schemas/GeoJsonMultiPolygon'
         is_active: {type: [boolean, 'null']}
+    # ------------------------------------------------- marketing (ARCHITECTURE §23)
+    OrderPromotion:
+      type: object
+      description: |
+        The coupon or bonus applied to an order (ARCHITECTURE §23.6). `cash_due = gross_fare −
+        discount` is what the passenger pays the driver; `compensation` is set once the driver was
+        credited (at completion). Driver views carry no `kind` (empty string) and no `title`: how
+        the passenger paid is not the driver's business.
+      required: [kind, title, discount, gross_fare, cash_due, status, compensation, settled_at]
+      properties:
+        kind: {type: string, enum: [coupon, bonus, ''], description: '`coupon` or `bonus`; empty in driver views.'}
+        title:
+          description: The coupon campaign's title; `null` for the bonus balance and in driver views.
+          oneOf:
+            - $ref: '#/components/schemas/LocalizedText'
+            - type: 'null'
+        discount: {type: integer, format: int64, minimum: 1, example: 400}
+        gross_fare: {type: integer, format: int64, minimum: 1, description: 'The order''s fare, unchanged by the promotion.', example: 1500}
+        cash_due: {type: integer, format: int64, minimum: 0, example: 1100}
+        status: {$ref: '#/components/schemas/OrderPromotionStatus'}
+        compensation: {type: [integer, 'null'], format: int64, minimum: 0, description: 'Credited to the driver''s wallet (`promo_compensation`), equal to `discount`; `null` until settled.', example: 400}
+        settled_at: {type: [string, 'null'], format: date-time}
+    OrderPromotionStatus:
+      type: string
+      description: '`reserved` at creation, `released` by a cancellation, `settled` at completion (coupon redeemed or bonus spent, driver credited), `reversed` by finance.'
+      enum: [reserved, released, settled, reversed]
+    MarketingTemplate:
+      type: string
+      description: |
+        Campaign template (ARCHITECTURE §23.2): `first_ride_coupon` «Алғашқы сапар»,
+        `referral_first_ride` «Досыңды шақыр», `passenger_credit` (a bonus for a passenger segment),
+        `driver_milestone_bonus` (a wallet bonus after N rides in a window), `manual_grant` (system
+        bucket of manual bonus credits), `broadcast_only` (copy only).
+      enum: [first_ride_coupon, referral_first_ride, passenger_credit, driver_milestone_bonus, manual_grant, broadcast_only]
+    MarketingCampaignStatus:
+      type: string
+      enum: [draft, scheduled, active, paused, ended, archived]
+    MarketingCampaignAction:
+      type: string
+      description: |
+        `schedule`, `activate`, `resume`, `end`, `freeze_redemptions` and `unfreeze_redemptions` need
+        `marketing.approve`, a reason and `confirm: true`; `unschedule`, `pause` and `archive` need
+        `marketing.edit` or `marketing.approve`.
+      enum: [schedule, unschedule, activate, pause, resume, end, archive, freeze_redemptions, unfreeze_redemptions]
+    MarketingCategories:
+      type: array
+      description: Order categories the rule applies to.
+      minItems: 1
+      maxItems: 3
+      uniqueItems: true
+      items: {$ref: '#/components/schemas/OrderCategory'}
+      example: [taxi]
+    MarketingCouponRules:
+      type: object
+      additionalProperties: false
+      description: '`first_ride_coupon`: a coupon of `amount`, issued once after the passenger''s first completed ride in `categories`, valid `validity_hours`, for one later order in `categories` whose fare is at least `min_order_fare`.'
+      required: [amount, validity_hours, min_order_fare, categories]
+      properties:
+        amount: {type: integer, format: int64, minimum: 1, maximum: 100000, example: 400}
+        validity_hours: {type: integer, minimum: 1, maximum: 720, example: 72}
+        min_order_fare: {type: integer, format: int64, minimum: 1, maximum: 10000000, description: 'At least `amount` (`below_amount`): no partial redemption, so the cash due is never negative.', example: 400}
+        categories: {$ref: '#/components/schemas/MarketingCategories'}
+    MarketingReferralRules:
+      type: object
+      additionalProperties: false
+      description: |
+        `referral_first_ride`: an invitee bound to a referrer on first arrival (within
+        `attribution_window_minutes` of the account's creation) earns the referrer `reward_amount`
+        on the bonus balance when the invitee's first completed ride is in `categories`; at most
+        once per referrer and campaign. `unlock` decides when a passenger may invite; a qualifying
+        ride shorter than `min_ride_seconds` waits for a review.
+      required: [reward_amount, categories, attribution_window_minutes, unlock, min_ride_seconds]
+      properties:
+        reward_amount: {type: integer, format: int64, minimum: 1, maximum: 100000, example: 300}
+        categories: {$ref: '#/components/schemas/MarketingCategories'}
+        attribution_window_minutes: {type: integer, minimum: 5, maximum: 10080, example: 60}
+        unlock:
+          type: string
+          description: '`coupon_redeemed` (default: after the first-ride coupon was used), `coupon_redeemed_or_expired`, `first_ride_completed`.'
+          enum: [coupon_redeemed, coupon_redeemed_or_expired, first_ride_completed]
+        min_ride_seconds: {type: integer, minimum: 0, maximum: 3600, example: 60}
+    MarketingCreditRules:
+      type: object
+      additionalProperties: false
+      description: '`passenger_credit`: every reachable passenger of the segment gets `amount` on the bonus balance once. The audience is frozen as pending grants when an approver schedules the campaign (or activates it, if nothing was frozen before), with the budget checked then, and paid while the campaign is active; the rules are locked once the campaign leaves `draft`.'
+      required: [amount, segment_id]
+      properties:
+        amount: {type: integer, format: int64, minimum: 1, maximum: 100000, example: 200}
+        segment_id: {type: string, format: uuid, description: 'A live passenger segment (`not_found`, `wrong_audience`).'}
+    MarketingMilestoneRules:
+      type: object
+      additionalProperties: false
+      description: '`driver_milestone_bonus`: a driver who completes `rides` orders in `categories` inside the version''s `[starts_at, ends_at)` window gets `amount` on the wallet once (`bonus_credit`).'
+      required: [amount, rides, categories]
+      properties:
+        amount: {type: integer, format: int64, minimum: 1, maximum: 100000, example: 1000}
+        rides: {type: integer, minimum: 1, maximum: 1000, example: 20}
+        categories: {$ref: '#/components/schemas/MarketingCategories'}
+    MarketingManualRules:
+      type: object
+      additionalProperties: false
+      description: '`manual_grant`: one manual bonus credit may not exceed `max_amount`; only `marketing.approve` changes it (a new version).'
+      required: [max_amount]
+      properties:
+        max_amount: {type: integer, format: int64, minimum: 1, maximum: 1000000, example: 50000}
+    MarketingBroadcastOnlyRules:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+      description: '`broadcast_only`: copy only, no money.'
+    MarketingRules:
+      description: Rules of the campaign's template, typed and validated by the server (unknown fields are refused).
+      oneOf:
+        - $ref: '#/components/schemas/MarketingCouponRules'
+        - $ref: '#/components/schemas/MarketingReferralRules'
+        - $ref: '#/components/schemas/MarketingCreditRules'
+        - $ref: '#/components/schemas/MarketingMilestoneRules'
+        - $ref: '#/components/schemas/MarketingManualRules'
+        - $ref: '#/components/schemas/MarketingBroadcastOnlyRules'
+    MarketingUsage:
+      type: object
+      description: |
+        Budget accounting (ARCHITECTURE §23.8): `committed` = unexpired issued and reserved coupons
+        plus pending grants; `spent` = redeemed coupons plus credited grants; `remaining` =
+        `max(budget_limit − committed − spent, 0)`, `null` without a budget. `coupons` and `grants`
+        count rows by status (coupon statuses computed against the database clock).
+      required: [committed, spent, remaining, coupons, grants]
+      properties:
+        committed: {type: integer, format: int64, minimum: 0, example: 2400}
+        spent: {type: integer, format: int64, minimum: 0, example: 8800}
+        remaining: {type: [integer, 'null'], format: int64, minimum: 0, example: 88800}
+        coupons:
+          type: object
+          additionalProperties: {type: integer, minimum: 0}
+          example: {issued: 6, redeemed: 22, expired: 3}
+        grants:
+          type: object
+          additionalProperties: {type: integer, minimum: 0}
+          example: {credited: 4}
+    MarketingCampaign:
+      type: object
+      description: A campaign with its current version (ARCHITECTURE §23.2).
+      required: [id, key, template, status, is_system, version, version_id, title, description, rules, starts_at, ends_at, budget_limit, redemptions_frozen, priority, exclusivity_group, scheduled_at, active_since, activated_at, paused_at, ended_at, archived_at, created_by, approved_by, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        key: {type: string, pattern: '^[a-z0-9_]{3,40}$', example: first_ride_coupon_400}
+        template: {$ref: '#/components/schemas/MarketingTemplate'}
+        status: {$ref: '#/components/schemas/MarketingCampaignStatus'}
+        is_system: {type: boolean, description: Seeded by the migration (the launch campaigns and `manual_adjustments`).}
+        version: {type: integer, minimum: 1, description: Current version number.}
+        version_id: {type: string, format: uuid}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        description: {$ref: '#/components/schemas/LocalizedText'}
+        rules: {$ref: '#/components/schemas/MarketingRules'}
+        starts_at: {type: [string, 'null'], format: date-time, description: Start of the current version's validity window.}
+        ends_at: {type: [string, 'null'], format: date-time, description: End of the window; the schedule job ends the campaign once it passes.}
+        budget_limit: {type: [integer, 'null'], format: int64, minimum: 0, description: 'KZT the campaign may commit and spend; `null` = no cap.', example: 100000}
+        redemptions_frozen: {type: boolean, description: The campaign's coupons cannot be used on new orders.}
+        priority: {type: integer, minimum: 0, maximum: 1000, description: Lower first., example: 10}
+        exclusivity_group: {type: [string, 'null'], example: launch_2026}
+        scheduled_at: {type: [string, 'null'], format: date-time}
+        active_since: {type: [string, 'null'], format: date-time, description: Start of the current active period; rides completed earlier never earn.}
+        activated_at: {type: [string, 'null'], format: date-time}
+        paused_at: {type: [string, 'null'], format: date-time}
+        ended_at: {type: [string, 'null'], format: date-time}
+        archived_at: {type: [string, 'null'], format: date-time}
+        created_by: {type: [string, 'null'], format: uuid, description: Admin id.}
+        approved_by: {type: [string, 'null'], format: uuid, description: 'Admin who last scheduled, activated or resumed it.'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        usage: {$ref: '#/components/schemas/MarketingUsage'}
+    MarketingCampaignVersion:
+      type: object
+      description: One immutable version of a campaign's copy, rules and window.
+      required: [id, version, title, description, rules, starts_at, ends_at, change_note, created_by, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        version: {type: integer, minimum: 1}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        description: {$ref: '#/components/schemas/LocalizedText'}
+        rules: {$ref: '#/components/schemas/MarketingRules'}
+        starts_at: {type: [string, 'null'], format: date-time}
+        ends_at: {type: [string, 'null'], format: date-time}
+        change_note: {type: [string, 'null'], maxLength: 300}
+        created_by: {type: [string, 'null'], format: uuid}
+        created_at: {type: string, format: date-time}
+    MarketingCampaignDetail:
+      allOf:
+        - $ref: '#/components/schemas/MarketingCampaign'
+        - type: object
+          required: [versions]
+          properties:
+            versions:
+              type: array
+              description: Every version, newest first.
+              items: {$ref: '#/components/schemas/MarketingCampaignVersion'}
+    MarketingCampaignPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/MarketingCampaign'}
+    MarketingTextInput:
+      type: object
+      additionalProperties: false
+      description: Text in kk, ru and en, cleaned like free text; the limit is given where it is used.
+      required: [kk, ru, en]
+      properties:
+        kk: {type: string}
+        ru: {type: string}
+        en: {type: string}
+    MarketingCampaignInput:
+      type: object
+      additionalProperties: false
+      description: |
+        Create: `template`, `title` and the template's `rules` are required. New version: every
+        field is optional (the current value is kept); `template` and `key` must not change;
+        `budget_limit`, `priority` and `exclusivity_group` are refused there.
+      properties:
+        template: {$ref: '#/components/schemas/MarketingTemplate'}
+        key: {type: [string, 'null'], pattern: '^[a-z0-9_]{3,40}$', description: 'Optional; default `<template>_<6 hex>`.'}
+        title:
+          description: 1..80 code points in each language.
+          allOf: [{$ref: '#/components/schemas/MarketingTextInput'}]
+        description:
+          description: Up to 600 code points in each language; all three or none.
+          allOf: [{$ref: '#/components/schemas/MarketingTextInput'}]
+        rules: {$ref: '#/components/schemas/MarketingRules'}
+        starts_at: {type: [string, 'null'], format: date-time}
+        ends_at: {type: [string, 'null'], format: date-time, description: After `starts_at`; both are required for `driver_milestone_bonus`.}
+        budget_limit: {type: [integer, 'null'], format: int64, minimum: 0, maximum: 1000000000, description: Create only; ignored without `marketing.approve`.}
+        priority: {type: [integer, 'null'], minimum: 0, maximum: 1000, default: 100}
+        exclusivity_group: {type: [string, 'null'], pattern: '^[a-z0-9_]{1,40}$'}
+        change_note: {type: [string, 'null'], maxLength: 300}
+    MarketingCampaignTransitionRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action: {$ref: '#/components/schemas/MarketingCampaignAction'}
+        reason: {type: [string, 'null'], maxLength: 300, description: 'Required (3..300 code points) for approver actions; kept in the audit log.'}
+        confirm: {type: boolean, default: false, description: Must be true for approver actions.}
+        scheduled_at: {type: [string, 'null'], format: date-time, description: '`schedule` only; in the future.'}
+        expected_version: {type: [integer, 'null'], minimum: 1, description: 'Required for approver actions (`422 fields.expected_version = required`): the campaign `version` the approver reviewed; a campaign with another current version is refused (`409 version_conflict {current_version}`). Ignored for the other actions.', example: 1}
+    MarketingBudgetRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, confirm]
+      properties:
+        budget_limit: {type: [integer, 'null'], format: int64, minimum: 0, maximum: 1000000000, description: Required unless `unlimited`.}
+        unlimited: {type: boolean, default: false, description: Remove the cap.}
+        reason: {type: string, minLength: 3, maxLength: 300}
+        confirm: {type: boolean, description: Must be true.}
+    MarketingCampaignPreview:
+      type: object
+      required: [audience, per_person, max_liability, budget_limit, usage, warnings]
+      properties:
+        audience: {type: integer, format: int64, minimum: 0, description: Estimated people the campaign can reach.}
+        per_person: {type: integer, format: int64, minimum: 0, description: 'Amount per person (coupon, reward, credit or milestone bonus).'}
+        max_liability: {type: [integer, 'null'], format: int64, minimum: 0, description: '`audience × per_person`, capped by the budget; `null` without an amount.'}
+        budget_limit: {type: [integer, 'null'], format: int64, minimum: 0}
+        usage: {$ref: '#/components/schemas/MarketingUsage'}
+        warnings:
+          type: array
+          items:
+            type: string
+            description: |
+              `awards_switch_off` / `redemptions_switch_off` (a global switch is off),
+              `fares_below_coupon_minimum` (an active tariff of the coupon's categories starts below
+              `min_order_fare`), `legacy_passengers_locked` (the unlock policy keeps passengers who
+              rode before out of invitations), `coupon_campaign_not_active` (the default unlock
+              needs a live coupon campaign), `no_budget_limit`.
+            enum: [awards_switch_off, redemptions_switch_off, fares_below_coupon_minimum, legacy_passengers_locked, coupon_campaign_not_active, no_budget_limit]
+    MarketingCouponStatus:
+      type: string
+      description: '`issued` (usable until `expires_at`), `reserved` (on an open order), `redeemed`, `expired`, `voided`. An `issued` coupon past `expires_at` reads `expired`.'
+      enum: [issued, reserved, redeemed, expired, voided]
+    MarketingCoupon:
+      type: object
+      description: A coupon as admins see it.
+      required: [id, campaign_id, campaign_key, version, user_id, amount, min_order_fare, categories, status, issued_at, expires_at, source_order_number, reserved_order_id, redeemed_order_number, redeemed_at, closed_at, void_reason]
+      properties:
+        id: {type: string, format: uuid}
+        campaign_id: {type: string, format: uuid}
+        campaign_key: {type: string, example: first_ride_coupon_400}
+        version: {type: integer, minimum: 1, description: Campaign version that issued it.}
+        user_id: {type: string, format: uuid, description: The passenger.}
+        amount: {type: integer, format: int64, example: 400}
+        min_order_fare: {type: integer, format: int64, example: 400}
+        categories: {$ref: '#/components/schemas/MarketingCategories'}
+        status: {$ref: '#/components/schemas/MarketingCouponStatus'}
+        issued_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        source_order_number: {type: [integer, 'null'], format: int64, description: The qualifying ride., example: 1042}
+        reserved_order_id: {type: [string, 'null'], format: uuid}
+        redeemed_order_number: {type: [integer, 'null'], format: int64}
+        redeemed_at: {type: [string, 'null'], format: date-time}
+        closed_at: {type: [string, 'null'], format: date-time}
+        void_reason: {type: [string, 'null'], description: 'Operator''s reason, or `qualifying_ride_cancelled`.'}
+    MarketingCouponPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/MarketingCoupon'}
+    MarketingReasonRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 3, maxLength: 300}
+    PassengerBonusAccount:
+      type: object
+      description: The passenger bonus balance; `available = balance − reserved` (the reserved part is earmarked for open orders).
+      required: [balance, reserved, available]
+      properties:
+        balance: {type: integer, format: int64, minimum: 0, example: 300}
+        reserved: {type: integer, format: int64, minimum: 0, example: 0}
+        available: {type: integer, format: int64, minimum: 0, example: 300}
+    PassengerBonusEntryType:
+      type: string
+      description: |
+        `grant` (+balance; key `grant:<grant_id>`), `reserve` (+reserved, `bonus_reserve:<application_id>`),
+        `release` (−reserved, `bonus_release:<application_id>`), `spend` (−balance, −reserved,
+        `bonus_spend:<application_id>`), `adjustment_credit` (+balance; `bonus_adjust:<uuid>`, or
+        `bonus_refund:<application_id>` when a promotion is reversed), `adjustment_debit`
+        (−balance, `bonus_adjust:<uuid>`).
+      enum: [grant, reserve, release, spend, adjustment_credit, adjustment_debit]
+    PassengerBonusEntry:
+      type: object
+      description: One append-only row of the passenger bonus ledger.
+      required: [id, user_id, type, balance_delta, reserved_delta, balance_after, reserved_after, campaign_id, order_id, order_number, admin_id, idempotency_key, description, created_at]
+      properties:
+        id: {type: integer, format: int64}
+        user_id: {type: string, format: uuid}
+        type: {$ref: '#/components/schemas/PassengerBonusEntryType'}
+        balance_delta: {type: integer, format: int64, example: 300}
+        reserved_delta: {type: integer, format: int64, example: 0}
+        balance_after: {type: integer, format: int64, minimum: 0}
+        reserved_after: {type: integer, format: int64, minimum: 0}
+        campaign_id: {type: [string, 'null'], format: uuid}
+        order_id: {type: [string, 'null'], format: uuid}
+        order_number: {type: [integer, 'null'], format: int64}
+        admin_id: {type: [string, 'null'], format: uuid}
+        idempotency_key: {type: string, example: 'grant:5d0c7e2a-8b1f-4c3d-9e4a-6f7081928374'}
+        description: {type: string, description: System note or the operator's reason; empty when none.}
+        created_at: {type: string, format: date-time}
+    PassengerBonusLedgerPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/PassengerBonusEntry'}
+    MarketingUserRef:
+      type: object
+      description: A person in marketing views, masked.
+      required: [id, name, phone_masked, telegram_user_id, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, description: First name and the last name's initial; «Telegram» without a first name., example: Айгүл С.}
+        phone_masked: {type: [string, 'null'], description: Every character but the last four replaced by `•`; `null` without a phone., example: '••••••••4567'}
+        telegram_user_id: {type: integer, format: int64, example: 784512369}
+        created_at: {type: string, format: date-time}
+    MarketingUserList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/MarketingUserRef'}
+    MarketingUser:
+      type: object
+      description: A person's promotions (admin view).
+      required: [user, bonus, coupons, ledger, referral_code, invited_by, invited, promotions]
+      properties:
+        user: {$ref: '#/components/schemas/MarketingUserRef'}
+        bonus: {$ref: '#/components/schemas/PassengerBonusAccount'}
+        coupons:
+          type: array
+          description: The latest 20 coupons.
+          items: {$ref: '#/components/schemas/MarketingCoupon'}
+        ledger:
+          type: array
+          description: The latest 50 bonus ledger rows.
+          items: {$ref: '#/components/schemas/PassengerBonusEntry'}
+        referral_code: {type: [string, 'null'], pattern: '^[A-Z2-9]{8}$', example: K7M2QX9P}
+        invited_by:
+          description: The attribution that bound this person to an inviter.
+          oneOf:
+            - $ref: '#/components/schemas/MarketingReferral'
+            - type: 'null'
+        invited:
+          type: array
+          description: Up to 100 people this person invited.
+          items: {$ref: '#/components/schemas/MarketingReferral'}
+        promotions:
+          type: array
+          description: Up to 50 promotions on this person's orders.
+          items: {$ref: '#/components/schemas/MarketingApplication'}
+    MarketingBonusAdjustmentRequest:
+      type: object
+      additionalProperties: false
+      required: [amount, reason, idempotency_key, confirm]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: -1000000
+          maximum: 1000000
+          not: {const: 0}
+          description: Credit > 0 (≤ `max_amount` of `manual_adjustments`), debit < 0 (≤ the available balance).
+          example: 200
+        reason: {type: string, minLength: 3, maxLength: 300}
+        idempotency_key: {type: string, description: 'A UUID, optionally prefixed `bonus_adjust:`.', example: 6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8}
+        confirm: {type: boolean, description: Must be true.}
+    MarketingReferralStatus:
+      type: string
+      description: '`attributed` (bound, waiting for the first ride), `review` (held: `short_ride` or `budget_exhausted`), `rewarded`, `capped` (the referrer was already rewarded), `rejected`. When a dispute cancels the qualifying ride after completion, a `review` attribution becomes `rejected` and a `rewarded` one stays `rewarded`, both with `reason = qualifying_ride_cancelled`.'
+      enum: [attributed, review, rewarded, capped, rejected]
+    MarketingReferral:
+      type: object
+      description: A referral attribution (people masked).
+      required: [id, campaign_key, invitee, referrer, code, source, status, reason, qualifying_order_number, attributed_at, qualified_at, decided_at]
+      properties:
+        id: {type: string, format: uuid}
+        campaign_key: {type: string, example: referral_300_once}
+        invitee: {$ref: '#/components/schemas/MarketingUserRef'}
+        referrer: {$ref: '#/components/schemas/MarketingUserRef'}
+        code: {type: string, pattern: '^[A-Z2-9]{8}$'}
+        source: {type: string, enum: [bot_start, miniapp]}
+        status: {$ref: '#/components/schemas/MarketingReferralStatus'}
+        reason:
+          type: [string, 'null']
+          description: '`short_ride`, `budget_exhausted`, `already_rewarded`, `category_not_eligible`, `referrer_blocked`, `same_phone`, `referrer_drove`, or `qualifying_ride_cancelled` (a dispute cancelled the qualifying ride after completion: the reward is not paid, or, when already paid, flagged for finance; no money moves automatically).'
+        qualifying_order_number: {type: [integer, 'null'], format: int64}
+        attributed_at: {type: string, format: date-time}
+        qualified_at: {type: [string, 'null'], format: date-time}
+        decided_at: {type: [string, 'null'], format: date-time}
+    MarketingReferralPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/MarketingReferral'}
+    MarketingReferralReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision: {type: string, enum: [approve, reject]}
+        reason: {type: string, minLength: 3, maxLength: 300}
+    MarketingReferralReviewResult:
+      type: object
+      required: [outcome]
+      properties:
+        outcome: {type: string, enum: [referral_rewarded, referral_capped, rejected]}
+    MarketingApplication:
+      type: object
+      description: A promotion applied to an order (admin view).
+      required: [id, order_id, order_number, order_status, user_id, kind, campaign_key, gross_fare, discount, status, driver_code, compensation, review_reason, reserved_at, settled_at, released_at, reversed_at]
+      properties:
+        id: {type: string, format: uuid}
+        order_id: {type: string, format: uuid}
+        order_number: {type: integer, format: int64}
+        order_status: {$ref: '#/components/schemas/OrderStatus'}
+        user_id: {type: string, format: uuid, description: The passenger.}
+        kind: {type: string, enum: [coupon, bonus]}
+        campaign_key: {type: [string, 'null'], description: The coupon's campaign; `null` for the bonus balance.}
+        gross_fare: {type: integer, format: int64}
+        discount: {type: integer, format: int64}
+        status: {$ref: '#/components/schemas/OrderPromotionStatus'}
+        driver_code: {type: [string, 'null'], description: 'The compensated driver, once settled.', example: EMB001}
+        compensation: {type: [integer, 'null'], format: int64}
+        review_reason: {type: [string, 'null'], description: 'Set for finance to decide: `order_cancelled_after_settlement` (a dispute cancelled the order after the promotion settled) or `coupon_source_cancelled` (the order completed with a coupon whose own qualifying ride a dispute had cancelled; the driver was compensated as usual).'}
+        reserved_at: {type: string, format: date-time}
+        settled_at: {type: [string, 'null'], format: date-time}
+        released_at: {type: [string, 'null'], format: date-time}
+        reversed_at: {type: [string, 'null'], format: date-time}
+    MarketingApplicationPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/MarketingApplication'}
+    MarketingReverseRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, confirm]
+      properties:
+        reason: {type: string, minLength: 3, maxLength: 300}
+        confirm: {type: boolean, description: Must be true.}
+    MarketingReverseResult:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, const: reversed}
+    MarketingAudience:
+      type: string
+      description: '`passengers` — people who started the passenger bot; `drivers` — people with a driver profile who started the driver bot.'
+      enum: [passengers, drivers]
+    MarketingSegmentFilters:
+      type: object
+      additionalProperties: false
+      description: |
+        Typed filters, all optional, evaluated with bound parameters (ARCHITECTURE §23.7). Days are
+        0..3650. Passenger-only and driver-only fields are refused for the other audience.
+        Drivers default to `approved` unless `driver_statuses` is given.
+      properties:
+        languages:
+          type: array
+          items: {$ref: '#/components/schemas/Language'}
+        registered_within_days: {type: integer, minimum: 0, maximum: 3650}
+        registered_before_days: {type: integer, minimum: 0, maximum: 3650}
+        completed_rides_min: {type: integer, minimum: 0, maximum: 100000}
+        completed_rides_max: {type: integer, minimum: 0, maximum: 100000, description: Not below `completed_rides_min` (`below_min`).}
+        last_ride_within_days: {type: integer, minimum: 0, maximum: 3650, description: Passengers only.}
+        no_ride_for_days: {type: integer, minimum: 0, maximum: 3650, description: Passengers only.}
+        has_active_coupon: {type: boolean, description: Passengers only.}
+        driver_statuses:
+          type: array
+          description: Drivers only.
+          items: {type: string, enum: [approved, suspended, pending, changes_requested]}
+        online_within_days: {type: integer, minimum: 0, maximum: 3650, description: Drivers only (last heartbeat).}
+        city_ids:
+          type: array
+          description: Drivers only.
+          maxItems: 50
+          items: {type: string, format: uuid}
+    MarketingAudienceCount:
+      type: object
+      description: An audience estimate; no person leaves the server.
+      required: [matching, reachable, suppressed]
+      properties:
+        matching: {type: integer, format: int64, minimum: 0, example: 1250}
+        reachable: {type: integer, format: int64, minimum: 0, description: Matching people who may receive marketing., example: 1190}
+        suppressed: {type: integer, format: int64, minimum: 0, description: 'Opted out, blocked the bot or blocked by an operator.', example: 60}
+    MarketingSegment:
+      type: object
+      required: [id, name, audience, filters, created_at, updated_at, archived_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 120}
+        audience: {$ref: '#/components/schemas/MarketingAudience'}
+        filters: {$ref: '#/components/schemas/MarketingSegmentFilters'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        archived_at: {type: [string, 'null'], format: date-time}
+        count: {$ref: '#/components/schemas/MarketingAudienceCount'}
+    MarketingSegmentList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: {$ref: '#/components/schemas/MarketingSegment'}
+    MarketingSegmentInput:
+      type: object
+      additionalProperties: false
+      description: '`name` and `audience` are required on create; the audience cannot change.'
+      properties:
+        name: {type: [string, 'null'], minLength: 1, maxLength: 120}
+        audience: {$ref: '#/components/schemas/MarketingAudience'}
+        filters: {$ref: '#/components/schemas/MarketingSegmentFilters'}
+        archived: {type: [boolean, 'null'], description: 'Update only; `true` archives, `false` restores.'}
+    MarketingAudiencePreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [audience]
+      properties:
+        audience: {$ref: '#/components/schemas/MarketingAudience'}
+        filters: {$ref: '#/components/schemas/MarketingSegmentFilters'}
+    MarketingBroadcastStatus:
+      type: string
+      description: '`failed`: at `scheduled_at` the snapshot failed, or the audience was above the approval threshold and no approver had scheduled the broadcast (`approval_note = approval_required`); nothing was sent.'
+      enum: [draft, scheduled, sending, paused, completed, cancelled, failed]
+    MarketingRecipientStatus:
+      type: string
+      description: '`sent` = accepted by Telegram; `blocked` = the person blocked the bot (403); `suppressed` = opted out or blocked when snapshotted or sent; `cancelled` = never sent because the broadcast was cancelled or failed.'
+      enum: [queued, sending, sent, failed, blocked, suppressed, cancelled]
+    MarketingBroadcastButton:
+      type: object
+      additionalProperties: false
+      description: Opens the audience's Mini App at `?startapp=<start_param>` (an HTTPS Mini App URL is required).
+      required: [label, start_param]
+      properties:
+        label:
+          description: Up to 40 code points in each language.
+          allOf: [{$ref: '#/components/schemas/MarketingTextInput'}]
+        start_param: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}$', example: taxi}
+    MarketingBroadcast:
+      type: object
+      description: A marketing message to one bot's audience (ARCHITECTURE §23.7).
+      required: [id, campaign_id, title, audience, segment_id, filters, content, button, status, scheduled_at, started_at, completed_at, cancelled_at, recipient_count, created_by, approved_by, approval_note, version, created_at, updated_at, stats]
+      properties:
+        id: {type: string, format: uuid}
+        campaign_id: {type: [string, 'null'], format: uuid}
+        title: {type: string, minLength: 1, maxLength: 120}
+        audience: {$ref: '#/components/schemas/MarketingAudience'}
+        segment_id: {type: [string, 'null'], format: uuid}
+        filters:
+          description: A draft's inline targeting (empty while it follows `segment_id`); from `schedule` or `send_now` on, the resolved filters that were checked (a segment's included), which later segment edits do not change.
+          allOf: [{$ref: '#/components/schemas/MarketingSegmentFilters'}]
+        content: {$ref: '#/components/schemas/LocalizedText'}
+        button:
+          oneOf:
+            - $ref: '#/components/schemas/MarketingBroadcastButton'
+            - type: 'null'
+        status: {$ref: '#/components/schemas/MarketingBroadcastStatus'}
+        scheduled_at: {type: [string, 'null'], format: date-time}
+        started_at: {type: [string, 'null'], format: date-time}
+        completed_at: {type: [string, 'null'], format: date-time}
+        cancelled_at: {type: [string, 'null'], format: date-time}
+        recipient_count: {type: [integer, 'null'], minimum: 0, description: Deliveries queued by the snapshot.}
+        created_by: {type: [string, 'null'], format: uuid}
+        approved_by: {type: [string, 'null'], format: uuid, description: 'The approver (`marketing.approve`) who scheduled or sent it; `null` when an admin without that permission did, so an audience grown above the threshold by `scheduled_at` is not sent.'}
+        approval_note: {type: [string, 'null'], maxLength: 300, description: 'The `reason` given with `schedule` or `send_now`; `approval_required` when the worker refused to send a scheduled broadcast that needed an approver.'}
+        version: {type: integer, minimum: 1, description: Increments on every edit.}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        stats:
+          type: object
+          description: Deliveries by status; test deliveries as `test_<status>`.
+          additionalProperties: {type: integer, minimum: 0}
+          example: {sent: 1180, blocked: 9, suppressed: 60, test_sent: 1}
+    MarketingBroadcastDetail:
+      allOf:
+        - $ref: '#/components/schemas/MarketingBroadcast'
+        - type: object
+          required: [estimate, approval_threshold]
+          properties:
+            estimate:
+              description: The audience estimate while `draft` or `scheduled` (a scheduled broadcast counts the targeting frozen at scheduling); `null` afterwards.
+              oneOf:
+                - $ref: '#/components/schemas/MarketingAudienceCount'
+                - type: 'null'
+            approval_threshold: {type: integer, format: int64, minimum: 1, description: '`marketing.broadcast_approval_threshold` in force.', example: 100}
+    MarketingBroadcastPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/MarketingBroadcast'}
+    MarketingBroadcastInput:
+      type: object
+      additionalProperties: false
+      description: '`title` and `content` are required on create; every field is optional on edit.'
+      properties:
+        title: {type: [string, 'null'], minLength: 1, maxLength: 120}
+        audience: {$ref: '#/components/schemas/MarketingAudience'}
+        segment_id: {type: [string, 'null'], format: uuid, description: A live segment of the same audience; the nil UUID clears it. A segment replaces `filters`.}
+        filters: {$ref: '#/components/schemas/MarketingSegmentFilters'}
+        content:
+          description: Up to 3000 characters in each language after cleaning; sent as plain text.
+          allOf: [{$ref: '#/components/schemas/MarketingTextInput'}]
+        button: {$ref: '#/components/schemas/MarketingBroadcastButton'}
+        no_button: {type: boolean, default: false, description: Remove the button.}
+        campaign_id: {type: [string, 'null'], format: uuid, description: The campaign the message promotes; the nil UUID clears it.}
+    MarketingBroadcastTestRequest:
+      type: object
+      additionalProperties: false
+      required: [telegram_user_id]
+      properties:
+        telegram_user_id: {type: integer, format: int64, minimum: 1, description: 'A Telegram id listed in `marketing.test_recipients` (usually the operator''s own account) that started the audience''s bot and has not opted out or blocked it.', example: 784512369}
+    MarketingBroadcastTestResult:
+      type: object
+      required: [delivery_id]
+      properties:
+        delivery_id: {type: integer, format: int64}
+    MarketingBroadcastTransitionRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action: {type: string, enum: [schedule, send_now, pause, resume, cancel]}
+        scheduled_at: {type: [string, 'null'], format: date-time, description: '`schedule` only; in the future.'}
+        reason: {type: [string, 'null'], maxLength: 300, description: Kept as the approval note.}
+        confirm: {type: boolean, default: false, description: Must be true for `schedule` and `send_now`.}
+    MarketingBroadcastRecipient:
+      type: object
+      description: A delivery as operators see it — no names or phones.
+      required: [id, user_id, language, is_test, status, attempts, http_status, last_error, sent_at, updated_at]
+      properties:
+        id: {type: integer, format: int64}
+        user_id: {type: string, format: uuid}
+        language: {$ref: '#/components/schemas/Language'}
+        is_test: {type: boolean}
+        status: {$ref: '#/components/schemas/MarketingRecipientStatus'}
+        attempts: {type: integer, minimum: 0, maximum: 5}
+        http_status: {type: [integer, 'null'], description: Telegram error code of the last failed attempt.}
+        last_error: {type: [string, 'null'], maxLength: 500, description: Sanitised error (bot tokens redacted).}
+        sent_at: {type: [string, 'null'], format: date-time}
+        updated_at: {type: string, format: date-time}
+    MarketingBroadcastRecipientPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/MarketingBroadcastRecipient'}
+    MarketingReconciliationIssue:
+      type: object
+      required: [kind, ref]
+      properties:
+        kind:
+          type: string
+          enum: [compensation_mismatch, orphan_compensation, reversal_without_status, bonus_account_mismatch, bonus_reservation_mismatch, stuck_reservation, coupon_promotion_mismatch, grant_without_ledger, driver_grant_without_ledger, referral_cap_exceeded, order_discount_mismatch, totals_mismatch, failed_events]
+        ref: {type: string, description: 'Id of the row concerned (promotion, ledger row, user, coupon, grant or order); empty for totals.'}
+        note: {type: string, description: 'Short machine-made explanation, no personal data.'}
+    MarketingReconciliation:
+      type: object
+      required: [ok, checked_at, totals, issues]
+      properties:
+        ok: {type: boolean}
+        checked_at: {type: string, format: date-time}
+        totals:
+          type: object
+          required: [discounts_settled, compensation_credited, compensation_reversed, bonus_outstanding, bonus_reserved, coupon_liability, promotions_reserved, promotions_under_review, events_failed, events_pending]
+          properties:
+            discounts_settled: {type: integer, format: int64, description: Discounts of settled and reversed promotions.}
+            compensation_credited: {type: integer, format: int64, description: Sum of `promo_compensation` rows.}
+            compensation_reversed: {type: integer, format: int64, description: Sum of `promo_compensation_reversal` rows (positive).}
+            bonus_outstanding: {type: integer, format: int64, description: Sum of passenger bonus balances.}
+            bonus_reserved: {type: integer, format: int64}
+            coupon_liability: {type: integer, format: int64, description: Unexpired issued and reserved coupons.}
+            promotions_reserved: {type: integer, format: int64, description: Discounts reserved on open orders.}
+            promotions_under_review: {type: integer}
+            events_failed: {type: integer}
+            events_pending: {type: integer}
+        issues:
+          type: array
+          items: {$ref: '#/components/schemas/MarketingReconciliationIssue'}
+    MarketingReportDay:
+      type: object
+      required: [date, coupons_issued, coupons_redeemed, coupons_expired, referrals, referral_rewards, bonus_granted, discounts_settled, messages_sent, messages_failed]
+      properties:
+        date: {type: string, format: date}
+        coupons_issued: {type: integer}
+        coupons_redeemed: {type: integer}
+        coupons_expired: {type: integer}
+        referrals: {type: integer, description: Attributions made that day.}
+        referral_rewards: {type: integer}
+        bonus_granted: {type: integer, format: int64, description: KZT credited to passengers' bonus balances.}
+        discounts_settled: {type: integer, format: int64, description: KZT of promotions settled on completed orders.}
+        messages_sent: {type: integer, description: Broadcast deliveries accepted by Telegram (tests excluded).}
+        messages_failed: {type: integer, description: Failed or blocked deliveries.}
+    MarketingReport:
+      type: object
+      required: [from, to, timezone, days, funnel]
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        timezone: {type: string, example: Asia/Aqtobe}
+        days:
+          type: array
+          items: {$ref: '#/components/schemas/MarketingReportDay'}
+        funnel:
+          type: object
+          description: Referrals attributed in the period and how far they got; coupons issued in the period and how many were used.
+          required: [attributed, qualified, rewarded, capped, coupons_issued, coupons_redeemed]
+          properties:
+            attributed: {type: integer}
+            qualified: {type: integer}
+            rewarded: {type: integer}
+            capped: {type: integer}
+            coupons_issued: {type: integer}
+            coupons_redeemed: {type: integer}
+    MarketingSwitches:
+      type: object
+      description: The global marketing switches (emergency stops, on by default).
+      required: [awards_enabled, redemptions_enabled, broadcasts_enabled]
+      properties:
+        awards_enabled: {type: boolean}
+        redemptions_enabled: {type: boolean}
+        broadcasts_enabled: {type: boolean}
+    MarketingOverview:
+      type: object
+      required: [switches, campaigns, coupons, referrals, broadcasts, bonus, compensation, health]
+      properties:
+        switches: {$ref: '#/components/schemas/MarketingSwitches'}
+        campaigns:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/MarketingCampaign'}
+        coupons:
+          type: object
+          description: Coupons by computed status.
+          additionalProperties: {type: integer, minimum: 0}
+        referrals:
+          type: object
+          description: Attributions by status.
+          additionalProperties: {type: integer, minimum: 0}
+        broadcasts:
+          type: object
+          description: Broadcasts by status.
+          additionalProperties: {type: integer, minimum: 0}
+        bonus:
+          type: object
+          required: [outstanding, reserved, accounts]
+          properties:
+            outstanding: {type: integer, format: int64, description: Sum of passenger bonus balances.}
+            reserved: {type: integer, format: int64}
+            accounts: {type: integer, description: Accounts with a positive balance.}
+        compensation:
+          type: object
+          required: [credited, pending]
+          properties:
+            credited: {type: integer, format: int64, description: Discounts of settled and reversed promotions.}
+            pending: {type: integer, format: int64, description: Discounts reserved on open orders.}
+        health:
+          type: object
+          required: [events_pending, events_failed, oldest_pending_s, stuck_reservations, review_promotions, review_referrals, broadcast_queue, overdue_scheduled]
+          properties:
+            events_pending: {type: integer}
+            events_failed: {type: integer}
+            oldest_pending_s: {type: [integer, 'null'], description: Age of the oldest pending award event in seconds.}
+            stuck_reservations: {type: integer}
+            review_promotions: {type: integer}
+            review_referrals: {type: integer}
+            broadcast_queue: {type: integer}
+            overdue_scheduled: {type: integer}
+    MarketingSettingsUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: The `marketing.*` keys to change and the reason, which is required.
+      required: [reason]
+      minProperties: 2
+      properties:
+        marketing.awards_enabled: {type: boolean}
+        marketing.redemptions_enabled: {type: boolean}
+        marketing.broadcasts_enabled: {type: boolean}
+        marketing.broadcast_rate_per_s: {type: integer, minimum: 1, maximum: 20}
+        marketing.broadcast_approval_threshold: {type: integer, minimum: 1, maximum: 10000000}
+        marketing.test_recipients:
+          type: array
+          description: Telegram ids of staff who may receive test broadcasts (they must have started the audience's bot); `[]` allows none. Stored sorted.
+          maxItems: 20
+          uniqueItems: true
+          items: {type: integer, format: int64, minimum: 1, maximum: 9999999999999}
+          example: [784512369]
+        reason: {type: string, minLength: 3, maxLength: 300}
+    PassengerCoupon:
+      type: object
+      required: [id, title, amount, min_order_fare, categories, status, issued_at, expires_at, reserved_order_id, redeemed_at]
+      properties:
+        id: {type: string, format: uuid}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        amount: {type: integer, format: int64, example: 400}
+        min_order_fare: {type: integer, format: int64, description: The coupon applies only to fares of at least this., example: 400}
+        categories: {$ref: '#/components/schemas/MarketingCategories'}
+        status: {$ref: '#/components/schemas/MarketingCouponStatus'}
+        issued_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time, description: Unusable from this instant (database clock).}
+        reserved_order_id: {type: [string, 'null'], format: uuid, description: The open order the coupon is reserved for.}
+        redeemed_at: {type: [string, 'null'], format: date-time}
+    PromotionOffer:
+      type: object
+      description: A promotion the passenger can still earn (the first-ride coupon).
+      required: [kind, title, description, amount, categories]
+      properties:
+        kind: {type: string, enum: [first_ride_coupon]}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        description: {$ref: '#/components/schemas/LocalizedText'}
+        amount: {type: integer, format: int64, example: 400}
+        validity_hours: {type: integer, minimum: 1, example: 72}
+        categories: {$ref: '#/components/schemas/MarketingCategories'}
+    PromotionBanner:
+      type: object
+      description: An active informational campaign (`broadcast_only`).
+      required: [id, title, description]
+      properties:
+        id: {type: string, format: uuid}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        description: {$ref: '#/components/schemas/LocalizedText'}
+    ReferralSummary:
+      type: object
+      description: Whether to show «Досыңды шақыр» (ARCHITECTURE §23.5).
+      required: [state, reward_amount, rewarded]
+      properties:
+        state:
+          type: string
+          description: '`unavailable` (no active referral campaign), `locked` (see `lock_reason`) or `unlocked`.'
+          enum: [unavailable, locked, unlocked]
+        lock_reason:
+          type: string
+          description: |
+            Only when `locked`: `coupon_not_redeemed` (default policy: use the first-ride coupon
+            first), `coupon_not_used` (policy `coupon_redeemed_or_expired`), `first_ride_required`,
+            `paused` (awards are switched off), `disabled` (the passenger's code was disabled).
+          enum: [coupon_not_redeemed, coupon_not_used, first_ride_required, paused, disabled]
+        reward_amount: {type: integer, format: int64, minimum: 0, description: The inviter's reward; 0 when unavailable., example: 300}
+        rewarded: {type: boolean, description: The passenger already received this campaign's reward.}
+    ReferralFriend:
+      type: object
+      required: [name, status, attributed_at]
+      properties:
+        name: {type: string, description: First name and last-name initial., example: Сәуле Т.}
+        status: {type: string, enum: [attributed, rewarded, capped, not_counted]}
+        attributed_at: {type: string, format: date-time}
+    ReferralView:
+      allOf:
+        - $ref: '#/components/schemas/ReferralSummary'
+        - type: object
+          required: [title, description, earned, friends]
+          properties:
+            title: {$ref: '#/components/schemas/LocalizedText'}
+            description: {$ref: '#/components/schemas/LocalizedText'}
+            code: {type: string, pattern: '^[A-Z2-9]{8}$', description: Only while unlocked., example: K7M2QX9P}
+            link: {type: string, format: uri, description: 'Bot link `https://t.me/<passenger bot>?start=ref_<CODE>`; only while unlocked and with a configured bot username.', example: 'https://t.me/JanTaxiBot?start=ref_K7M2QX9P'}
+            app_link: {type: string, format: uri, description: 'Mini App link `?startapp=ref_<CODE>`.', example: 'https://t.me/JanTaxiBot?startapp=ref_K7M2QX9P'}
+            earned: {type: integer, format: int64, minimum: 0, description: Referral rewards credited to this passenger., example: 300}
+            friends:
+              type: array
+              maxItems: 50
+              items: {$ref: '#/components/schemas/ReferralFriend'}
+    PassengerPromotions:
+      type: object
+      required: [server_time, redemptions_enabled, coupons, bonus, bonus_categories, offers, banners, referral, marketing_subscribed]
+      properties:
+        server_time: {type: string, format: date-time, description: Database time; count down `expires_at` from it.}
+        redemptions_enabled: {type: boolean, description: '`false` while coupons and the bonus cannot be used on new orders.'}
+        coupons:
+          type: array
+          maxItems: 10
+          items: {$ref: '#/components/schemas/PassengerCoupon'}
+        bonus: {$ref: '#/components/schemas/PassengerBonusAccount'}
+        bonus_categories:
+          type: array
+          description: Order categories the bonus balance pays for.
+          items: {$ref: '#/components/schemas/OrderCategory'}
+          example: [taxi]
+        offers:
+          type: array
+          items: {$ref: '#/components/schemas/PromotionOffer'}
+        banners:
+          type: array
+          items: {$ref: '#/components/schemas/PromotionBanner'}
+        referral: {$ref: '#/components/schemas/ReferralSummary'}
+        marketing_subscribed: {type: boolean, description: The person receives marketing broadcasts.}
+    PassengerBonusHistoryEntry:
+      type: object
+      required: [id, type, amount, order_number, created_at]
+      properties:
+        id: {type: integer, format: int64}
+        type: {type: string, enum: [grant, spend, adjustment_credit, adjustment_debit]}
+        amount: {type: integer, format: int64, description: Signed change of the balance., example: -300}
+        order_number: {type: [integer, 'null'], format: int64}
+        created_at: {type: string, format: date-time}
+    PassengerBonusHistory:
+      allOf:
+        - $ref: '#/components/schemas/CursorMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/PassengerBonusHistoryEntry'}
+    MarketingSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [subscribed]
+      properties:
+        subscribed: {type: boolean}
+    MarketingSubscription:
+      type: object
+      required: [marketing_subscribed]
+      properties:
+        marketing_subscribed: {type: boolean}
+    BotReferralRequest:
+      type: object
+      additionalProperties: false
+      required: [payload]
+      properties:
+        payload: {type: string, description: 'The `/start` payload, `ref_<CODE>`.', example: ref_K7M2QX9P}
+    BotReferralResult:
+      type: object
+      required: [attributed, outcome]
+      properties:
+        attributed: {type: boolean}
+        outcome: {type: string, enum: [attributed, duplicate, rejected]}
+        reason:
+          type: string
+          description: Why the capture did not bind (omitted when attributed).
+          enum: [already_attributed, invalid_code, campaign_inactive, unknown_code, self_referral, referrer_blocked, referrer_locked, invitee_has_orders, invitee_is_driver, invitee_not_new]
+    BotMarketingOptOutRequest:
+      type: object
+      additionalProperties: false
+      required: [opt_out]
+      properties:
+        opt_out: {type: boolean}

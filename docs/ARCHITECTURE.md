@@ -59,6 +59,8 @@ admin/backend/internal/
   moderation                   applications, automatic approval at submission, approve/reject/corrections
                                of older pending applications, suspend/restore
   wallets                      ledger: reserve/settle/release/credit/adjust, balances
+  marketing                    promotions (§23): campaigns, coupons, passenger bonus balance, referrals,
+                               promotions on orders, segments, broadcasts, reconciliation
   payments                     top-up requests, provider abstraction (kaspi_manual), admin verification
   notifications                transactional outbox, worker, templates (kk/ru/en), Telegram rendering
   realtime                     pg_notify publisher, LISTEN fan-out, WebSocket hub
@@ -154,18 +156,28 @@ fails if the copies drift.
   admin accounts.
 * Roles → permissions (enforced server-side on every admin route):
 
-| Permission | super_admin | operator | driver_moderator | finance_manager | auditor |
-|---|---|---|---|---|---|
-| dashboard.view, orders.view, drivers.view | ✓ | ✓ | ✓ | ✓ | ✓ |
-| orders.manage (cancel, assign, disputes) | ✓ | ✓ | | | |
-| drivers.moderate (approve/reject/corrections) | ✓ | | ✓ | | |
-| drivers.manage (suspend/restore/city) | ✓ | ✓ | ✓ | | |
-| documents.view (ID photos) | ✓ | | ✓ | | |
-| finance.view (wallets, ledger, top-ups) | ✓ | | | ✓ | ✓ |
-| finance.manage (confirm/reject/refund top-ups, adjustments) | ✓ | | | ✓ | |
-| config.manage (cities, zones, tariffs, settings, templates) | ✓ | | | | |
-| admins.manage | ✓ | | | | |
-| audit.view, reports.export | ✓ | ✓ | | ✓ | ✓ |
+| Permission | super_admin | operator | driver_moderator | finance_manager | auditor | marketing_manager |
+|---|---|---|---|---|---|---|
+| dashboard.view | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| orders.view, drivers.view | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| orders.manage (cancel, assign, disputes) | ✓ | ✓ | | | | |
+| drivers.moderate (approve/reject/corrections) | ✓ | | ✓ | | | |
+| drivers.manage (suspend/restore/city) | ✓ | ✓ | ✓ | | | |
+| documents.view (ID photos) | ✓ | | ✓ | | | |
+| finance.view (wallets, ledger, top-ups) | ✓ | | | ✓ | ✓ | |
+| finance.manage (confirm/reject/refund top-ups, adjustments; passenger bonus corrections and promotion reversals, §23.8) | ✓ | | | ✓ | | |
+| config.manage (cities, zones, tariffs, settings, templates) | ✓ | | | | | |
+| admins.manage | ✓ | | | | | |
+| audit.view, reports.export | ✓ | ✓ | | ✓ | ✓ | |
+| marketing.view (campaigns, coupons, bonus ledger, referrals, broadcasts, reports, reconciliation) | ✓ | ✓ | | ✓ | ✓ | ✓ |
+| marketing.edit (draft campaigns and their versions, pause, segments) | ✓ | | | | | ✓ |
+| marketing.approve (activate/resume/schedule/end, budgets, switches, coupon voids, referral decisions, large broadcasts together with marketing.broadcast) | ✓ | | | ✓ | | |
+| marketing.broadcast (create, test, send, pause, cancel broadcasts) | ✓ | | | | | ✓ |
+
+The marketing permissions and the role `marketing_manager` are described in §23.10: a marketing
+manager prepares campaigns, segments and broadcasts; money starts flowing only with
+`marketing.approve`. A broadcast above the approval threshold needs both `marketing.broadcast` and
+`marketing.approve`, which with these roles only `super_admin` holds.
 
 * Bootstrap: `api admin create --email X --role super_admin` reads the password from stdin;
   or on first start, if no admins exist and `ADMIN_BOOTSTRAP_EMAIL` + `ADMIN_BOOTSTRAP_PASSWORD`
@@ -285,9 +297,13 @@ attempt (order, driver, channel, outcome code, duration, request id). In one tra
 | dispute resolved as cancelled after completion | +commission | 0 | `commission_refund:<order_id>` |
 | admin adjustment | ±amount | 0 | client-supplied `adjust:<uuid>` |
 | top-up refunded | −amount | 0 | `topup_refund:<topup_id>` |
+| order with a passenger's promotion completed: the discount credited to the driver (`promo_compensation`, §23.6) | +discount | 0 | `promo:<application_id>` |
+| that compensation reversed by finance (`promo_compensation_reversal`, §23.6) | −discount | 0 | `promo:<application_id>:reversal` |
 
 * A unique-key conflict on the ledger means "already applied" → the operation returns the
   existing result (idempotent), never a second charge.
+* The passenger bonus balance is a separate account with its own append-only ledger
+  (`passenger_bonus_accounts`, `passenger_bonus_ledger`, §23.5); it never mixes with driver wallets.
 
 ### 6.1 Kaspi Pay top-ups
 `created → pending_verification → confirmed | rejected`, `created → expired` (job),
@@ -466,14 +482,22 @@ jitter (max 8 attempts → `dead`); on 403 (bot blocked / never started) → `de
 `users.<bot>_bot_blocked_at`. Admins can see and retry outbox rows. Global send rate ≤ 25 msg/s
 per bot, ≤ 1 msg/s per chat.
 
-Templates (keys): `order_created_passenger`, `order_available_driver`, `order_accepted_passenger`,
-`order_accepted_driver`, `order_driver_arriving`, `order_started`, `order_stop_completed`,
-`order_completed_passenger`, `order_completed_driver`, `order_cancelled_passenger`,
-`order_cancelled_driver`, `order_taken_driver`, `order_no_driver`, `moderation_submitted`,
-`moderation_approved`, `moderation_changes_requested`, `moderation_rejected`,
-`driver_suspended`, `driver_restored`, `topup_created`, `topup_confirmed`, `topup_rejected`,
-`wallet_low_balance`, `dispute_opened`, `dispute_resolved`, `phone_verified`; offer edits
-`order_offer_won`, `order_offer_taken`, `order_offer_cancelled`, `order_offer_expired` (§22.4).
+Templates (keys; `notifications/templates.go` lists their params): `order_created_passenger`,
+`order_available_driver`, `order_accepted_passenger`, `order_accepted_driver`,
+`order_driver_arriving`, `order_started`, `order_stop_completed`, `order_completed_passenger`,
+`order_completed_driver`, `order_cancelled_passenger`, `order_cancelled_driver`, `order_no_driver`,
+`moderation_submitted`, `moderation_review_required`, `moderation_approved`,
+`moderation_changes_requested`, `moderation_rejected`, `driver_suspended`, `driver_restored`,
+`topup_created`, `topup_confirmed`, `topup_rejected`, `wallet_low_balance`, `dispute_opened`,
+`dispute_resolved`, `phone_verified`, `driver_welcome_bonus` (§22.1), `driver_bonus_granted`
+(§22.7); offer edits `order_offer_won`, `order_offer_taken`, `order_offer_cancelled`,
+`order_offer_expired` (§22.4); marketing (§23) `promo_coupon_issued` (`amount`, `validity`; button
+`coupons`), `promo_referral_reward` (`amount`; button `bonus`) and `promo_bonus_granted` (`amount`,
+`comment?`; button `bonus`). A passenger's promotion (§23.6) adds optional params: `discount` and
+`cash_due` on `order_created_passenger` and `order_completed_passenger`; `cash_due` and
+`promo_compensation` on `order_available_driver`, `order_accepted_driver` and
+`order_completed_driver`. A line that names an absent optional param is dropped, so orders without
+a promotion read as before. Marketing broadcasts never use this outbox (§23.7).
 Each message carries an inline **`web_app`** button (signed initData is guaranteed for inline
 web_app buttons) whose URL is the Mini App URL plus `?startapp=<param>` (see §18); bot menus may
 additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode=fullscreen`.
@@ -501,7 +525,9 @@ additionally use direct links `https://t.me/<bot_username>?startapp=<param>&mode
   `order.driver_arriving`, `order.started`, `order.stop_completed`, `order.completed`,
   `order.disputed`, `driver.location_updated`, `driver.status_changed`, `wallet.updated`,
   `topup.updated`, `topup.confirmed`, `moderation.submitted`, `moderation.changes_requested`,
-  `moderation.approved`, `moderation.rejected`, `driver.phone_verified`.
+  `moderation.approved`, `moderation.rejected`, `driver.phone_verified`, `promotions.updated`.
+* `promotions.updated` (scope `user:<user_id>`, data `{user_id}`) tells the passenger app that its
+  coupons, bonus balance or referral state changed; the app re-reads `GET /promotions` (§23.11).
 
 ## 10. HTTP API conventions
 
@@ -737,13 +763,18 @@ Each job runs on an interval and takes a `pg_try_advisory_lock` so only one API 
 `notification_worker` (1s), `search_expiry` (15s), `dispatch_expand` (15s, §7), `topup_expiry` (5m),
 `quote_cleanup` (1h), `stale_driver_offline` (5m, offline after `DRIVER_ONLINE_IDLE_TIMEOUT` without heartbeat/location),
 `bot_update_cleanup` (1h, keep 7 days), `location_history_retention` (1d, keep 30 days),
-`session_cleanup` (1h).
+`session_cleanup` (1h); marketing (§23.12): `marketing_events` (2s, the award worker),
+`marketing_coupon_expiry` (1m), `marketing_campaign_schedule` (30s), `marketing_grants` (5s),
+`marketing_reconcile` (1h). The marketing `broadcast_worker` runs continuously next to the
+notification worker (only with `NOTIFICATION_WORKER_ENABLED`), on one replica at a time (advisory
+lock).
 
 ## 17. Configuration
 
 All configuration is environment variables (see `.env.example`); DB `app_settings` override the
 runtime-editable ones (support contacts, Kaspi public payment settings, top-up limits,
-prohibited items, min online balance, dispatch radius and location freshness `dispatch.*`).
+prohibited items, min online balance, dispatch radius and location freshness `dispatch.*`, the
+marketing switches and broadcast limits `marketing.*`, §23.9).
 Secrets never live in the repo or the database.
 
 ## 18. Mini App start parameters (deep links)
@@ -759,6 +790,10 @@ Parameters are navigation hints only; every screen re-fetches data with full aut
 | passenger | `order_<uuid>` | order detail / live trip |
 | passenger | `support` | support |
 | passenger | `driver` | "become a driver" screen (links to driver bot) |
+| passenger | `coupons` | promotions: the passenger's coupons (§23.11; button of `promo_coupon_issued`) |
+| passenger | `bonus` | promotions: bonus balance and its history (button of `promo_referral_reward`, `promo_bonus_granted`) |
+| passenger | `invite` | «Досыңды шақыр» — invite a friend (§23.5) |
+| passenger | `ref_<CODE>` | a friend's invitation link `?startapp=ref_<CODE>`: the API captures the referral from the signed `initData.start_param` at sign-in (§23.5); the app opens like `home`. The bot link `?start=ref_<CODE>` is captured by the passenger bot |
 | driver | `home` (default) | driver home |
 | driver | `register` | registration / corrections |
 | driver | `orders` | available orders |
@@ -797,13 +832,21 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /geo/search?q=&lat=&lon=&lang= | P/D | routing | places gazetteer first, then provider; only KZ results; `[{title, subtitle, lat, lon, source}]` |
 | GET | /geo/reverse?lat=&lon=&lang= | P/D | routing | `{title, subtitle, lat, lon, in_service_area}`; coordinates-only title when nothing found |
 | POST | /routes/preview | P | routing+pricing | `{category, stops:[{lat,lon,address,address_details?}]}` (2..max_points) → quote: `{quote_id, expires_at, distance_m, duration_s, legs[{distance_m,duration_s}], geometry (GeoJSON LineString), bbox, fare:{recommended,min,max,step,options[]}, commission_bps, payment_methods[]}` |
-| POST | /orders | P | orders | `{quote_id, fare, payment_method, comment?, cargo_description?, recipient_phone?, prohibited_items_ack?, idempotency_key}` → Order (201, or 200 on idempotent replay) |
+| POST | /orders | P | orders | `{quote_id, fare, payment_method, comment?, cargo_description?, recipient_phone?, prohibited_items_ack?, promotion?: coupon\|bonus\|none, promotion_discount?, idempotency_key}` → Order (201, or 200 on idempotent replay); `409 promotion_changed {reason, discount}` when the server would apply another discount (§23.6) |
 | GET | /orders?scope=active\|history&limit=&before= | P | orders | cursor list of OrderSummary |
 | GET | /orders/{id} | P | orders | Order: stops, route snapshot, status events, driver+vehicle when assigned, `driver_location` while active |
 | POST | /orders/{id}/cancel | P | orders | `{reason?}` |
 | POST | /orders/{id}/rating | P | orders | `{rating 1..5, comment?}` completed orders only, once |
 | POST | /orders/{id}/dispute | P | orders | `{reason}` completed (≤72h) or in_progress |
 | GET | /orders/{id}/driver-photo | P | drivers | assigned driver avatar (JPEG) |
+
+### Promotions (passenger, §23.11)
+| Method | Path | Auth | Owner pkg | Notes |
+|---|---|---|---|---|
+| GET | /promotions | P | marketing | `PassengerPromotions`: `server_time`, `redemptions_enabled`, coupons (status computed against the database clock), `bonus {balance, reserved, available}`, `bonus_categories`, `offers` (the first-ride offer while it can still be earned), `banners`, `referral {state, lock_reason?, reward_amount, rewarded}`, `marketing_subscribed` |
+| GET | /promotions/bonus/history?limit=&before= | P | marketing | cursor list `{id, type: grant\|spend\|adjustment_credit\|adjustment_debit, amount (signed), order_number, created_at}`; reservations are not shown |
+| GET | /promotions/referral | P | marketing | `ReferralView`: state and copy; while unlocked the code (created on first view) and the links `https://t.me/<bot>?start=ref_<CODE>` / `?startapp=ref_<CODE>`; `earned`; up to 50 friends (first name + last initial, `attributed\|rewarded\|capped\|not_counted`) |
+| PUT | /promotions/subscription | P | marketing | `{subscribed}` → `{marketing_subscribed}`; marketing broadcasts only, order messages unaffected |
 
 ### Driver
 | Method | Path | Auth | Owner pkg | Notes |
@@ -891,6 +934,27 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /admin/notification-templates ; PUT /admin/notification-templates/{key}/{lang} ; DELETE (revert) | config.manage | notifications |
 | GET | /admin/notifications?status=&page= ; POST /admin/notifications/{id}/retry | orders.manage | notifications |
 | GET | /admin/audit-logs?admin_id=&entity_type=&entity_id=&page= | audit.view | audit |
+| GET | /admin/marketing/overview (switches, campaigns with usage, counts, health; §23.10) | marketing.view | marketing |
+| GET | /admin/marketing/campaigns?status=&template=&q=&page= ; GET /admin/marketing/campaigns/{id} (with versions) ; GET /admin/marketing/campaigns/{id}/preview (audience, liability, warnings) | marketing.view | marketing |
+| POST | /admin/marketing/campaigns `{template, key?, title, description?, rules, starts_at?, ends_at?, budget_limit?, priority?, exclusivity_group?, change_note?}` ; POST /admin/marketing/campaigns/{id}/duplicate | marketing.edit | marketing |
+| POST | /admin/marketing/campaigns/{id}/versions (drafts and ended: marketing.edit; scheduled, active, paused and the system campaigns: marketing.approve) ; POST /admin/marketing/campaigns/{id}/transition `{action, reason?, confirm, scheduled_at?, expected_version}` (`expected_version` with approver actions; system campaigns: marketing.approve for every action; §23.2) | marketing.edit or marketing.approve, per action | marketing |
+| PATCH | /admin/marketing/campaigns/{id}/budget `{budget_limit \| unlimited: true, reason, confirm}` | marketing.approve | marketing |
+| GET | /admin/marketing/coupons?campaign_id=&user_id=&status=&page= | marketing.view | marketing |
+| POST | /admin/marketing/coupons/{id}/void `{reason}` (unused coupons only) | marketing.approve | marketing |
+| GET | /admin/marketing/bonus-ledger?user_id=&type=&page= | marketing.view | marketing |
+| GET | /admin/marketing/users?q= (Telegram id, phone, referral code; masked) ; GET /admin/marketing/users/{id} | marketing.view | marketing |
+| POST | /admin/marketing/users/{id}/bonus-adjustments `{amount (signed), reason, idempotency_key, confirm}` | finance.manage | marketing |
+| GET | /admin/marketing/referrals?status=&referrer_id=&page= | marketing.view | marketing |
+| POST | /admin/marketing/referrals/{id}/review `{decision: approve\|reject, reason}` | marketing.approve | marketing |
+| GET | /admin/marketing/applications?status=&review=true&page= (promotions on orders) | marketing.view | marketing |
+| POST | /admin/marketing/applications/{id}/reverse `{reason, confirm}` | finance.manage | marketing |
+| GET/POST | /admin/marketing/segments ; PATCH /admin/marketing/segments/{id} | marketing.view (GET) / marketing.edit | marketing |
+| POST | /admin/marketing/segments/preview `{audience, filters}` (counts only) | marketing.view | marketing |
+| GET | /admin/marketing/broadcasts?status=&page= ; GET /admin/marketing/broadcasts/{id} ; GET /admin/marketing/broadcasts/{id}/recipients?status=&page= | marketing.view | marketing |
+| POST/PATCH | /admin/marketing/broadcasts ; PATCH /admin/marketing/broadcasts/{id} ; POST …/{id}/test `{telegram_user_id}` (ids in `marketing.test_recipients` only) ; POST …/{id}/transition `{action, scheduled_at?, reason?, confirm}` | marketing.broadcast (+ marketing.approve above `marketing.broadcast_approval_threshold`) | marketing |
+| GET | /admin/marketing/reconciliation | marketing.view | marketing |
+| GET | /admin/marketing/reports?from=&to= ; GET /admin/marketing/reports.csv | marketing.view (+ reports.export for the CSV) | marketing |
+| GET/PATCH | /admin/marketing/settings (`marketing.*`, PATCH with a `reason`) | marketing.view / marketing.approve | marketing |
 
 ### Internal (bots → API, port 8081, `S`)
 | Method | Path | Owner pkg | Notes |
@@ -910,6 +974,8 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | POST | /internal/v1/driver/{tg_id}/location | botapi | `{lat, lon, accuracy_m?, live}` |
 | POST | /internal/v1/driver/{tg_id}/topup-receipt | botapi+payments | multipart `file` (Kaspi PDF) → `{outcome: credited\|pending_verification\|duplicate_rejected, reasons[], topup, balance}`; 409 `no_open_topup` / `receipt_already_used`, 413, 422, 429 (§6.1) |
 | GET | /internal/v1/config | botapi | Mini App URLs, bot usernames, support contacts |
+| POST | /internal/v1/passenger/{tg_id}/referral | marketing | `{payload: "ref_<CODE>"}` from `/start` in the passenger bot (passenger bot only, else 403) → `{attributed, outcome: attributed\|duplicate\|rejected, reason?}` (§23.5); 404 for an unknown user |
+| POST | /internal/v1/bots/{bot}/users/{tg_id}/marketing | marketing | `{opt_out}` from a broadcast's unsubscribe button (`mkt_off`, both bots) → `{marketing_subscribed}` (§23.7) |
 
 ## 20. Package APIs used across packages (Go)
 
@@ -1004,6 +1070,22 @@ pdfdoc.Open(data []byte, lim pdfdoc.Limits) (*pdfdoc.Doc, error)
 (*telegram.Client).ResetConnections()                       // rebuild transports after a stall
 (*botapi.Client).UploadTopUpReceipt(ctx, tgID int64, fileName string, data []byte) (botapi.TopUpReceiptResult, error) // never retried
 (*botapi.Client).ResetConnections()
+(*botapi.Client).CaptureReferral(ctx, tgID int64, payload string) (botapi.ReferralResult, error) // "/start ref_<code>", retried
+(*botapi.Client).SetMarketingOptOut(ctx, tgID int64, optOut bool) error                         // broadcast button mkt_off
+
+// marketing (§23) — called by orders/lifecycle inside their transactions
+marketing.ParseRequest(kind *string, discount *int64, fields map[string]string) marketing.PromotionRequest
+marketing.PlanOrder(ctx, tx, userID uuid.UUID, category string, fare int64, req PromotionRequest) (marketing.Plan, error) // 409 promotion_changed
+marketing.Reserve(ctx, tx, plan marketing.Plan, orderID uuid.UUID) error            // order creation, before offers
+marketing.SettleOrder(ctx, tx, orderID, driverID uuid.UUID) (compensation int64, err error) // completion, once
+marketing.RecordRideCompleted(ctx, tx, orderID uuid.UUID, completedAt time.Time) error   // completion, award queue
+marketing.ReleaseOrder(ctx, tx, orderID uuid.UUID, reason string) (released int64, err error) // every cancellation
+marketing.LoadOrderPromotion(ctx, q, orderID uuid.UUID) (*marketing.OrderPromotion, error)
+wallets.CreditPromoCompensation(ctx, tx, driverID, orderID uuid.UUID, amount int64, key string) error // promo:<application_id>
+wallets.ReversePromoCompensation(ctx, tx, driverID, orderID uuid.UUID, amount int64, key string, adminID uuid.UUID, reason string) error
+dispatch.PromoParams(params map[string]any, fare, discount int64)   // cash_due, promo_compensation in driver messages
+settings.Marketing(ctx, q) settings.MarketingSwitches               // Awards, Redemptions, Broadcasts
+(*auth.Service).OnPassengerStart(h auth.StartHook)                   // signed initData start_param of passenger sign-ins
 
 // audit
 audit.Log(ctx, q db.Querier, r *http.Request, audit.Entry{Action, EntityType, EntityID string, Before, After any}) error
@@ -1249,3 +1331,642 @@ offers) where they conflict.
   point, villages the new area overlaps (allowed: the nearest centre decides) and the nearest other
   village; the editor shows these lines and opens the existing village on request.
 - Audit: `commission_area.create`, `commission_area.update`, `commission_area.delete`.
+
+## 23. Marketing and promotions
+
+The customer's two launch promotions — «Алғашқы сапар» (first ride) and «Досыңды шақыр» (invite a
+friend) — and the tools around them: versioned campaigns, the passenger bonus balance, promotions
+applied to orders with the driver's compensation, segments, broadcasts, budgets and
+reconciliation. Package `internal/marketing`, wiring `internal/app/wire_marketing.go`, migration
+**00016**. The owner's guide (Russian) is [MARKETING.md](MARKETING.md); the runbook is
+[OPERATIONS.md](OPERATIONS.md) «Marketing».
+
+### 23.1 Principles, launch campaigns and data model
+
+- The server decides eligibility and computes every discount; the apps only display what the API
+  returns and send the promotion the passenger confirmed. Money is integer KZT.
+- A promotion never changes the order's `fare`, its commission or the commission's basis: the
+  commission is computed on the gross fare at creation and charged at acceptance as before (§22.2,
+  §22.9). The passenger pays the driver `cash_due = fare − promo_discount` in cash; Jan Taxi credits
+  the discount to the driver's wallet balance when the ride completes.
+- Every money movement is an append-only ledger row under a unique idempotency key (passenger bonus
+  ledger, driver wallet ledger); a replayed request, event or job run changes nothing.
+- Nothing starts by itself: the seeded campaigns are drafts (off) until an administrator with
+  `marketing.approve` activates them. The global switches (§23.9) are emergency stops, on by default.
+
+Seeded by 00016 (titles and descriptions in kk/ru/en in version 1):
+
+| key | template | rules (version 1) | budget | priority / group |
+|---|---|---|---|---|
+| `first_ride_coupon_400` «Алғашқы сапар» | `first_ride_coupon` | `amount 400, validity_hours 72, min_order_fare 400, categories [taxi]` | 100 000 | 10 / `launch_2026` |
+| `referral_300_once` «Досыңды шақыр» | `referral_first_ride` | `reward_amount 300, categories [taxi], attribution_window_minutes 60, unlock coupon_redeemed, min_ride_seconds 60` | 100 000 | 20 / `launch_2026` |
+| `manual_adjustments` (system) | `manual_grant` | `max_amount 50000` | none | 900 / — |
+
+Data model (additive; the down migration refuses to drop marketing data):
+
+| Table / column | Contents |
+|---|---|
+| `marketing_campaigns` | `key` (`^[a-z0-9_]{3,40}$`, unique), `template`, `status`, `is_system`, `current_version`, `budget_limit` (NULL = no cap), `redemptions_frozen`, `priority` (0..1000, lower first), `exclusivity_group` (stored, not enforced: stacking is impossible anyway, one promotion per order), `scheduled_at`, `active_since` (start of the current active period), `created_by`, `approved_by`, status timestamps. Partial unique index `marketing_campaigns_one_live_launch`: at most one `scheduled \| active \| paused` campaign per launch template (`first_ride_coupon`, `referral_first_ride`). |
+| `marketing_campaign_versions` | immutable (trigger): `title`, `description` `{kk,ru,en}`, typed `rules`, `starts_at`/`ends_at` window, `change_note`, author. Coupons, grants and attributions keep the version that created them. |
+| `marketing_coupons` | `UNIQUE (campaign_id, user_id)` (one per passenger and campaign, ever); `amount`, `min_order_fare` (CHECK `≥ amount`), `categories`, `status`, `source_order_id` (the qualifying ride), `issued_at`/`expires_at` (database clock), `reserved_order_id` and `redeemed_order_id` (each unique), `void_reason`. |
+| `passenger_bonus_accounts`, `passenger_bonus_ledger` | the passenger bonus balance (CHECK `balance ≥ reserved ≥ 0`) and its append-only journal (trigger), §23.5. |
+| `order_promotions` | the promotion applied to an order: `order_id` UNIQUE (one per order, no stacking), `kind`, `coupon_id`, campaign/version, `gross_fare`, `discount` (`0 < discount ≤ gross_fare`), `status`, `driver_id`, `compensation` (= discount once settled), `compensation_key` (unique), release/settle/reversal fields, `review_reason`. Partial unique index: a coupon is `reserved` or `settled` on at most one order. |
+| `orders.promo_discount` | the discount snapshotted at creation (CHECK `0 ≤ promo_discount ≤ fare`). |
+| `referral_codes`, `referral_attributions`, `referral_events` | a passenger's code (`disabled_at` turns it off); who invited whom (`invitee_user_id` UNIQUE, never rewritten, `invitee ≠ referrer`); every capture attempt (append-only). |
+| `marketing_grants` | bonus awards `referral_reward \| passenger_credit \| driver_milestone \| manual`, status `pending → credited \| skipped`, `ledger_key` unique; unique per (campaign, passenger) for `referral_reward`/`passenger_credit`, per (campaign, driver) for `driver_milestone`; `referral_id` unique. |
+| `marketing_events` | durable `ride_completed` events, `UNIQUE (kind, order_id)`, attempts, `result` (§23.3). |
+| `marketing_segments`, `marketing_broadcasts`, `marketing_broadcast_recipients` | audiences, broadcasts and one delivery per recipient and broadcast (§23.7). |
+| `user_preferences.marketing_opt_out_at` | the person's marketing opt-out (both bots). |
+| other | `wallet_ledger` entry types `promo_compensation`, `promo_compensation_reversal`; `admin_users` role `marketing_manager`; `app_settings` `marketing.*` (§23.9). |
+
+### 23.2 Campaigns, versions and statuses
+
+Rules are typed per template and interpreted only by the server (no expression language); unknown
+fields are refused, so a rule the server does not implement can never be stored. Validation
+reasons are `fields["rules.<name>"]`.
+
+| Template | Rules | Effect |
+|---|---|---|
+| `first_ride_coupon` | `amount` 1..100 000, `validity_hours` 1..720, `min_order_fare` ≥ `amount` (`below_amount`), `categories` ⊆ `taxi, parcel, other` | §23.4 |
+| `referral_first_ride` | `reward_amount` 1..100 000, `categories`, `attribution_window_minutes` 5..10 080, `unlock` `coupon_redeemed \| coupon_redeemed_or_expired \| first_ride_completed`, `min_ride_seconds` 0..3600 | §23.5 |
+| `passenger_credit` | `amount` 1..100 000, `segment_id` (a live passenger segment) | when an approver schedules the campaign (or activates it, if nothing was frozen before), every reachable passenger of the segment is frozen as a pending grant of `amount`; job `marketing_grants` credits them to the bonus balance while the campaign is active (`promo_bonus_granted`); the rules are locked once the campaign leaves draft |
+| `driver_milestone_bonus` | `amount` 1..100 000, `rides` 1..1000, `categories`; the version needs `starts_at` and `ends_at` (`window_required`) | a driver whose completed orders in the categories inside the window reach `rides` gets `amount` on the wallet once (`bonus_credit`, key `bonus:<grant_id>`, message `driver_bonus_granted`); drivers read its title and description, which may not name the commission (`fields.title.<lang>` / `description.<lang>` = `mentions_commission`, §22.2) |
+| `manual_grant` | `max_amount` 1..1 000 000 | system bucket of manual bonus credits (§23.8): cannot be created or duplicated through the API, has no lifecycle (it stays a draft and cannot be archived), and only `marketing.approve` changes its `max_amount` |
+| `broadcast_only` | `{}` | copy only: shown as a banner in `GET /promotions` while active |
+
+* Create (`marketing.edit`): `{template, key?, title, description?, rules, starts_at?, ends_at?,
+  budget_limit?, priority?, exclusivity_group?, change_note?}` → a draft with version 1. Without a
+  key the server makes `<template>_<6 hex>`; a taken key is `fields.key = taken`. The title is
+  required in kk, ru and en (≤ 80 code points each), the description is optional (all three or
+  none, ≤ 600). A budget sent by an admin without `marketing.approve` is ignored. `duplicate` copies
+  the current version into a new draft.
+* New version (`POST …/versions`, same body): the current version with the given changes. Template
+  and key are immutable (`immutable`); budget, priority and group are refused
+  (`fields.budget_limit = use_budget_endpoint`). Drafts and ended campaigns need `marketing.edit`;
+  scheduled, active and paused ones, and the system campaigns whatever their status (`is_system`:
+  the launch promotions' rules, and the `manual_adjustments` bucket whose `max_amount` is finance's
+  per-credit limit), need `marketing.approve`; an archived campaign never changes.
+* Status machine (`POST …/transition {action, reason?, confirm, scheduled_at?, expected_version}`;
+  any other move is `409 invalid_transition {from, action}`):
+
+```
+draft ──schedule*──▶ scheduled ──(job marketing_campaign_schedule at scheduled_at)──▶ active
+scheduled ──unschedule──▶ draft      scheduled ──(the job cannot activate it at its time)──▶ draft
+draft | scheduled ──activate*──▶ active ──pause──▶ paused ──resume*──▶ active
+active | paused | scheduled ──end*──▶ ended       (also the job once the version's ends_at passed)
+draft | ended ──archive──▶ archived
+freeze_redemptions* / unfreeze_redemptions*: any status but archived; the status stays
+
+* marketing.approve, "reason" (3..300 code points), "confirm": true and "expected_version".
+  The other actions need marketing.edit or marketing.approve; their reason is optional.
+  Every action on a system campaign (the launch promotions, manual_adjustments) needs
+  marketing.approve.
+```
+
+* `activate` and `resume` set `active_since = now()`: rides completed earlier never earn (§23.3).
+  They refuse a version whose `ends_at` has passed (`fields.ends_at = in_past`) and a second live
+  campaign of a launch template (`409 campaign_conflict`). `end` skips the campaign's pending grants
+  (`campaign_ended`). A scheduled campaign that cannot be activated at its time returns to draft
+  (logged).
+* Reviewed version: an approver action carries `expected_version`, the version the approver looked
+  at (`422 fields.expected_version = required` without it). If someone saved a newer version
+  meanwhile, the action is refused with `409 version_conflict {current_version}`, so no one
+  approves rules or copy they have not seen.
+* `passenger_credit` freezes the audience the approver approves: `schedule` (or `activate`, when
+  nothing was frozen at scheduling) turns every reachable passenger of the segment into a pending
+  grant, paid by job `marketing_grants` only while the campaign is active. The segment is checked
+  and the whole audience must fit the budget at that moment (`409 budget_insufficient {needed,
+  remaining, recipients}`); people who join the segment later are not added. `unschedule`, and a
+  scheduled campaign the job cannot activate, drop the pending grants; `end`, by an approver or by
+  the job once `ends_at` passed, skips them.
+* The `manual_adjustments` bucket has no lifecycle: it stays a draft, and every action that would
+  change its status, `archive` included, is `409 campaign_conflict` (or `invalid_transition` when
+  the status does not allow the action at all); `freeze_redemptions` and `unfreeze_redemptions` are
+  accepted and change nothing, as the bucket has no coupons.
+* `pause` stops new awards of the campaign; coupons already issued stay usable until they expire.
+  `freeze_redemptions` makes the campaign's coupons unusable on new orders (reserved ones still
+  settle or release) — the tool after a leak or abuse.
+* Budget: `PATCH …/budget {budget_limit | unlimited: true, reason, confirm}` (`marketing.approve`,
+  0..10⁹), §23.8.
+* Preview (`GET …/preview`): `audience` estimate, `per_person`, `max_liability` (audience × amount,
+  capped by the budget), `usage`, and `warnings`: `awards_switch_off`, `redemptions_switch_off`,
+  `fares_below_coupon_minimum` (an active tariff of the coupon's categories starts below
+  `min_order_fare`), `legacy_passengers_locked` (the unlock policy excludes passengers who rode
+  before), `coupon_campaign_not_active` (the default unlock needs a live coupon campaign),
+  `no_budget_limit`.
+
+### 23.3 Award pipeline
+
+* The completion transaction (`orders.finishCompleted`, after `SettleOrder`) calls
+  `marketing.RecordRideCompleted`: one statement that inserts `marketing_events (ride_completed,
+  order_id, occurred_at = completed_at)` only while `marketing.awards_enabled` is not false and a
+  `first_ride_coupon`, `referral_first_ride` or `driver_milestone_bonus` campaign is active
+  (`ON CONFLICT (kind, order_id) DO NOTHING`). Nothing is queued while those are off, so switching a
+  campaign on never awards rides completed before.
+* Job `marketing_events` (2 s): up to 20 due events, each in its own transaction (`FOR UPDATE SKIP
+  LOCKED`). It re-checks the awards switch, loads the ride (status `completed` or `disputed`, with
+  `completed_at`), and applies every campaign live at `completed_at` (status `active`, version window
+  covering it, `active_since ≤ completed_at`). The outcome per campaign is stored in
+  `marketing_events.result`: `coupon_issued`, `already_issued`, `not_first_ride`,
+  `category_not_eligible`, `budget_exhausted`, `referral_rewarded`, `referral_capped`,
+  `referral_review:<reason>`, `referral_rejected:<reason>`, `milestone_credited`, …, or `skipped`
+  (`not_completed`, `awards_disabled`, `too_old`).
+* An error rolls the event's transaction back; it is retried after `min(600, 5·2^attempts)` seconds
+  and marked `failed` at the 10th attempt (overview health, reconciliation). Events whose ride is
+  older than 7 days are closed as `too_old`: a worker restarted after a long stop never pays a
+  backlog by surprise.
+* Awards are idempotent by constraints (one coupon per passenger and campaign, one grant per
+  beneficiary and campaign, unique ledger keys): a retried event never pays twice. Telegram
+  messages go through the outbox in the same transaction and never roll an award back.
+* First ride (`isFirstRide`): no other order of the passenger has an earlier `completed_at` (ties by
+  id) — the first completed order of any category. Orders completed and later disputed or cancelled
+  still count as taken.
+
+### 23.4 First-ride coupon «Алғашқы сапар»
+
+* Issued by the award worker for the passenger's first completed order when that order's category
+  is in `rules.categories` (taxi) and the budget allows (else no coupon: `budget_exhausted`, a
+  warning in the log). A passenger whose first completed order was a delivery, or who rode before
+  the campaign's active period (a legacy passenger), never qualifies.
+  `issued_at = now()` and `expires_at = now() + validity_hours` (72 h) from the database clock;
+  message `promo_coupon_issued` (`amount`, `validity` e.g. «3 күн»), realtime `promotions.updated`.
+* Validity is `expires_at > now()` everywhere: a coupon is unusable from `expires_at` on, even before
+  job `marketing_coupon_expiry` (1 min, ≤ 1000 rows per run) marks it `expired`; views compute the
+  status the same way.
+* Use: the next taxi order the passenger creates while the coupon is valid and whose fare is at
+  least `min_order_fare` (400). The passenger app applies it automatically — it sends
+  `promotion: coupon` whenever `GET /promotions` lists a usable coupon for the order — and the
+  server re-checks and computes it (§23.6). No partial redemption: a smaller fare leaves the coupon
+  for a later order; as `min_order_fare ≥ amount`, the cash due never goes below zero (fare 400 →
+  cash 0).
+* States:
+
+```
+issued ──order created (reserve)──▶ reserved ──order completed (settle)──▶ redeemed
+reserved ──order cancelled (release)──▶ issued (before expires_at) | expired (after)
+reserved ──order cancelled, its qualifying ride cancelled meanwhile──▶ voided
+issued ──expires_at passes──▶ expired
+issued ──operator void (marketing.approve, reason) | its qualifying ride cancelled──▶ voided
+```
+
+* A cancelled order gives the coupon back until it expires; `expires_at` is never extended.
+* When the qualifying ride itself is cancelled after completion (a dispute resolved as cancelled),
+  the coupon it earned goes with it (`void_reason = qualifying_ride_cancelled`): an unused
+  (`issued`) coupon is voided at once; a `reserved` one is voided, not returned, when the order
+  holding it is cancelled. If that order completes instead, the ride was taken at the discounted
+  price: the coupon is redeemed, the driver is compensated as usual and the promotion is flagged
+  for finance (`review_reason = coupon_source_cancelled`, §23.6). A coupon already redeemed before
+  the dispute is not touched.
+
+### 23.5 Referrals «Досыңды шақыр» and the passenger bonus balance
+
+* `GET /promotions` → `referral.state`: `unavailable` (no active referral campaign), `locked` with
+  `lock_reason` (`coupon_not_redeemed` under the default policy, `coupon_not_used` under
+  `coupon_redeemed_or_expired`, `first_ride_required`, `paused` while awards are switched off,
+  `disabled` when the passenger's code was disabled), or `unlocked`. Unlock policies
+  (`rules.unlock`; changing it is a new version): `coupon_redeemed` (default, the assignment
+  literally: only after the first-ride coupon was used), `coupon_redeemed_or_expired`,
+  `first_ride_completed`.
+* Code: created on the first `GET /promotions/referral` while unlocked — 8 random characters
+  (crypto) from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no 0/O, 1/I), unique, with no Telegram id or
+  phone in it. Links `https://t.me/<passenger bot>?start=ref_<CODE>` (`link`, the bot) and
+  `?startapp=ref_<CODE>` (`app_link`, the Mini App); without `PASSENGER_BOT_USERNAME` only the code
+  is returned. `referral_codes.disabled_at` turns a passenger's invitations off (database only; there
+  is no admin endpoint yet).
+* Capture (attribution), only through signed channels, never from a value an app sends: the
+  passenger bot's `/start ref_<CODE>` → `POST /internal/v1/passenger/{tg_id}/referral {payload}`
+  (source `bot_start`; the greeting never depends on it), or the Mini App's signed
+  `initData.start_param` read at passenger sign-in (`auth.OnPassengerStart` hook, source `miniapp`;
+  it never fails the sign-in). One transaction with the invitee's user row locked, so a bot start and
+  a Mini App sign-in cannot both bind:
+  1. the payload must be `ref_` + 8 code characters (else `rejected invalid_code`, not recorded);
+  2. an existing attribution → `duplicate already_attributed` (the first code wins; nothing
+     rewrites it);
+  3. `rejected` with `campaign_inactive` (no active referral campaign now), `unknown_code` (or
+     disabled), `self_referral`, `referrer_blocked`, `referrer_locked` (the code's owner is not
+     unlocked), `invitee_has_orders`, `invitee_is_driver`, `invitee_not_new` (account older than
+     `attribution_window_minutes`, 60);
+  4. else `attributed` to the active campaign and version; the referrer's app gets
+     `promotions.updated`.
+  Every attempt except an invalid payload is kept in `referral_events` (fraud review).
+* Reward, at the invitee's first completed ride (award worker; the referral campaign live at the
+  completion):
+  * not the invitee's first completed order → nothing (the attribution stays `attributed`);
+  * category not in `rules.categories` → `rejected category_not_eligible`;
+  * the referrer is blocked, has the invitee's phone, or drove the ride → `rejected
+    referrer_blocked | same_phone | referrer_drove`;
+  * the ride (started → completed) is shorter than `min_ride_seconds` (60) → `review short_ride`;
+  * the referrer already has this campaign's reward → `capped already_rewarded`;
+  * the budget does not allow it → `review budget_exhausted`;
+  * else a `referral_reward` grant is credited at once (bonus ledger `grant`, key
+    `grant:<grant_id>`), the attribution becomes `rewarded`, message `promo_referral_reward`.
+  At most one reward per referrer and campaign (unique index), however many friends; later friends
+  end `capped`. The invitee gets nothing from this campaign (they earn their own first-ride coupon).
+* Review: `POST /admin/marketing/referrals/{id}/review {decision: approve | reject, reason}`
+  (`marketing.approve`) decides a `review` attribution. Approve pays like the worker — still once per
+  referrer, from the campaign that judged the ride (the attribution belongs to it from then on) and
+  within its budget (`409 budget_insufficient` otherwise); reject closes it.
+* Qualifying ride cancelled after completion (a dispute resolved as cancelled): "a ride that is
+  stopped or not completed earns nothing". An attribution still in `review` becomes `rejected`; a
+  `rewarded` one keeps its status and its reward but is flagged — both with `reason =
+  qualifying_ride_cancelled`. No money moves automatically: finance decides whether to take the
+  reward back with a manual bonus debit (§23.8).
+
+```
+attributed ──first ride qualifies──▶ rewarded
+attributed ──referrer already rewarded──▶ capped
+attributed ──category | referrer blocked | same phone | referrer drove──▶ rejected
+attributed ──short ride | budget exhausted──▶ review ──approve──▶ rewarded | capped
+                                                     └──reject──▶ rejected
+review ──qualifying ride cancelled by a dispute──▶ rejected (qualifying_ride_cancelled)
+rewarded ──qualifying ride cancelled by a dispute──▶ rewarded, reason qualifying_ride_cancelled (finance decides)
+```
+
+* The inviter's `GET /promotions/referral`: state, title and description, code and links while
+  unlocked, `earned` (credited rewards), `rewarded`, and up to 50 friends as first name + last
+  initial with `attributed | rewarded | capped | not_counted` (`review` and `rejected` read
+  `not_counted`).
+
+**Passenger bonus balance.** What the platform owes a passenger as a discount on later rides:
+separate from driver wallets, never withdrawable, without expiry. `passenger_bonus_accounts
+(balance, reserved)`, `available = balance − reserved`. Every change locks the account row, writes
+one append-only `passenger_bonus_ledger` row under a unique key (the same key with the same effect
+is a no-op, with another effect a conflict) and updates the account in the same transaction.
+
+| Event | entry_type | balance | reserved | Key |
+|---|---|---|---|---|
+| reward or credit paid | `grant` | +amount | 0 | `grant:<grant_id>` |
+| order created with the bonus | `reserve` | 0 | +discount | `bonus_reserve:<application_id>` |
+| that order cancelled | `release` | 0 | −discount | `bonus_release:<application_id>` |
+| that order completed | `spend` | −discount | −discount | `bonus_spend:<application_id>` |
+| manual credit (§23.8) | `adjustment_credit` | +amount | 0 | `bonus_adjust:<uuid>` |
+| manual debit (§23.8) | `adjustment_debit` | −amount | 0 | `bonus_adjust:<uuid>` |
+| refund of a reversed promotion (§23.6) | `adjustment_credit` | +discount | 0 | `bonus_refund:<application_id>` |
+
+The bonus pays `min(available, fare)` of a taxi order (`bonus_categories: [taxi]`); the rest stays
+for later. The passenger's history (`GET /promotions/bonus/history`) lists grants, spends and
+adjustments, not reservations.
+
+### 23.6 Promotions on orders
+
+* `POST /orders` takes `promotion` (`coupon | bonus | none`, default none) and
+  `promotion_discount` (the discount the app showed). Inside the creation transaction, after the
+  quote, fare, active-order and cancellation-limit checks, `marketing.PlanOrder` locks what the
+  promotion would use and computes the discount:
+  * `coupon`: the passenger's `issued` coupons, earliest expiry first (`FOR UPDATE`); the first
+    one that is valid, not frozen (campaign `redemptions_frozen` or archived), in the order's
+    category and with `fare ≥ min_order_fare`; discount = its amount;
+  * `bonus`: taxi only; the account row locked; discount = `min(available, fare)`;
+  * `409 promotion_changed` with `details {reason, discount}` when the server would apply something
+    else: `redemptions_disabled`, `no_coupon`, `coupon_expired`, `coupon_frozen`,
+    `category_not_eligible`, `fare_below_minimum`, `no_bonus`, `no_promotion` (a discount sent
+    without a promotion), `discount_changed` (`details.discount` is the server's), `coupon_unavailable`
+    (taken by a concurrent order). The app re-reads `GET /promotions` and shows the new price, so a
+    passenger never pays more than the price they confirmed. Bad values: `fields.promotion` /
+    `fields.promotion_discount` = `invalid`.
+* `marketing.Reserve`, same transaction, before drivers are offered the order (offers already show
+  the cash to collect): an `order_promotions` row (`reserved`, `gross_fare = fare`, `discount`), the
+  coupon `reserved` for the order or a bonus `reserve` entry, and `orders.promo_discount`. One
+  promotion per order — a coupon or the bonus, never both. An idempotent replay of `POST /orders`
+  returns the original order without planning again.
+* Completion (`marketing.SettleOrder`, in the completion transaction, once): the coupon becomes
+  `redeemed` or the bonus is spent, the discount is credited to the completing driver
+  (`promo_compensation`, key `promo:<application_id>`, `wallets.CreditPromoCompensation`), and the
+  promotion becomes `settled` with `driver_id`, `compensation = discount` and `compensation_key`. The
+  commission is untouched: it was charged at acceptance on the gross fare. A coupon whose own
+  qualifying ride a dispute cancelled meanwhile is settled the same way — the ride was taken at the
+  discounted price, so the driver is paid — and the promotion is flagged `review_reason =
+  coupon_source_cancelled` for finance.
+* Cancellation (`lifecycle.Cancel` → `marketing.ReleaseOrder`, on every path: passenger, admin,
+  search timeout, dispute): a `reserved` promotion becomes `released` — the coupon is usable again
+  until it expires (or voided when its qualifying ride was cancelled meanwhile, §23.4), a bonus
+  reservation returns to `available` — and the driver gets nothing. A `settled` promotion whose
+  order is cancelled after completion (a dispute resolved as cancelled) is flagged `review_reason =
+  order_cancelled_after_settlement`; no money moves automatically. `orders.promo_discount` stays on
+  the cancelled order as the snapshot. Cancelling a completed order (with or without a promotion of
+  its own) also voids the unused coupon that ride earned and rejects or flags the referral it
+  qualified (§23.4, §23.5).
+* Reversal (`POST /admin/marketing/applications/{id}/reverse {reason, confirm}`, `finance.manage`,
+  settled promotions only): the driver's compensation is debited (`promo_compensation_reversal`, key
+  `promo:<application_id>:reversal`, only from the available balance — `409 insufficient_balance`),
+  a spent bonus is refunded to the passenger (`bonus_refund:<application_id>`), a redeemed coupon
+  stays redeemed; status `reversed`, `wallet.updated` to the driver, audited. There is no "dismiss"
+  action: a flagged promotion that finance keeps stays flagged. Overview `review_promotions` and
+  `GET /admin/marketing/applications?review=true` list both flags.
+
+```
+reserved ──order completed──▶ settled ──reverse (finance)──▶ reversed
+reserved ──order completed, the coupon's qualifying ride cancelled meanwhile──▶ settled + coupon_source_cancelled
+reserved ──order cancelled──▶ released
+settled ──order cancelled by a dispute──▶ settled + order_cancelled_after_settlement (finance decides)
+```
+
+* Order DTOs: `promo_discount` and `cash_due` on `Order`, `OrderSummary`, `AdminOrder`, the
+  available-order card (`GET /driver/orders`), `DriverOrderDetail` and `DriverOrderSummary`;
+  `promotion` (`OrderPromotion {kind, title, discount, gross_fare, cash_due, status, compensation,
+  settled_at}`, `null` without one) on `Order`, `AdminOrder` and `DriverOrderDetail`. Drivers get
+  it without `kind` and `title`: how the passenger paid is not the driver's business.
+* Messages: `order_created_passenger` and `order_completed_passenger` add `discount` and
+  `cash_due`; `order_available_driver`, `order_accepted_driver` and `order_completed_driver` add
+  `cash_due` («💵 Жолаушыдан алу») and `promo_compensation` («🎁 Jan Taxi акциясы: +400 ₸ сапардан
+  кейін балансқа»). The driver's wallet history shows the `promo_compensation` row.
+* Driver settlement follows the customer's document: the compensation goes to the driver's Jan Taxi
+  wallet balance. It pays future commissions like any credit and is not withdrawable — the platform
+  has no payouts (owner decision pending, §23.14).
+
+### 23.7 Segments and broadcasts
+
+* Audiences: `passengers` (users who started the passenger bot) and `drivers` (users with a driver
+  profile who started the driver bot; `approved` drivers unless `driver_statuses` says otherwise).
+* Segments (`marketing.edit`: `{name 1..120, audience, filters}`; the audience is immutable;
+  `{archived: true}` archives): typed filters only, evaluated in SQL with bound parameters, unknown
+  fields refused — `languages` (`kk | ru | en`), `registered_within_days`, `registered_before_days`,
+  `completed_rides_min`, `completed_rides_max` (0..100 000, max ≥ min); passengers only:
+  `last_ride_within_days`, `no_ride_for_days`, `has_active_coupon`; drivers only: `driver_statuses`
+  (`approved | suspended | pending | changes_requested`), `online_within_days` (last heartbeat),
+  `city_ids` (≤ 50). Days are 0..3650. A filter of the other audience is `driver_only_filter` /
+  `passenger_only_filter`. Estimates (`POST …/segments/preview`, segment lists, broadcast detail)
+  are counts only — `matching`, `reachable`, `suppressed` — never people.
+* Suppressed: opted out (`user_preferences.marketing_opt_out_at`), blocked the bot
+  (`users.<bot>_bot_blocked_at`) or blocked by an operator.
+* Broadcasts (`marketing.broadcast`): `{title 1..120, audience, segment_id | filters, content
+  {kk,ru,en}, button?, no_button?, campaign_id?}`; only drafts are edited (`409 invalid_transition`).
+  The text is cleaned (NFC, CRLF → LF, control and format characters removed, line breaks kept, at
+  most two blank lines), ≤ 3000 characters per language, and sent as HTML-escaped plain text in the
+  recipient's language (kk fallback). An optional `button {label {kk,ru,en} ≤ 40, start_param}` opens
+  the audience's Mini App at `?startapp=<start_param>` (§18; an HTTPS Mini App URL is required).
+  Every message also carries the callback button «Жарнамадан бас тарту» / «Отписаться от
+  рассылки» / «Unsubscribe» (`mkt_off`). Drivers never read about the commission (§22.2): a
+  broadcast to drivers that names it is refused (`fields.content.<lang> = mentions_commission`).
+* Status machine (`POST …/transition {action, scheduled_at?, reason?, confirm}`; `schedule` and
+  `send_now` need `confirm: true`; the reason is kept as `approval_note`):
+
+```
+draft ──schedule──▶ scheduled ──(worker at scheduled_at: snapshot)──▶ sending ──(nothing left)──▶ completed
+draft | scheduled ──send_now (snapshot now)──▶ sending ──pause──▶ paused ──resume──▶ sending
+draft | scheduled | sending | paused ──cancel──▶ cancelled
+scheduled ──(at scheduled_at: snapshot failed | above the threshold without an approver)──▶ failed
+```
+
+* Targeting: a draft follows its saved segment. `schedule` stores the resolved filters it checked on
+  the broadcast (`send_now` those of its snapshot), so later segment edits never move a scheduled
+  or running broadcast.
+* Approval: an audience above `marketing.broadcast_approval_threshold` (100) needs an admin who holds
+  `marketing.approve` besides `marketing.broadcast` — with the default roles only `super_admin`
+  (`marketing.approve` alone opens no broadcast route: `403 forbidden`). A broadcaster without it
+  gets `403 approval_required {recipients, threshold}`, checked against the estimate when
+  scheduling and against the snapshot when sending now. `approved_by` records an approver who
+  scheduled or sent the broadcast and stays empty for anyone else. At `scheduled_at` the worker
+  takes the snapshot: a broadcast without an approver whose audience has grown above the threshold
+  then in force is not sent — it becomes `failed` with `approval_note = approval_required` and its
+  deliveries `cancelled`.
+* Snapshot: one `queued` delivery per reachable person and a `suppressed` row per suppressed one
+  (`UNIQUE (broadcast_id, user_id)` for non-test rows); `recipient_count` = queued. Pause stops the
+  unsent deliveries; cancel marks the queued ones `cancelled` (the worker also closes any that a
+  send in progress puts back into the queue), but messages Telegram already accepted cannot be
+  recalled. "Sent" means accepted by Telegram.
+* Test send (`POST …/test {telegram_user_id}`): one extra delivery (`is_test`, prefixed «🧪 TEST») of
+  a `draft` or `scheduled` broadcast (else `409 invalid_transition {from, action: test}`), only to a
+  Telegram id an approver listed in `marketing.test_recipients` (§23.9; empty by default, so staff
+  list their own ids first) — `422 fields.telegram_user_id = not_test_recipient` otherwise — who
+  started the audience's bot (`bot_not_started`) and neither opted out nor blocked it
+  (`suppressed`). Tests stop with the broadcast switch: `409 broadcasts_disabled` while it is off,
+  and a queued test is not sent until it is on again; suppression is checked again before sending.
+  At most 10 tests per broadcast and 30 in total per hour (`429`).
+* Worker `broadcast_worker` (its own tables, never the operational outbox; runs with the
+  notification worker on one replica at a time — advisory lock — so the per-bot rate is global):
+  * starts due scheduled broadcasts while broadcasts are on;
+  * yields while more than 20 operational outbox messages are due (order messages first);
+  * while broadcasts are on, claims `2 × rate` due deliveries (tests first) with a 2-minute lease
+    (`locked_until`; a lease of a crashed worker expires and the delivery is claimed again);
+  * re-checks suppression just before sending (`suppressed`);
+  * one token bucket per bot at `marketing.broadcast_rate_per_s` (default 4/s, below Telegram's
+    ~30/s); Telegram is never called inside a database transaction;
+  * success → `sent` (`telegram_message_id`, `sent_at`); `429` → the whole bot pauses for
+    `retry_after` and the delivery is released without spending an attempt; `403` → `blocked` and
+    `users.<bot>_bot_blocked_at`; 5xx, network errors and timeouts → retried with exponential
+    backoff (5 s doubling, ≤ 10 min, equal jitter) up to 5 attempts, then `failed`; other errors →
+    `failed`. A `sending` broadcast with nothing queued becomes `completed`.
+* Opt-out: the button in either bot → `POST /internal/v1/bots/{bot}/users/{tg_id}/marketing
+  {opt_out: true}` (`marketing_opt_out_at` set; an alert «Жарнамалық хабарламалар өшірілді»); the
+  passenger Mini App switch → `PUT /promotions/subscription {subscribed}`. The choice belongs to the
+  person (one user row for both bots) and never affects order messages.
+* Start parameters: a broadcast button only opens a Mini App screen (§18); a referral link
+  `ref_<CODE>` is the one start parameter the API acts on, captured from the signed `initData` at
+  passenger sign-in (§23.5).
+
+### 23.8 Budgets, manual adjustments and reconciliation
+
+* Usage of a campaign: `committed` = unexpired `issued` and `reserved` coupons + `pending` grants;
+  `spent` = `redeemed` coupons + `credited` grants; `remaining = max(budget_limit − committed −
+  spent, 0)` (`null` without a cap). Expired and voided coupons and skipped grants free their amount;
+  the coupon of a reversed promotion stays spent.
+* Every award checks `committed + spent + amount ≤ budget_limit` under the campaign row lock
+  (`FOR NO KEY UPDATE`: it serialises budget checks and transitions without blocking the
+  foreign-key checks of coupons, grants and ledger rows written meanwhile) in the transaction that
+  writes the coupon or grant, so concurrent awards never overspend. Out of budget: no coupon
+  (`budget_exhausted`), a referral goes to `review budget_exhausted`, a `passenger_credit` schedule
+  or activation is refused, a manual credit is `409 budget_insufficient`. Pilot budgets: 100 000 ₸
+  per launch campaign. A budget change is audited with its reason; lowering it below the usage only
+  stops new awards.
+* Manual corrections of a passenger's bonus (`POST /admin/marketing/users/{id}/bonus-adjustments
+  {amount, reason, idempotency_key, confirm}`, `finance.manage`; `amount` signed, ≠ 0, within
+  ±1 000 000; `idempotency_key` a UUID, ledger key `bonus_adjust:<uuid>`):
+  * a credit goes through the `manual_adjustments` campaign: at most its `max_amount` (50 000) per
+    operation (`422 fields.amount = above_max`, `details.max_amount`), within its budget, recorded as
+    a `manual` grant; the passenger gets `promo_bonus_granted`;
+  * a debit takes only available money (`409 insufficient_balance`);
+  * the same key and amount is a no-op; the key with another effect is `409 idempotency_key_reused`;
+  * the bucket can be neither scheduled nor archived (§23.2). Its budget (none by default) caps
+    manual credits, and a budget of 0 stops them; its `max_amount` changes only through a new
+    version by `marketing.approve`, so a marketing manager can raise neither.
+* Reconciliation (`GET /admin/marketing/reconciliation`, `marketing.view`; job `marketing_reconcile`
+  logs an error every hour while it is not OK): one read-only REPEATABLE READ snapshot, at most 100
+  findings per check, ids only.
+
+| Finding | Meaning |
+|---|---|
+| `compensation_mismatch` | a settled or reversed promotion without exactly its `promo_compensation` row (amount, order) |
+| `orphan_compensation` | a `promo_compensation` row without its promotion |
+| `reversal_without_status` | a `promo_compensation_reversal` row whose promotion is not `reversed` |
+| `bonus_account_mismatch` | a bonus account differs from the sums of its ledger |
+| `bonus_reservation_mismatch` | an account's `reserved` differs from its reserved bonus promotions |
+| `stuck_reservation` | a promotion still `reserved` on an order that is no longer active |
+| `coupon_promotion_mismatch` | a reserved or redeemed coupon without its matching promotion |
+| `grant_without_ledger`, `driver_grant_without_ledger` | a credited grant without its ledger row |
+| `referral_cap_exceeded` | more than one referral reward per referrer and campaign |
+| `order_discount_mismatch` | `orders.promo_discount` differs from its promotion's discount |
+| `totals_mismatch` | settled discounts differ from credited compensation |
+| `failed_events` | marketing events marked `failed` |
+
+Totals: `discounts_settled`, `compensation_credited`, `compensation_reversed`,
+`bonus_outstanding`, `bonus_reserved`, `coupon_liability` (unexpired issued and reserved coupons),
+`promotions_reserved`, `promotions_under_review`, `events_failed`, `events_pending`. The wallet
+reconciliation (§6) covers the compensation rows as part of each wallet.
+
+### 23.9 Switches and settings
+
+| Key | Default | Effect when changed |
+|---|---|---|
+| `marketing.awards_enabled` | true | off: no ride is queued for awards and queued events close as `awards_disabled` (rides completed meanwhile never earn); no coupons, referral rewards, milestone bonuses or passenger credits; the first-ride offer disappears and invitations read `locked` / `paused` |
+| `marketing.redemptions_enabled` | true | off: new orders cannot use a coupon or the bonus (`promotion_changed redemptions_disabled`); promotions already reserved still settle or release |
+| `marketing.broadcasts_enabled` | true | off: no broadcast starts or sends, test sends included (`409 broadcasts_disabled`; queued tests wait) |
+| `marketing.broadcast_rate_per_s` | 4 | 1..20 messages per second per bot |
+| `marketing.broadcast_approval_threshold` | 100 | 1..10 000 000; larger audiences need `marketing.approve` besides `marketing.broadcast`, also when a scheduled broadcast starts (§23.7) |
+| `marketing.test_recipients` | `[]` | `int_list`, up to 20 Telegram ids (1..9 999 999 999 999, no duplicates, stored sorted): the only people a test broadcast may reach; empty: no test can be sent |
+
+The three switches are emergency stops and default to on; nothing is awarded or sent until a
+campaign is activated or a broadcast is sent. All six keys are changed through `GET/PATCH
+/admin/marketing/settings` (the panel's Marketing → Safety; `marketing.view` to read,
+`marketing.approve` to change, the body's `reason` is required and audited as `settings.update`),
+or by a super admin in Settings (§19, group Marketing). Other API replicas see a change within the
+5-second settings cache.
+
+### 23.10 Admin panel, permissions and audit
+
+* Role `marketing_manager`: `dashboard.view`, `marketing.view`, `marketing.edit`,
+  `marketing.broadcast` — prepares campaigns, segments and broadcasts. Money starts or resumes
+  flowing only with `marketing.approve` (super_admin, finance_manager). Permissions (§4.2):
+  * `marketing.view` — overview, campaigns and previews, coupons, bonus ledger, people, referrals,
+    promotions on orders, segments, broadcasts and recipients, reconciliation, reports, settings;
+  * `marketing.edit` — create and duplicate campaigns, versions of drafts and ended campaigns (not
+    of the `manual_adjustments` bucket), `pause`, `unschedule`, `archive`, segments;
+  * `marketing.approve` — `schedule`, `activate`, `resume`, `end`, `freeze_redemptions`,
+    `unfreeze_redemptions`, versions of live campaigns and of `manual_adjustments`, budgets,
+    settings (the test recipients included), coupon voids, referral decisions. It does not open the
+    broadcast routes: a broadcast above the threshold is scheduled or sent by an admin who holds it
+    together with `marketing.broadcast` — with the default roles only `super_admin`; a finance
+    manager cannot send broadcasts and a marketing manager can send only audiences up to the
+    threshold;
+  * `marketing.broadcast` — create, edit, test (to the listed test recipients only), schedule, send,
+    pause, resume and cancel broadcasts;
+  * `finance.manage` — bonus adjustments and promotion reversals; `reports.export` together with
+    `marketing.view` — `reports.csv`.
+* High-risk actions carry a reason (3..300 code points) and `confirm: true`: approver campaign
+  actions, budgets, bonus adjustments and reversals. Coupon voids, referral decisions and settings
+  need the reason; scheduling or sending a broadcast needs `confirm`.
+* Audit (`admin_audit_logs`, before/after): `marketing.campaign.{create, duplicate, version,
+  schedule, unschedule, activate, pause, resume, end, archive, freeze_redemptions,
+  unfreeze_redemptions, budget}` (entity `marketing_campaign`), `marketing.coupon.void`
+  (`marketing_coupon`), `marketing.bonus.adjust` (`passenger_bonus`), `marketing.referral.{approve,
+  reject}` (`referral_attribution`), `marketing.promotion.reverse` (`order_promotion`),
+  `marketing.segment.{create, update}` (`marketing_segment`), `marketing.broadcast.{create, update,
+  test, schedule, send_now, pause, resume, cancel}` (`marketing_broadcast`), `settings.update`
+  (`app_setting`, with the reason).
+* Personal data: people appear as `UserRef` — first name and last initial, the phone masked to its
+  last four digits, the Telegram id; recipient lists show only user id, language and delivery state;
+  the overview, reports, the CSV and the reconciliation are aggregates or ids. People are found by
+  Telegram id, the phone's last 10 digits or a referral code (`GET /admin/marketing/users?q=`, at
+  least 3 characters, 20 results).
+* Overview (`GET /admin/marketing/overview`): switches; campaigns with usage; coupon, referral and
+  broadcast counts by status; bonus `outstanding`, `reserved`, `accounts`; compensation `credited`
+  and `pending`; health `events_pending`, `events_failed`, `oldest_pending_s`,
+  `stuck_reservations`, `review_promotions`, `review_referrals`, `broadcast_queue`,
+  `overdue_scheduled` (campaigns or broadcasts more than 5 minutes past their time).
+* Reports (`GET /admin/marketing/reports?from=YYYY-MM-DD&to=YYYY-MM-DD`, business days in
+  Asia/Aqtobe, default the last 30, at most 366): per day coupons issued, redeemed and expired,
+  referrals, referral rewards, bonus granted, discounts settled, messages sent and failed; the
+  referral and coupon funnel. `reports.csv` exports the same days.
+
+### 23.11 Passenger app, driver app and bots
+
+* Passenger API (`P`): `GET /promotions` — `server_time`, `redemptions_enabled`, the latest 10
+  coupons (status computed against the database clock), `bonus`, `bonus_categories`, `offers` (the
+  first-ride offer while it can still be earned: awards on, no completed order, no coupon yet),
+  `banners` (active `broadcast_only` campaigns), the `referral` summary, `marketing_subscribed`;
+  `GET /promotions/bonus/history?limit=&before=`; `GET /promotions/referral`;
+  `PUT /promotions/subscription {subscribed}`. The app shows discounts and `cash_due` from these
+  and from the order DTOs and never decides eligibility itself; `server_time` lets it count down
+  `expires_at` without trusting the phone's clock.
+* Realtime `promotions.updated` (scope `user:<id>`) when the passenger's coupons, bonus or
+  referral state change: coupon issued, reserved, released, settled or voided by an operator;
+  referral captured or rewarded; bonus credited, spent or adjusted. Like every event it is a hint:
+  the app re-reads `GET /promotions` (§9).
+* Start parameters (§18): `coupons`, `bonus`, `invite`; `ref_<CODE>` is the referral link.
+* Driver: the available-order card, the order and trip screens and the history carry `cash_due` (what
+  to collect) and `promo_discount` (what Jan Taxi credits after the ride); the commission stays
+  hidden (§22.2).
+* Bots: the passenger bot's `/start ref_<CODE>` captures the referral and greets as usual; both bots
+  handle the unsubscribe button `mkt_off`; the passenger messages `promo_coupon_issued`,
+  `promo_referral_reward` and `promo_bonus_granted` open the `coupons` / `bonus` screens. The
+  internal order lists carry `promo_discount` and `cash_due` too (`BotOrderSummary`, the
+  available-order cards): the driver bot's `/orders` and `/trip` show the cash to collect and the
+  credit after the ride, the passenger bot's `/orders` what the passenger pays.
+
+### 23.12 Jobs and workers
+
+| Job | Interval | Work |
+|---|---|---|
+| `marketing_events` | 2 s | award worker: first-ride coupons, referral rewards, driver milestones (§23.3) |
+| `marketing_coupon_expiry` | 1 min | marks expired coupons, ≤ 1000 per run (validity never depends on it) |
+| `marketing_campaign_schedule` | 30 s | activates due scheduled campaigns (one that cannot be activated returns to draft and drops its frozen `passenger_credit` grants); ends active or paused campaigns whose version `ends_at` passed and skips their pending grants |
+| `marketing_grants` | 5 s | credits pending `passenger_credit` grants of active campaigns, 100 per run (nothing while awards are off) |
+| `marketing_reconcile` | 1 h | reconciliation; an error in the log when it is not OK |
+| worker `broadcast_worker` | continuous, 1 s when idle | broadcasts (§23.7); only with `NOTIFICATION_WORKER_ENABLED`, one replica at a time |
+
+### 23.13 Invariants, lock order and security
+
+Invariants (database constraints unless noted):
+- `0 ≤ orders.promo_discount ≤ fare`; `0 < order_promotions.discount ≤ gross_fare`; one promotion per
+  order; a coupon live on at most one order; `min_order_fare ≥ amount`, so the cash due is never
+  negative.
+- A settled promotion has exactly one `promo_compensation` row of the same amount
+  (`compensation = discount`, unique `compensation_key`; reconciliation).
+- One coupon per passenger and campaign; one referral reward per referrer and campaign; one grant per
+  referral; one attribution per invitee; one live campaign per launch template.
+- A bonus account: `balance ≥ reserved ≥ 0`, equal to its ledger sums, and `reserved` equal to its
+  reserved bonus promotions (reconciliation).
+- Campaign versions, the bonus ledger and referral events are append-only (triggers).
+- A promotion changes neither the fare nor the commission; the driver's compensation equals the
+  discount.
+
+Lock order (package `marketing`): order row → coupon row or bonus account → campaign row → driver
+wallet. Order creation locks the coupon or the bonus account (the order row is new); completion
+and cancellation lock order → promotion → coupon or account → wallet (the compensation). A wallet
+locked earlier in those transactions belongs only to a commission reservation of the pre-v2 model,
+and such orders carry no promotion. The award worker locks the event, reads the ride `FOR SHARE`
+(a dispute resolution of that order waits for it), then locks the attribution, the campaign row
+(budget), then the beneficiary's bonus account or wallet; a manual adjustment locks the account and
+then only the `manual_adjustments` row, which no award locks, so the two never wait for each other.
+Campaign rows are locked `FOR NO KEY UPDATE`, so orders that reserve a coupon never wait for them.
+A reversal (a rare operator action) locks as settlement does: the promotion, the passenger's bonus
+account (for a bonus), then the driver's wallet.
+
+Security and abuse controls:
+- Referral capture only through signed channels (the bot update behind the service secret, signed
+  `initData`); codes are random, opaque and carry no personal data; the client's
+  `promotion_discount` is only a confirmation, never an amount the server uses.
+- Internal routes need the service secret: `/internal/v1/passenger/{tg_id}/referral` only from the
+  passenger bot (`403`), `/internal/v1/bots/{bot}/users/{tg_id}/marketing` only for the calling bot.
+- Admin: RBAC, CSRF, audit, masked people, aggregate exports; approvals for money and large
+  broadcasts (a scheduled broadcast is checked again when it starts; an approver may pin the
+  campaign version they reviewed); the audience an approver approves is frozen (broadcast
+  targeting and `passenger_credit` grants at scheduling); test sends only to the staff ids in
+  `marketing.test_recipients`, never to anyone who opted out or blocked the bot, only while
+  broadcasts are on, 10 per broadcast and 30 in total per hour; driver copy never names the
+  commission; broadcast text escaped and buttons limited to the Mini App with a validated start
+  parameter; bot tokens redacted from delivery errors.
+- Fraud controls: the first ride must be completed by a driver; new invitees only (window, no
+  orders, not a driver); self-referral, same phone, the referrer driving and blocked users rejected;
+  rides under 60 s held for review; a first ride a dispute cancels loses its coupon and flags its
+  referral reward; once-only rules in the database; budgets under a lock; coupon void, redemption
+  freeze, campaign pause, reversal; reconciliation. Cash itself cannot be verified (§23.14, item
+  10).
+
+### 23.14 Owner decisions
+
+The owner's specification left ten questions open. The defaults below are implemented; each lists
+what changes it (a new campaign version or a setting) or says that a code change is needed.
+
+| # | Question | Implemented default | Why it is safe | Alternatives |
+|---|---|---|---|---|
+| 1 | Coupon expired unused: may the passenger invite friends? | No: `unlock: coupon_redeemed` | the assignment literally; the two promotions never overlap | `coupon_redeemed_or_expired`, `first_ride_completed` (new version) |
+| 2 | Passengers who rode before the launch | No first-ride coupon (not their first ride); no invitations under the default unlock (preview warning `legacy_passengers_locked`) | no retroactive cost; budget only for new riders | `first_ride_completed` unlock; a `passenger_credit` campaign for a segment of earlier riders |
+| 3 | What is the "second ride" | The next taxi order created while the coupon is valid with fare ≥ 400; a cancelled order returns the coupon; deliveries never consume it | one coupon, one redemption, database-enforced | `categories`, `validity_hours`, `min_order_fare` (new version) |
+| 4 | Fare below 400 | The coupon is not applied and stays for a later order; fare 400 → cash 0; no partial redemption | the cash due never goes negative; no remainder to track | `min_order_fare` ≥ `amount` (new version); partial redemption is a code change |
+| 5 | Driver settlement | The discount is credited to the driver's Jan Taxi balance at completion; it pays commissions; not withdrawable | exact, idempotent, reconciled; no cash leaves the company | **owner to decide** whether a cash payout process is needed (code and accounting change) |
+| 6 | Commission basis | Gross fare, charged at acceptance (fixed 50 ₸ or the village percentage) | the driver's net equals an order without a promotion | net-of-discount basis is a code change |
+| 7 | Referral attribution | The first valid code wins; the invitee must be new (account ≤ 60 min, no orders, not a driver); captured from the bot start or the signed Mini App start; never rewritten | no hijacking, no rebinding, every attempt logged | `attribution_window_minutes` 5..10 080 (new version) |
+| 8 | Bonus partial spend and expiry | Pays `min(available, fare)` of a taxi order, the rest stays; no expiry | the passenger never loses earned money; ledger exact | expiry or other categories are code changes |
+| 9 | Budgets and approval thresholds | 100 000 ₸ per launch campaign; activation by `marketing.approve`; broadcasts above 100 recipients need an admin with both `marketing.broadcast` and `marketing.approve` (the super admin by default); manual credit ≤ 50 000 per operation | spending is capped under a lock; every money switch is audited | budget endpoint; `marketing.broadcast_approval_threshold`; `max_amount` of `manual_adjustments` (new version by `marketing.approve`) |
+| 10 | Proof of a cash ride | None is possible for cash; the driver's completion is the evidence | controls of §23.13; the money at risk is commission credit, not cash | raise `min_ride_seconds`; freeze redemptions; pause; void and reverse |

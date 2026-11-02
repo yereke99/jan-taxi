@@ -209,6 +209,259 @@ not running: check `NOTIFICATION_WORKER_ENABLED=true` and the API logs.
   Monthly: export Kaspi Pay sales (XLSX) and the admin top-up CSV for the same
   period and compare totals.
 
+## Marketing
+
+Promotions, coupons, the passenger bonus balance, referrals and broadcasts are
+described in [ARCHITECTURE.md §23](ARCHITECTURE.md#23-marketing-and-promotions);
+the owner's guide is [MARKETING.md](MARKETING.md) (Russian). Unless a command is
+shown, everything below is done in the admin panel → Marketing, and every action
+there is audit-logged.
+
+Background work in the API: `marketing_events` (award worker, every 2 s),
+`marketing_coupon_expiry` (1 min), `marketing_campaign_schedule` (30 s),
+`marketing_grants` (5 s), `marketing_reconcile` (hourly) and the
+`broadcast_worker`, which runs next to the notification worker
+(`NOTIFICATION_WORKER_ENABLED=true`) on one replica at a time. Their log lines
+carry `component=marketing` or `component=broadcast_worker`.
+
+### Switching campaigns on and off
+
+- After the upgrade to migration 00016 nothing runs: `first_ride_coupon_400`
+  («Алғашқы сапар») and `referral_300_once` («Досыңды шақыр») are drafts with a
+  100 000 ₸ pilot budget each.
+- Activate, resume, schedule, end and freeze redemptions need `marketing.approve`
+  (super admin, finance manager), a reason and a confirmation. Pause, unschedule
+  and archive need `marketing.edit` or `marketing.approve`, except on the
+  seeded campaigns (the two launch promotions and `manual_adjustments`): every
+  switch of those, and any change of their rules, is an approver's (`403` for
+  a marketing manager, whose switch in the campaign list stays locked).
+- Approver actions carry the version the approver reviewed (`expected_version`,
+  `422` without it). `409 version_conflict`: someone saved a new version of the
+  campaign after it was opened. Reload, read the new version and repeat.
+- Scheduling a passenger bonus campaign (`passenger_credit`) freezes its
+  audience and checks the budget at that moment; people who join the segment
+  later are not added. Unschedule to drop the frozen audience.
+- `manual_adjustments` (the bucket of manual bonus credits) stays a draft and
+  cannot be scheduled or archived (`409 campaign_conflict`); only an approver
+  changes its per-credit cap (a new version). To stop manual credits, set its
+  budget to 0.
+- Read the campaign preview before activating (audience, maximum cost, warnings).
+  Activate «Алғашқы сапар» before or together with «Досыңды шақыр»: by default a
+  passenger may invite only after redeeming the first-ride coupon.
+- Pause stops new awards; coupons already issued stay usable until they expire,
+  and rides completed during the pause never earn later. Freeze redemptions stops
+  the campaign's coupons on new orders; orders that already reserved one complete
+  normally.
+- `campaign_conflict` on activate: another campaign of the same kind is
+  scheduled, active or paused. End it first.
+- Which campaigns are on:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "SELECT key, status, budget_limit, active_since, redemptions_frozen FROM marketing_campaigns ORDER BY priority;"
+```
+
+### Emergency stops
+
+| Setting | When switched off |
+|---|---|
+| `marketing.awards_enabled` | no new coupons, referral rewards or bonus credits; rides completed meanwhile never earn |
+| `marketing.redemptions_enabled` | new orders cannot use a coupon or the bonus; orders that already reserved one settle or release normally |
+| `marketing.broadcasts_enabled` | every broadcast stops sending, test sends included (queued tests wait until it is on again) |
+
+- Change them on Marketing → Safety (`marketing.approve`, reason required) or,
+  as a super admin, in Settings. One API container applies the change at once;
+  other replicas within 5 seconds (settings cache).
+- If the admin panel is unreachable, switch all three off in the database (this
+  bypasses the audit log: record it in the incident notes):
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "UPDATE app_settings SET value = 'false' WHERE key IN ('marketing.awards_enabled', 'marketing.redemptions_enabled', 'marketing.broadcasts_enabled');"
+```
+
+### Failed marketing events
+
+- Overview → health: `events_pending`, `events_failed`, `oldest_pending_s`;
+  reconciliation: `failed_events`; log line `marketing event failed`.
+- Pending events normally clear within seconds. A growing `oldest_pending_s`
+  means the job is not running or keeps failing: `make logs SERVICE=api | grep marketing`.
+- An event is retried with backoff and marked `failed` after 10 attempts:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "SELECT id, order_id, attempts, last_error, created_at FROM marketing_events WHERE status = 'failed' ORDER BY id DESC LIMIT 20;"
+```
+
+- Once the cause is fixed, queue it again. Processing is idempotent (one coupon
+  per passenger and campaign, one reward per referrer, unique ledger keys), so a
+  retry never pays twice:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "UPDATE marketing_events SET status = 'pending', attempts = 0, next_attempt_at = now() WHERE id = <id> AND status = 'failed';"
+```
+
+- Rides older than 7 days are closed as `too_old` and never pay. Make good a
+  missed award with a manual bonus credit (passenger) or a wallet bonus (driver),
+  with a reason.
+- What an event did: `SELECT order_id, result FROM marketing_events WHERE status = 'done' ORDER BY id DESC LIMIT 20;`
+  (for example `{"first_ride_coupon_400": "coupon_issued"}`).
+
+### Stuck reservations
+
+- Overview `stuck_reservations` / reconciliation `stuck_reservation`: a
+  promotion still `reserved` on an order that is completed or cancelled.
+  Reservation, settlement and release run inside the order's own transactions,
+  so this points to a bug or a manual database edit. Do not edit the rows by
+  hand; collect the ids and escalate to engineering:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "SELECT op.id, o.number, o.status, op.kind, op.discount, op.reserved_at FROM order_promotions op JOIN orders o ON o.id = op.order_id WHERE op.status = 'reserved' AND o.status NOT IN ('searching', 'accepted', 'driver_arriving', 'in_progress', 'disputed');"
+```
+
+- Until it is fixed the passenger's coupon (or that part of the bonus) cannot be
+  used; a manual bonus credit with a reason is the safe goodwill gesture.
+
+### Referrals under review
+
+- Marketing → Referrals, status `review`. Reasons: `short_ride` (the ride was
+  shorter than the campaign's `min_ride_seconds`, 60 s) and `budget_exhausted`.
+- Look at the ride in Orders (route, duration, who drove), then approve or
+  reject with a reason (`marketing.approve`). Approve pays the inviter once; an
+  inviter who was already rewarded ends `capped`. `409 budget_insufficient`:
+  raise the campaign budget first, or reject.
+- A dispute that cancels the friend's first ride after completion closes its
+  referral with reason `qualifying_ride_cancelled`: one still in `review` becomes
+  `rejected`; one already `rewarded` keeps its 300 ₸ and is only flagged (it is
+  not counted in `review_referrals`). See «Reversing a promotion».
+- Capture attempts are kept in `referral_events`. Many attempts on one code or
+  many `invitee_not_new` / `invitee_has_orders` deserve a look:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "SELECT code, outcome, reason, count(*) FROM referral_events WHERE created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 20;"
+```
+
+- There is no admin button to disable a passenger's invitation code yet. In the
+  database (not audited; affects only future captures):
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "UPDATE referral_codes SET disabled_at = now() WHERE code = '<CODE>' AND disabled_at IS NULL;"
+```
+
+### Reversing a promotion
+
+- Promotions flagged for finance (overview `review_promotions`; Marketing →
+  Coupons & bonuses → Discounts on orders, "Under review only"); nothing moves
+  automatically:
+  - `order_cancelled_after_settlement`: a dispute resolved as cancelled on a
+    completed order that used a coupon or the bonus; the promotion stays
+    `settled`;
+  - `coupon_source_cancelled`: the order completed with a first-ride coupon whose
+    own qualifying ride a dispute had cancelled. The ride was taken at the
+    discounted price, so the driver was compensated as usual.
+- A dispute that cancels a first ride also takes back what that ride earned: its
+  unused coupon is voided (`qualifying_ride_cancelled`), a coupon reserved on an
+  open order is voided when that order is cancelled (and flagged as above if it
+  completes), and the referral it qualified is rejected while under review or
+  flagged once paid.
+- Finance decides:
+  - keep the compensation: nothing to do (the flag stays; there is no dismiss
+    action);
+  - reverse (`finance.manage`, reason and confirmation): the driver's
+    compensation is debited from the available balance (`409
+    insufficient_balance` when it is lower: wait for a top-up or agree a wallet
+    adjustment), a spent bonus returns to the passenger, a redeemed coupon stays
+    redeemed. The driver sees a `promo_compensation_reversal` row.
+- A referral reward paid for a ride a dispute cancelled stays `rewarded` with
+  reason `qualifying_ride_cancelled` (Marketing → Referrals). To take it back,
+  debit the inviter's bonus with a manual adjustment (`finance.manage`, reason;
+  only the available balance can be debited). Flagged rewards:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "SELECT id, referrer_user_id, qualifying_order_id, decided_at, updated_at FROM referral_attributions WHERE status = 'rewarded' AND reason = 'qualifying_ride_cancelled' ORDER BY updated_at DESC LIMIT 20;"
+```
+
+### Pausing or cancelling a broadcast
+
+- Pause (`marketing.broadcast`) keeps the unsent deliveries; resume continues.
+  Cancel drops the queued deliveries; messages Telegram already accepted cannot
+  be recalled. All broadcasts at once: `marketing.broadcasts_enabled = false`
+  (test sends stop too).
+- An audience above `marketing.broadcast_approval_threshold` (100) is scheduled
+  or sent by an admin who holds both `marketing.broadcast` and
+  `marketing.approve` (by default only the super admin): `403
+  approval_required` otherwise. A finance manager cannot send broadcasts; a
+  marketing manager sends only smaller audiences.
+- A scheduled broadcast that ends `failed` with the approval note
+  `approval_required`: an admin without `marketing.approve` (a marketing
+  manager) scheduled it and its audience grew above the threshold by the send
+  time. Nothing was sent; create it again and have the super admin schedule or
+  send it. A scheduled broadcast keeps the targeting it had when it was
+  scheduled, whatever happens to its segment later.
+- Test sends go only to the Telegram ids in `marketing.test_recipients` (empty
+  after the upgrade). `422 not_test_recipient`: the id is not listed — an
+  approver adds the staff ids on Marketing → Safety with a reason (the super
+  admin also in Settings → Marketing); a person's Telegram id is shown as
+  «TG …» in Marketing → Coupons & bonuses → person search.
+  `bot_not_started` / `suppressed`: that person must start the audience's bot
+  and not unsubscribe or block it. `409 broadcasts_disabled`: the switch is
+  off. At most 10 tests per broadcast and 30 in total per hour.
+- The worker yields while more than 20 order messages are due and pauses a bot
+  for Telegram's `retry_after` on 429 (`broadcast flood control` in the log).
+  `blocked` deliveries are people who blocked the bot; they are marked and skipped
+  next time. Unsubscribed people are `suppressed`.
+- Delivery counts:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "SELECT b.title, r.status, count(*) FROM marketing_broadcast_recipients r JOIN marketing_broadcasts b ON b.id = r.broadcast_id WHERE NOT r.is_test GROUP BY 1, 2 ORDER BY 1, 2;"
+```
+
+- A broadcast that stays `sending` with queued deliveries while the switch is on:
+  check `NOTIFICATION_WORKER_ENABLED`, the order-message backlog (Notifications)
+  and the API log (`broadcast batch failed`).
+
+### Reconciliation issues
+
+Marketing → Marketing reports → Promotions reconciliation must show no findings;
+the hourly job logs `marketing reconciliation found issues` (ERROR) otherwise.
+
+| Finding | Action |
+|---|---|
+| `failed_events` | see «Failed marketing events» |
+| `stuck_reservation` | see «Stuck reservations» |
+| `compensation_mismatch`, `orphan_compensation`, `reversal_without_status`, `totals_mismatch` | driver compensation and promotions disagree |
+| `bonus_account_mismatch`, `bonus_reservation_mismatch` | a passenger bonus account disagrees with its ledger or its reserved orders |
+| `coupon_promotion_mismatch`, `order_discount_mismatch` | a coupon or an order disagrees with its promotion |
+| `grant_without_ledger`, `driver_grant_without_ledger`, `referral_cap_exceeded` | an award without its ledger row, or more than one referral reward |
+
+The last four rows should never happen: every one of those writes is a single
+transaction under unique keys. If one appears, switch awards and redemptions off,
+run `make backup`, and escalate with the `ref` ids. Never fix balances with SQL:
+corrections go through bonus adjustments or wallet adjustments, so the ledgers stay
+complete.
+
+### Rolling back a release
+
+The previous release does not know promotions: an order with a discount would
+complete without crediting the driver. Before switching images back
+([DEPLOYMENT.md §7](DEPLOYMENT.md#7-rollback)), switch
+`marketing.redemptions_enabled` off and wait until no active order carries a
+reserved promotion:
+
+```sh
+docker compose exec db psql -U jantaxi -d jantaxi -c \
+  "SELECT count(*) FROM order_promotions op JOIN orders o ON o.id = op.order_id WHERE op.status = 'reserved' AND o.status IN ('searching', 'accepted', 'driver_arriving', 'in_progress');"
+```
+
+Coupons and bonus balances stay in the database and work again after the next
+upgrade.
+
 ## Rotating secrets
 
 Edit `.env`, then recreate the affected containers (`docker compose up -d <services>`
