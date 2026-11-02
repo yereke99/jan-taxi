@@ -132,6 +132,17 @@ export const kk = {
     your_location: 'Сіздің орныңыз',
     fit_route: 'Бүкіл маршрутты көрсету',
   },
+  promo: {
+    passenger_pays: 'Жолаушыдан: {amount}',
+    mark: '+{amount} акция',
+    cash_due: 'Жолаушыдан алу',
+    title: 'Jan Taxi акциясы',
+    status: {
+      reserved: 'Сапардан кейін балансқа түседі',
+      settled: 'Балансқа түсті',
+      reversed: 'Қайтарып алынды',
+    },
+  },
   trip: {
     whatsapp_passenger: "Жолаушыға WhatsApp-та жазу",
     copy_passenger_phone: "Жолаушы нөмірін көшіру",
@@ -220,6 +231,8 @@ export const kk = {
       adjustment_credit: 'Түзету: есепке алу',
       adjustment_debit: 'Түзету: есептен шығару',
       bonus_credit: 'Jan Taxi бонусы',
+      promo_compensation: 'Акция бойынша өтемақы',
+      promo_compensation_reversal: 'Акция өтемақысы қайтарып алынды',
     },
     topup_confirmed_toast: 'Төлем расталды, баланс толтырылды',
     welcome_bonus: 'Қош келдіңіз бонусы',

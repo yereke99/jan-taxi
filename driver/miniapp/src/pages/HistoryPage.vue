@@ -1,7 +1,9 @@
 <!--
   Trip history (GET /driver/orders/history): completed and cancelled trips
   with their fare; cursor pagination. Drivers see fares only: commissions
-  live in the wallet history, not on order screens.
+  live in the wallet history, not on order screens. A completed trip with a
+  passenger's promotion (§23.6) carries a small mark with Jan Taxi's part;
+  the totals stay on fares.
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, shallowRef } from 'vue'
@@ -90,6 +92,9 @@ onMounted(() => void load(true))
         <p class="hist__route">{{ stopText(o.pickup) }} → {{ stopText(o.destination) }}</p>
         <div class="hist__bottom">
           <JBadge :tone="orderStatusTone(o.status)" :label="t(`trip.status.${o.status}`)" />
+          <span v-if="o.status === 'completed' && o.promo_discount > 0" class="hist__promo jt-tabular">
+            {{ t('promo.mark', { amount: fmt.money(o.promo_discount) }) }}
+          </span>
           <span v-if="o.status === 'completed'" class="hist__money jt-tabular">{{ fmt.money(o.fare) }}</span>
           <span v-else class="hist__money jt-tabular hist__muted">{{ fmt.money(o.fare) }}</span>
         </div>
@@ -197,6 +202,14 @@ onMounted(() => void load(true))
 .hist__money {
   font: var(--jt-font-subheadline);
   font-weight: 600;
+}
+
+/* Next to the fare, on the right: Jan Taxi's part is money coming in. */
+.hist__promo {
+  margin-left: auto;
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-green-text);
+  white-space: nowrap;
 }
 
 .hist__muted {

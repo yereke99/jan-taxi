@@ -3,9 +3,11 @@
   action per state — arrived → start → intermediate stops in seq order →
   complete — 2GIS hand-off, the passenger contact (call when the phone was
   shared, Telegram chat), the requested class and load, all stops. A target
-  address the passenger wrote is shown as written and marked as such. Drivers
-  cannot cancel (§22.3): a problem goes to support, which can cancel or
-  reassign. When the order ends (here or elsewhere) its outcome is shown —
+  address the passenger wrote is shown as written and marked as such. With a
+  passenger's promotion (§23.6) the header names the cash to collect instead
+  of the fare, with Jan Taxi's part marked next to it. Drivers cannot cancel
+  (§22.3): a problem goes to support, which can cancel or reassign. When the
+  order ends (here or elsewhere) its outcome is shown —
   a completed trip only as «Сапар сәтті аяқталды», without fare, commission
   or earnings; a passenger's cancellation reason is not shown to the driver.
 -->
@@ -129,7 +131,13 @@ onBeforeUnmount(() => {
             <p v-if="isPassengerWritten(target)" class="tpage__details">{{ t('manual.label') }}</p>
             <p v-if="target?.address_details" class="tpage__details">{{ target.address_details }}</p>
             <p class="tpage__meta jt-tabular">
-              {{ t('trip.order_number', { number: order.number }) }} · {{ fmt.money(order.fare) }} · {{ t(`payment_method.${order.payment_method}`) }}
+              {{ t('trip.order_number', { number: order.number }) }} ·
+              <template v-if="order.promo_discount > 0">
+                <span class="tpage__cash">{{ t('promo.passenger_pays', { amount: fmt.money(order.cash_due) }) }}</span> ·
+                <span class="tpage__promo">{{ t('promo.mark', { amount: fmt.money(order.promo_discount) }) }}</span>
+              </template>
+              <template v-else>{{ fmt.money(order.fare) }}</template>
+              · {{ t(`payment_method.${order.payment_method}`) }}
             </p>
             <p v-if="need" class="tpage__meta">{{ need }}</p>
           </div>
@@ -160,7 +168,7 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <FareBreakdown class="tpage__group" :fare="order.fare" :payment-method="order.payment_method" />
+        <FareBreakdown class="tpage__group" :fare="order.fare" :payment-method="order.payment_method" :promotion="order.promotion" />
 
         <JListGroup class="tpage__group" :footer="t('trip.problem_note')">
           <JListRow :title="t('trip.problem')" :to="{ name: ROUTE.support }">
@@ -259,6 +267,18 @@ onBeforeUnmount(() => {
   margin-top: var(--jt-space-1);
   font: var(--jt-font-footnote);
   color: var(--jt-color-label-secondary);
+}
+
+/* The cash to take stands out, Jan Taxi's part is money in; a long line breaks between them. */
+.tpage__cash {
+  font-weight: 600;
+  color: var(--jt-color-label);
+  white-space: nowrap;
+}
+
+.tpage__promo {
+  color: var(--jt-color-green-text);
+  white-space: nowrap;
 }
 
 .tpage__group {

@@ -2,12 +2,12 @@
 // Imported only by main.ts behind `import.meta.env.VITE_DEMO === '1'`.
 //
 // Screens reachable by URL (base /driver/):
-//   ?demo=orders      available orders (online, balance 4 350 ₸)
+//   ?demo=orders      available orders (online, balance 4 350 ₸), №1026 paid partly with a passenger's coupon
 //   ?demo=order       order detail: map with the route A–D and the car's approach
 //   ?demo=topup       Kaspi top-up of 5 000 ₸ waiting for payment
 //   ?demo=home        driver home
 //   ?demo=register    registration, the vehicle page (body type preset to Sedan)
-//   ?demo=wallet      wallet with the welcome bonus in the journal
+//   ?demo=wallet      wallet with the welcome bonus and a promotion compensation in the journal
 // Without ?demo the app opens on home; accepting an order and the trip
 // actions work against the in-memory API.
 
@@ -31,6 +31,8 @@ import {
 
 const city = { id: 'c0a80001-0000-4000-8000-000000000001', code: 'EMB', name: { kk: 'Ембі', ru: 'Эмба', en: 'Emba' } }
 const ORDER_ID = '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d34'
+/** An earlier trip of this driver whose passenger used a coupon (journal only). */
+const PROMO_ORDER_ID = '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d19'
 const TOPUP_ID = '3e9b7a10-5c2d-4f8e-9a1b-000000000123'
 /** Real payee of driver top-ups (Kaspi Pay link of the operator). */
 const PAYEE = 'ИП "JAN-TAXI", БИН 000809500289'
@@ -118,6 +120,8 @@ const VEHICLE_CLASSES = [
 ] as const
 
 const COMMISSION = 50
+/** The passenger's first-ride coupon (§23.6): the driver collects the rest in cash, Jan Taxi credits this after the ride. */
+const COUPON = 400
 
 function className(code: string) {
   return VEHICLE_CLASSES.find((c) => c.code === code)?.name ?? null
@@ -132,6 +136,8 @@ interface CardSpec {
   cargo_size: 's' | 'm' | 'l' | 'xl' | null
   places: readonly DemoPlace[]
   fare: number
+  /** The passenger's promotion discount; 0 without one. */
+  promo: number
   distance_m: number
   duration_s: number
   to_pickup_m: number
@@ -141,9 +147,9 @@ interface CardSpec {
 }
 
 const CARDS: readonly [CardSpec, CardSpec, CardSpec] = [
-  { id: ORDER_ID, number: 1024, category: 'taxi', vehicle_class: 'sedan', passengers: 3, cargo_size: null, places: STOPS, fare: 700, distance_m: ROUTE.distance_m, duration_s: ROUTE.duration_s, to_pickup_m: 1200, age_s: 120, comment: '2-кіреберіс, сыртта күтемін', cargo: null },
-  { id: '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d35', number: 1025, category: 'parcel', vehicle_class: 'sedan', passengers: null, cargo_size: 'm', places: [STOPS[1], PLACES[1]], fare: 900, distance_m: 4100, duration_s: 540, to_pickup_m: 2500, age_s: 300, comment: null, cargo: 'Конверттегі құжаттар' },
-  { id: '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d36', number: 1026, category: 'taxi', vehicle_class: 'sedan', passengers: 1, cargo_size: null, places: [PLACES[0], PLACES[2]], fare: 550, distance_m: 2300, duration_s: 360, to_pickup_m: 800, age_s: 480, comment: null, cargo: null },
+  { id: ORDER_ID, number: 1024, category: 'taxi', vehicle_class: 'sedan', passengers: 3, cargo_size: null, places: STOPS, fare: 700, promo: 0, distance_m: ROUTE.distance_m, duration_s: ROUTE.duration_s, to_pickup_m: 1200, age_s: 120, comment: '2-кіреберіс, сыртта күтемін', cargo: null },
+  { id: '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d35', number: 1025, category: 'parcel', vehicle_class: 'sedan', passengers: null, cargo_size: 'm', places: [STOPS[1], PLACES[1]], fare: 900, promo: 0, distance_m: 4100, duration_s: 540, to_pickup_m: 2500, age_s: 300, comment: null, cargo: 'Конверттегі құжаттар' },
+  { id: '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d36', number: 1026, category: 'taxi', vehicle_class: 'sedan', passengers: 1, cargo_size: null, places: [PLACES[0], PLACES[2]], fare: 600, promo: COUPON, distance_m: 2300, duration_s: 360, to_pickup_m: 800, age_s: 480, comment: null, cargo: null },
 ]
 
 function card(c: CardSpec) {
@@ -160,6 +166,8 @@ function card(c: CardSpec) {
     fare: c.fare,
     currency: 'KZT',
     commission_amount: COMMISSION,
+    promo_discount: c.promo,
+    cash_due: c.fare - c.promo,
     vehicle_class: c.vehicle_class,
     vehicle_class_name: className(c.vehicle_class),
     passenger_count: c.passengers,
@@ -185,6 +193,11 @@ function detail(c: CardSpec) {
     is_mine: mine,
     recipient_phone: null,
     commission_bps: 1000,
+    // As the driver API sends it: how the passenger paid (kind, title) is withheld.
+    promotion:
+      c.promo > 0
+        ? { kind: '', title: null, discount: c.promo, gross_fare: c.fare, cash_due: c.fare - c.promo, status: 'reserved', compensation: null, settled_at: null }
+        : null,
     stops: c.places.map((p, i) => ({
       id: `5e0d0000-0000-4000-8000-00000000000${i + 1}`,
       seq: i,
@@ -226,9 +239,11 @@ const wallet = () => {
 
 const ledger = () => {
   const welcome = { id: 1, entry_type: 'bonus_credit', balance_delta: 500, reserved_delta: 0, balance_after: 500, reserved_after: 0, currency: 'KZT', order_id: null, order_number: null, topup_id: null, topup_reference: null, description: 'welcome bonus', created_at: isoAgo(30 * 86_400) }
-  const topped = { ...welcome, id: 2, entry_type: 'topup_credit', balance_delta: 3900, balance_after: 4400, topup_id: TOPUP_ID, topup_reference: 'EMB001-TOPUP-000122', description: null, created_at: isoAgo(2 * 86_400) }
-  const charge = { ...welcome, id: 3, entry_type: 'commission_charge', balance_delta: -COMMISSION, balance_after: 4400 - COMMISSION, order_id: ORDER_ID, order_number: 1024, description: null, created_at: new Date().toISOString() }
-  return (accepted ? [charge, topped, welcome] : [topped, welcome])
+  const topped = { ...welcome, id: 2, entry_type: 'topup_credit', balance_delta: 3500, balance_after: 4000, topup_id: TOPUP_ID, topup_reference: 'EMB001-TOPUP-000122', description: null, created_at: isoAgo(2 * 86_400) }
+  // Order №1019 was paid partly with a passenger's coupon: Jan Taxi credited its part after the ride.
+  const promo = { ...welcome, id: 3, entry_type: 'promo_compensation', balance_delta: COUPON, balance_after: 4400, order_id: PROMO_ORDER_ID, order_number: 1019, description: 'promotion compensation', created_at: isoAgo(5 * 3600) }
+  const charge = { ...welcome, id: 4, entry_type: 'commission_charge', balance_delta: -COMMISSION, balance_after: 4400 - COMMISSION, order_id: ORDER_ID, order_number: 1024, description: null, created_at: new Date().toISOString() }
+  return (accepted ? [charge, promo, topped, welcome] : [promo, topped, welcome])
 }
 
 const topup = () => ({

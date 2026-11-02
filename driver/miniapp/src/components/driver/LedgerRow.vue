@@ -4,7 +4,8 @@
   out; reservations (orders accepted before the v2 rules) only change the
   reserved part and are shown in gray. A bonus from Jan Taxi (welcome bonus
   or one from an administrator, with the administrator's comment) carries a
-  gift mark.
+  gift mark. Jan Taxi's part of a passenger's promotion (§23.6) comes in with
+  its order after the ride; an operator taking it back goes out.
 -->
 <script setup lang="ts">
 import { Gift } from '@lucide/vue'

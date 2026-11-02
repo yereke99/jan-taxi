@@ -1,6 +1,6 @@
 // Driver components: the registration's body type row and IIN field (§11,
-// §21), passenger contact on the trip (§22.4/§22.5) and bonus rows in the
-// wallet (§22.1/§22.7).
+// §21), passenger contact on the trip (§22.4/§22.5), bonus rows in the
+// wallet (§22.1/§22.7) and promotion compensation rows (§23.6).
 
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
@@ -190,5 +190,49 @@ describe('LedgerRow bonuses', () => {
     const w = mount(LedgerRow, { props: { entry: entry({ balance_delta: 1000, description: 'Үздік жүргізуші' }) }, ...mountOpts() })
     expect(w.text()).toContain('Jan Taxi бонусы')
     expect(w.text()).toContain('«Үздік жүргізуші»')
+  })
+})
+
+describe('LedgerRow promotion compensation', () => {
+  /** Money is formatted with no-break spaces. */
+  const plain = (s: string) => s.replace(/\u00a0/g, ' ')
+  const entry = (over: Partial<LedgerEntry>): LedgerEntry => ({
+    id: 7,
+    entry_type: 'promo_compensation',
+    balance_delta: 400,
+    reserved_delta: 0,
+    balance_after: 4400,
+    reserved_after: 0,
+    currency: 'KZT',
+    order_id: 'o1',
+    order_number: 1019,
+    topup_id: null,
+    topup_reference: null,
+    description: 'promotion compensation',
+    created_at: '2026-11-02T10:20:00Z',
+    ...over,
+  })
+  const reversal = (): LedgerEntry =>
+    entry({ id: 8, entry_type: 'promo_compensation_reversal', balance_delta: -400, balance_after: 4000, description: 'Жолаушы шағымы бойынша' })
+
+  it.each([
+    ['kk', 'Акция бойынша өтемақы', 'Акция өтемақысы қайтарып алынды', 'Тапсырыс №1019'],
+    ['ru', 'Компенсация по акции', 'Компенсация по акции отозвана', 'Заказ №1019'],
+    ['en', 'Promotion compensation', 'Promotion compensation reversed', 'Order #1019'],
+  ] as const)('%s: the credit comes in with its order, the reversal goes out', (locale, credit, reversed, order) => {
+    i18n.global.locale.value = locale
+    const w = mount(LedgerRow, { props: { entry: entry({}) }, ...mountOpts() })
+    expect(w.find('.lrow__title').text()).toBe(credit)
+    expect(w.find('.lrow__sub').text()).toContain(order)
+    expect(w.find('.lrow__sub').text()).not.toContain('promotion compensation')
+    expect(w.find('.lrow__amount').classes()).toContain('is-in')
+    expect(plain(w.find('.lrow__amount > span').text())).toBe('+400 ₸')
+    expect(w.find('.lrow__gift').exists()).toBe(false)
+
+    const back = mount(LedgerRow, { props: { entry: reversal() }, ...mountOpts() })
+    expect(back.find('.lrow__title').text()).toBe(reversed)
+    expect(back.find('.lrow__sub').text()).toContain(order)
+    expect(back.find('.lrow__amount').classes()).toContain('is-out')
+    expect(plain(back.find('.lrow__amount > span').text())).toBe('−400 ₸')
   })
 })

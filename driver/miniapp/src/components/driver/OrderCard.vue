@@ -1,6 +1,8 @@
 <!--
   Available order card: category with how long ago it was placed and the
-  distance from the driver, the fare, then the settlement of pickup A and
+  distance from the driver, the fare (with a passenger's promotion, §23.6,
+  one line under it: the cash to collect and Jan Taxi's part, credited to
+  the wallet after the ride), then the settlement of pickup A and
   A → final destination (an address the passenger wrote is shown as written,
   with one muted line saying so) with +N stops, trip distance and duration,
   the requested vehicle class with the passenger count or cargo size (§21),
@@ -84,13 +86,19 @@ function accept(): void {
 <template>
   <article class="ocard">
     <button type="button" class="ocard__open" @click="emit('open', order.id)">
-      <div class="ocard__top">
-        <span class="ocard__icon"><CategoryIcon :category="order.category" :size="22" /></span>
-        <span class="ocard__head">
-          <span class="ocard__cat">{{ t(`category.${order.category}`) }}</span>
-          <span class="ocard__meta jt-tabular">{{ meta }}</span>
-        </span>
-        <span class="ocard__amount jt-tabular">{{ fmt.money(order.fare) }}</span>
+      <div class="ocard__header">
+        <div class="ocard__top">
+          <span class="ocard__icon"><CategoryIcon :category="order.category" :size="22" /></span>
+          <span class="ocard__head">
+            <span class="ocard__cat">{{ t(`category.${order.category}`) }}</span>
+            <span class="ocard__meta jt-tabular">{{ meta }}</span>
+          </span>
+          <span class="ocard__amount jt-tabular">{{ fmt.money(order.fare) }}</span>
+        </div>
+        <p v-if="order.promo_discount > 0" class="ocard__promo jt-tabular">
+          <span>{{ t('promo.passenger_pays', { amount: fmt.money(order.cash_due) }) }}</span> ·
+          <span class="ocard__promo-mark">{{ t('promo.mark', { amount: fmt.money(order.promo_discount) }) }}</span>
+        </p>
       </div>
 
       <div class="ocard__body">
@@ -161,12 +169,30 @@ function accept(): void {
   text-align: left;
 }
 
+.ocard__header {
+  padding-bottom: var(--jt-space-3);
+  border-bottom: var(--jt-hairline) solid var(--jt-color-separator);
+}
+
 .ocard__top {
   display: flex;
   align-items: center;
   gap: var(--jt-space-3);
-  padding-bottom: var(--jt-space-3);
-  border-bottom: var(--jt-hairline) solid var(--jt-color-separator);
+}
+
+/* The cash to collect, then Jan Taxi's part in green (money in); a long line breaks between them. */
+.ocard__promo {
+  margin-top: var(--jt-space-2);
+  font: var(--jt-font-subheadline);
+  font-weight: 600;
+}
+
+.ocard__promo span {
+  white-space: nowrap;
+}
+
+.ocard__promo-mark {
+  color: var(--jt-color-green-text);
 }
 
 .ocard__icon {

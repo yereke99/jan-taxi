@@ -131,6 +131,17 @@ export const en: DriverMessages = {
     your_location: 'Your location',
     fit_route: 'Show the whole route',
   },
+  promo: {
+    passenger_pays: 'From the passenger: {amount}',
+    mark: '+{amount} promotion',
+    cash_due: 'Collect from the passenger',
+    title: 'Jan Taxi promotion',
+    status: {
+      reserved: 'Goes to your balance after the ride',
+      settled: 'Credited to your balance',
+      reversed: 'Reversed',
+    },
+  },
   trip: {
     whatsapp_passenger: "Message passenger on WhatsApp",
     copy_passenger_phone: "Copy passenger number",
@@ -219,6 +230,8 @@ export const en: DriverMessages = {
       adjustment_credit: 'Adjustment: credit',
       adjustment_debit: 'Adjustment: debit',
       bonus_credit: 'Jan Taxi bonus',
+      promo_compensation: 'Promotion compensation',
+      promo_compensation_reversal: 'Promotion compensation reversed',
     },
     topup_confirmed_toast: 'Payment confirmed, balance topped up',
     welcome_bonus: 'Welcome bonus',

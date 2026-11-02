@@ -34,6 +34,41 @@ export interface OrderPlace {
   tariff_region: TariffRegion | null
 }
 
+/**
+ * A passenger's coupon or bonus on an order (§23.6): promo_discount comes off
+ * what the passenger pays (0 without one) and cash_due = fare - promo_discount
+ * is the cash the driver collects; Jan Taxi credits the discount to the
+ * driver's wallet when the ride completes. The fare never changes.
+ */
+export interface PromoAmounts {
+  promo_discount: number
+  cash_due: number
+}
+
+export const PROMOTION_STATUSES = ['reserved', 'released', 'settled', 'reversed'] as const
+/**
+ * reserved: credited after the ride; released: the order was cancelled and
+ * nothing is credited; settled: credited; reversed: an operator took it back.
+ */
+export type PromotionStatus = (typeof PROMOTION_STATUSES)[number]
+
+/**
+ * The promotion of an order as the driver sees it (marketing.OrderPromotion).
+ * How the passenger paid is not the driver's business: kind is "" and title
+ * null for drivers.
+ */
+export interface OrderPromotion {
+  kind: string
+  title: LocalizedText | null
+  discount: number
+  gross_fare: number
+  cash_due: number
+  status: PromotionStatus
+  /** What the driver's wallet was credited; null until the ride completes. */
+  compensation: number | null
+  settled_at: string | null
+}
+
 export interface CursorList<T> {
   items: T[]
   next_cursor: string | null
@@ -315,7 +350,7 @@ export interface Eligibility {
   reason: EligibilityReason | null
 }
 
-export interface DriverOrderCard extends OrderLoad, OrderPlace {
+export interface DriverOrderCard extends OrderLoad, OrderPlace, PromoAmounts {
   id: string
   number: number
   category: Category
@@ -379,7 +414,7 @@ export interface OrderEvent {
   created_at: string
 }
 
-export interface DriverOrderDetail extends OrderLoad, OrderPlace {
+export interface DriverOrderDetail extends OrderLoad, OrderPlace, PromoAmounts {
   id: string
   number: number
   status: OrderStatus
@@ -397,6 +432,8 @@ export interface DriverOrderDetail extends OrderLoad, OrderPlace {
   /** What the wallet paid for this order (charges minus refunds); kept when the passenger cancels (§22.2). */
   commission_charged: number
   payment_method: PaymentMethod
+  /** The passenger's promotion with its state; null without one. */
+  promotion: OrderPromotion | null
   distance_m: number | null
   duration_s: number | null
   distance_to_pickup_m: number | null
@@ -425,7 +462,7 @@ export interface DriverOrderDetail extends OrderLoad, OrderPlace {
   cancelled_at: string | null
 }
 
-export interface DriverOrderSummary extends OrderLoad, OrderPlace {
+export interface DriverOrderSummary extends OrderLoad, OrderPlace, PromoAmounts {
   id: string
   number: number
   status: OrderStatus
@@ -468,6 +505,10 @@ export type LedgerEntryType =
   | 'adjustment_debit'
   /** Welcome bonus on first approval or a manual bonus from Jan Taxi (§22.1, §22.7). */
   | 'bonus_credit'
+  /** The discount of a passenger's promotion, credited when the ride completes (§23.6). */
+  | 'promo_compensation'
+  /** An operator took a promotion compensation back. */
+  | 'promo_compensation_reversal'
 
 export interface LedgerEntry {
   id: number

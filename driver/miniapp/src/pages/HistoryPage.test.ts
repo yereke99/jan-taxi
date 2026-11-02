@@ -1,6 +1,8 @@
 // Trip history rows read pickup A → destination: the passenger's own words
 // exactly as written (a typed pickup A, a manual destination), any other
-// address through the "Point on the map" filter.
+// address through the "Point on the map" filter. A completed trip with a
+// passenger's promotion (§23.6) carries a small mark with Jan Taxi's part
+// next to its fare; the totals stay on fares.
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -20,7 +22,10 @@ vi.mock('../api/orders', async (importOriginal) => {
 const mocked = vi.mocked(api)
 const COORDS = '48.826400, 58.144200'
 
-function row(id: string, pickup: Record<string, unknown>, destination: Record<string, unknown>) {
+/** Money is formatted with no-break spaces. */
+const plain = (s: string) => s.replace(/\u00a0/g, ' ')
+
+function row(id: string, pickup: Record<string, unknown>, destination: Record<string, unknown>, over: Record<string, unknown> = {}) {
   return normalizeSummary({
     id,
     number: 1031,
@@ -39,7 +44,17 @@ function row(id: string, pickup: Record<string, unknown>, destination: Record<st
     completed_at: '2026-11-01T09:20:00Z',
     cancelled_at: null,
     cancelled_by: null,
+    ...over,
   })
+}
+
+async function mountHistory() {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/history', name: ROUTE.history, component: HistoryPage }] })
+  await router.push('/history')
+  await router.isReady()
+  const w = mount(HistoryPage, { global: { plugins: [i18n, router] } })
+  await flushPromises()
+  return w
 }
 
 beforeEach(() => {
@@ -56,11 +71,39 @@ describe('HistoryPage', () => {
       ],
       next_cursor: null,
     })
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/history', name: ROUTE.history, component: HistoryPage }] })
-    await router.push('/history')
-    await router.isReady()
-    const w = mount(HistoryPage, { global: { plugins: [i18n, router] } })
-    await flushPromises()
+    const w = await mountHistory()
     expect(w.findAll('.hist__route').map((p) => p.text())).toEqual([`${COORDS} → Әженің үйі`, 'Картадағы нүкте → Ембі базары'])
+  })
+
+  it("marks Jan Taxi's part next to the fare of a completed trip with a promotion; the totals stay on fares", async () => {
+    const place = { address: 'Абай көшесі, 12' }
+    const to = { address: 'Ембі базары' }
+    mocked.listHistory.mockResolvedValue({
+      items: [
+        row('o1', place, to, { fare: 1500, promo_discount: 400, cash_due: 1100 }),
+        row('o2', place, to),
+        // A cancelled order's promotion credited nothing.
+        row('o3', place, to, { status: 'cancelled', fare: 1000, promo_discount: 400, cash_due: 600, completed_at: null, cancelled_at: '2026-11-01T09:10:00Z', cancelled_by: 'passenger' }),
+      ],
+      next_cursor: null,
+    })
+    const w = await mountHistory()
+    const items = w.findAll('.hist__item')
+    expect(plain(items[0]!.find('.hist__promo').text())).toBe('+400 ₸ акция')
+    expect(plain(items[0]!.find('.hist__money').text())).toBe('1 500 ₸')
+    expect(items[1]!.find('.hist__promo').exists()).toBe(false)
+    expect(items[2]!.find('.hist__promo').exists()).toBe(false)
+    expect(plain(w.find('.hist__totals-value').text())).toBe('2 200 ₸')
+    expect(w.text()).not.toMatch(/омисси/)
+  })
+
+  it('names the mark in the chosen language', async () => {
+    i18n.global.locale.value = 'en'
+    mocked.listHistory.mockResolvedValue({
+      items: [row('o1', { address: 'Абай көшесі, 12' }, { address: 'Ембі базары' }, { fare: 1500, promo_discount: 400, cash_due: 1100 })],
+      next_cursor: null,
+    })
+    const w = await mountHistory()
+    expect(plain(w.find('.hist__promo').text())).toBe('+400 ₸ promotion')
   })
 })

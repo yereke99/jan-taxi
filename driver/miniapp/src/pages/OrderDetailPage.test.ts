@@ -2,7 +2,8 @@
 // (it is still charged on acceptance, §22.2), and a 402 insufficient_balance
 // keeps the order on screen with a plain top-up request and button — never
 // the amount the order needs, which is its commission. A route with a manual
-// stop has no metrics: one chip says so instead of dashes.
+// stop has no metrics: one chip says so instead of dashes. With a passenger's
+// promotion (§23.6) the fare rows add the cash to collect and Jan Taxi's part.
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -142,6 +143,36 @@ describe('OrderDetailPage', () => {
     mocked.getOrder.mockResolvedValue(order({ distance_m: null }))
     const { w: other } = await mountPage()
     expect(chips(other)).toEqual(['14 мин', 'Сізден 1,2 км'])
+  })
+
+  it("a passenger's promotion: the fare stays, with the cash to collect and Jan Taxi's part after the ride", async () => {
+    const promotion = { kind: '', title: null, discount: 400, gross_fare: 1500, cash_due: 1100, status: 'reserved', compensation: null, settled_at: null }
+    mocked.getOrder.mockResolvedValue(order({ fare: 1500, promo_discount: 400, cash_due: 1100, promotion }))
+    const { w } = await mountPage()
+    expect(plain(w.find('.odetail__title').text())).toContain('1 500 ₸')
+    const text = plain(w.text())
+    expect(text).toContain('Жолаушыдан алу')
+    expect(text).toContain('1 100 ₸')
+    expect(text).toContain('Jan Taxi акциясы')
+    expect(text).toContain('+400 ₸')
+    expect(text).toContain('Сапардан кейін балансқа түседі')
+    expect(text).not.toMatch(/омисси/)
+    expect(text).not.toContain('50 ₸')
+    expect(w.find('footer').text()).toContain('Тапсырысты алу')
+  })
+
+  it("a past trip: a credited part says so, a cancelled order's promotion is not shown", async () => {
+    const promotion = { kind: '', title: null, discount: 400, gross_fare: 1500, cash_due: 1100, compensation: 400, settled_at: '2026-11-02T10:20:00Z' }
+    const past = { is_mine: true, can_accept: false, fare: 1500, promo_discount: 400, cash_due: 1100 }
+    mocked.getOrder.mockResolvedValue(order({ ...past, status: 'completed', promotion: { ...promotion, status: 'settled' } }))
+    const { w } = await mountPage()
+    expect(plain(w.text())).toContain('Балансқа түсті')
+    mocked.getOrder.mockResolvedValue(
+      order({ ...past, status: 'cancelled', cancelled_by: 'passenger', promotion: { ...promotion, status: 'released', compensation: null, settled_at: null } }),
+    )
+    const { w: cancelled } = await mountPage()
+    expect(cancelled.text()).not.toContain('Jan Taxi акциясы')
+    expect(cancelled.text()).not.toContain('Жолаушыдан алу')
   })
 
   it('a 402 keeps the order open with a top-up request and button, never the amount the order needs', async () => {

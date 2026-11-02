@@ -66,6 +66,39 @@ describe('passenger-written addresses (§3, §5)', () => {
   })
 })
 
+describe('passenger promotions (§23.6)', () => {
+  const promotion = { kind: '', title: null, discount: 400, gross_fare: 1500, cash_due: 1100, status: 'reserved', compensation: null, settled_at: null }
+
+  it('keeps the discount and the cash the driver collects on cards, details and history rows', () => {
+    expect(normalizeCard({ id: 'o1', fare: 1500, promo_discount: 400, cash_due: 1100 })).toMatchObject({ fare: 1500, promo_discount: 400, cash_due: 1100 })
+    expect(normalizeSummary({ id: 'o1', status: 'completed', fare: 1500, promo_discount: 400, cash_due: 1100 })).toMatchObject({ promo_discount: 400, cash_due: 1100 })
+    const d = normalizeDetail({ id: 'o1', fare: 1500, promo_discount: 400, cash_due: 1100, promotion })
+    expect(d).toMatchObject({ fare: 1500, promo_discount: 400, cash_due: 1100 })
+    expect(d.promotion).toEqual(promotion)
+  })
+
+  it('an order without a promotion: no discount, the passenger pays the fare', () => {
+    expect(normalizeCard({ id: 'o1', fare: 700 })).toMatchObject({ promo_discount: 0, cash_due: 700 })
+    expect(normalizeSummary({ id: 'o1', fare: 700, promo_discount: null })).toMatchObject({ promo_discount: 0, cash_due: 700 })
+    expect(normalizeDetail({ id: 'o1', fare: 700 })).toMatchObject({ promo_discount: 0, cash_due: 700, promotion: null })
+  })
+
+  it('reads a promotion without a discount or in an unknown state as none', () => {
+    expect(normalizeDetail({ id: 'o1', promotion: { ...promotion, status: 'frozen' } }).promotion).toBeNull()
+    expect(normalizeDetail({ id: 'o1', promotion: { ...promotion, discount: 0 } }).promotion).toBeNull()
+    expect(normalizeDetail({ id: 'o1', promotion: 'coupon' }).promotion).toBeNull()
+  })
+
+  it('keeps the credit once the ride completed', () => {
+    const settled = { ...promotion, status: 'settled', compensation: 400, settled_at: '2026-11-02T10:20:00Z' }
+    expect(normalizeDetail({ id: 'o1', status: 'completed', promotion: settled }).promotion).toMatchObject({
+      status: 'settled',
+      compensation: 400,
+      settled_at: '2026-11-02T10:20:00Z',
+    })
+  })
+})
+
 describe('passenger contact (§22.4/§22.5)', () => {
   it('opens only Telegram chat links', () => {
     expect(safeTelegramUrl('https://t.me/aigerim_k')).toBe('https://t.me/aigerim_k')

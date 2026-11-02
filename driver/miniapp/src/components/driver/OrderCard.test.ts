@@ -2,7 +2,9 @@
 // button of its own next to (never inside) the button that opens the order,
 // so taking an order never opens it and opening never takes it. It shows the
 // fare, never the commission, drops unknown route metrics, and shows an
-// address the passenger wrote as written, with one line saying so.
+// address the passenger wrote as written, with one line saying so. With a
+// passenger's promotion one line under the fare says how much cash to take
+// and how much Jan Taxi adds.
 
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -22,6 +24,8 @@ function card(over: Partial<DriverOrderCard> = {}): DriverOrderCard {
     fare: 400,
     currency: 'KZT',
     commission_amount: 50,
+    promo_discount: 0,
+    cash_due: 400,
     distance_m: 3200,
     duration_s: 480,
     distance_to_pickup_m: 20,
@@ -105,6 +109,32 @@ describe('OrderCard', () => {
     expect(text).toContain('үйге')
     expect(text).toContain('Седан')
     expect(text).not.toMatch(/омисси|50 ₸/)
+  })
+
+  it.each([
+    ['kk', 'Жолаушыдан: 1 100 ₸ · +400 ₸ акция'],
+    ['ru', 'С пассажира: 1 100 ₸ · +400 ₸ акция'],
+    ['en', 'From the passenger: 1,100 ₸ · +400 ₸ promotion'],
+  ] as const)("%s: a passenger's promotion keeps the fare and adds the cash to take and Jan Taxi's part", (locale, line) => {
+    i18n.global.locale.value = locale
+    const w = mountCard({ order: card({ fare: 1500, promo_discount: 400, cash_due: 1100 }) })
+    expect(plain(w.find('.ocard__amount').text())).toBe(locale === 'en' ? '1,500 ₸' : '1 500 ₸')
+    expect(plain(w.find('.ocard__promo').text())).toBe(line)
+    expect(plain(w.find('.ocard__promo-mark').text())).toBe(locale === 'en' ? '+400 ₸ promotion' : '+400 ₸ акция')
+    expect(w.text()).not.toMatch(/омисси|ommission/)
+  })
+
+  it('without a promotion there is no promotion line', () => {
+    expect(mountCard().find('.ocard__promo').exists()).toBe(false)
+  })
+
+  it('the accept button stays the same with a promotion', async () => {
+    const w = mountCard({ order: card({ fare: 1500, promo_discount: 400, cash_due: 1100 }) })
+    const accept = w.find('.ocard__accept')
+    expect(accept.text()).toBe('Тапсырысты алу')
+    expect(plain(accept.attributes('aria-label')!)).toBe('Тапсырысты алу · 1 500 ₸')
+    await accept.trigger('click')
+    expect(w.emitted('accept')).toEqual([[card().id]])
   })
 
   it('leaves out unknown route metrics instead of dashes', () => {

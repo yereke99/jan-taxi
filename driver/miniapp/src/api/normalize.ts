@@ -6,6 +6,7 @@ import { isUnnamedPlace } from '../utils/text'
 import {
   CARGO_SIZES,
   CORRECTION_REASONS,
+  PROMOTION_STATUSES,
   REGISTRATION_FIELDS,
   type CargoSize,
   type CityRef,
@@ -16,6 +17,9 @@ import {
   type OrderLoad,
   type OrderPassenger,
   type OrderPlace,
+  type OrderPromotion,
+  type PromoAmounts,
+  type PromotionStatus,
   type RegistrationField,
   type RegistrationHistoryItem,
   type StopSummary,
@@ -158,6 +162,38 @@ export function normalizeOrderPlace(v: unknown): OrderPlace {
   return {
     locality: localityOrNull(r.locality),
     tariff_region: str(region.code) && name ? { code: str(region.code), name } : null,
+  }
+}
+
+/**
+ * The promotion amounts of an order view (§23.6). An API without them reads
+ * as no promotion: no discount, and the passenger pays the whole fare.
+ */
+export function normalizePromoAmounts(v: unknown): PromoAmounts {
+  const r = rec(v)
+  const discount = Math.max(0, num(r.promo_discount))
+  return { promo_discount: discount, cash_due: num(r.cash_due, num(r.fare) - discount) }
+}
+
+function isPromotionStatus(v: unknown): v is PromotionStatus {
+  return (PROMOTION_STATUSES as readonly string[]).includes(str(v))
+}
+
+/** DriverOrderDetail.promotion: null without one, or when it has no discount or an unknown state. */
+export function normalizePromotion(v: unknown): OrderPromotion | null {
+  const r = rec(v)
+  const discount = num(r.discount)
+  if (!isPromotionStatus(r.status) || discount <= 0) return null
+  const gross = num(r.gross_fare)
+  return {
+    kind: str(r.kind),
+    title: localizedOrNull(r.title),
+    discount,
+    gross_fare: gross,
+    cash_due: num(r.cash_due, gross - discount),
+    status: r.status,
+    compensation: typeof r.compensation === 'number' && Number.isFinite(r.compensation) ? r.compensation : null,
+    settled_at: strOrNull(r.settled_at),
   }
 }
 

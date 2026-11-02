@@ -3,7 +3,8 @@
   accept, or one of their own. Large white map (driver → A → … → E), the
   settlement of pickup A above every stop, the requested vehicle class with passenger count or cargo size (§21),
   comment / cargo, the fare and payment method (drivers never see the
-  commission), and the sticky «Тапсырысты алу» button. Acceptance is the
+  commission; with a passenger's promotion, §23.6, also the cash to collect
+  and Jan Taxi's part), and the sticky «Тапсырысты алу» button. Acceptance is the
   same one-tap operation as on the order cards (features/orders/useAcceptOrder,
   atomic on the server): 402 asks for a top-up with a top-up button (never the
   amount the order needs: that is its commission), a taken or closed order
@@ -285,7 +286,7 @@ watch(id, () => void load())
           </template>
         </section>
 
-        <FareBreakdown class="odetail__group" :fare="order.fare" :payment-method="order.payment_method" />
+        <FareBreakdown class="odetail__group" :fare="order.fare" :payment-method="order.payment_method" :promotion="order.promotion" />
 
         <JButton v-if="twoGisUrl && !finished" class="odetail__nav" variant="secondary" block @click="openTwoGis">
           <template #icon><MapPin :size="20" :stroke-width="2" aria-hidden="true" /></template>

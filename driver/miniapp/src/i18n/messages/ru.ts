@@ -131,6 +131,17 @@ export const ru: DriverMessages = {
     your_location: 'Ваше местоположение',
     fit_route: 'Показать весь маршрут',
   },
+  promo: {
+    passenger_pays: 'С пассажира: {amount}',
+    mark: '+{amount} акция',
+    cash_due: 'Получить с пассажира',
+    title: 'Акция Jan Taxi',
+    status: {
+      reserved: 'Поступит на баланс после поездки',
+      settled: 'Зачислено на баланс',
+      reversed: 'Отозвано',
+    },
+  },
   trip: {
     whatsapp_passenger: "Написать пассажиру в WhatsApp",
     copy_passenger_phone: "Скопировать номер пассажира",
@@ -219,6 +230,8 @@ export const ru: DriverMessages = {
       adjustment_credit: 'Корректировка: зачисление',
       adjustment_debit: 'Корректировка: списание',
       bonus_credit: 'Бонус Jan Taxi',
+      promo_compensation: 'Компенсация по акции',
+      promo_compensation_reversal: 'Компенсация по акции отозвана',
     },
     topup_confirmed_toast: 'Платёж подтверждён, баланс пополнен',
     welcome_bonus: 'Приветственный бонус',

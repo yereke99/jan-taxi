@@ -1,6 +1,9 @@
 // Trip screen header: the address of the stop the driver heads to. The
 // passenger's own words (a typed pickup A, a manual stop) are shown exactly as
 // written and marked «Жолаушы көрсеткен орын»; any other address as before.
+// With a passenger's promotion (§23.6) the header names the cash to collect
+// instead of the fare, marked with Jan Taxi's part; the completion screen
+// still shows only the outcome.
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -9,6 +12,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import * as api from '../api/orders'
 import { normalizeDetail } from '../api/orders'
 import type { DriverOrderDetail } from '../api/types'
+import FareBreakdown from '../components/driver/FareBreakdown.vue'
 import { i18n } from '../i18n'
 import { ROUTE } from '../router/names'
 import { useLocationStore } from '../stores/location'
@@ -23,7 +27,18 @@ vi.mock('../api/orders', async (importOriginal) => {
 const LABEL = 'Жолаушы көрсеткен орын'
 const mocked = vi.mocked(api)
 
-function trip(status: string, stops: Array<Record<string, unknown>>): DriverOrderDetail {
+/** Money is formatted with no-break spaces. */
+const plain = (s: string) => s.replace(/\u00a0/g, ' ')
+
+/** A 1 500 ₸ ride paid partly with a 400 ₸ coupon: the driver collects 1 100 ₸ in cash. */
+const PROMO = {
+  fare: 1500,
+  promo_discount: 400,
+  cash_due: 1100,
+  promotion: { kind: '', title: null, discount: 400, gross_fare: 1500, cash_due: 1100, status: 'reserved', compensation: null, settled_at: null },
+}
+
+function trip(status: string, stops: Array<Record<string, unknown>>, over: Record<string, unknown> = {}): DriverOrderDetail {
   return normalizeDetail({
     id: '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d34',
     number: 1031,
@@ -55,6 +70,7 @@ function trip(status: string, stops: Array<Record<string, unknown>>): DriverOrde
     can_arrive: status === 'accepted',
     can_start: false,
     can_complete: false,
+    ...over,
   })
 }
 
@@ -121,6 +137,50 @@ describe('TripPage header', () => {
     const w = await mountTrip(trip('accepted', [{ address: 'Абай көшесі, 12' }, { address: 'Ембі базары' }]))
     expect(w.find('.tpage__target').text()).toBe('Абай көшесі, 12')
     expect(w.find('.tpage__head').text()).not.toContain(LABEL)
+    w.unmount()
+  })
+
+  it('without a promotion the header shows the fare', async () => {
+    const w = await mountTrip(trip('accepted', [{ address: 'Абай көшесі, 12' }, { address: 'Ембі базары' }]))
+    expect(plain(w.find('.tpage__meta').text())).toBe('№1031 · 700 ₸ · Қолма-қол')
+    expect(w.find('.tpage__cash').exists()).toBe(false)
+    expect(w.find('.tpage__promo').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it("a passenger's promotion: the header names the cash to collect instead of the fare, with Jan Taxi's part", async () => {
+    const w = await mountTrip(trip('in_progress', [{ address: 'Абай көшесі, 12', completed_at: '2026-11-02T10:00:00Z' }, { address: 'Ембі базары' }], PROMO))
+    expect(plain(w.find('.tpage__meta').text())).toBe('№1031 · Жолаушыдан: 1 100 ₸ · +400 ₸ акция · Қолма-қол')
+    expect(plain(w.find('.tpage__cash').text())).toBe('Жолаушыдан: 1 100 ₸')
+    expect(plain(w.find('.tpage__promo').text())).toBe('+400 ₸ акция')
+    expect(plain(w.find('.tpage__head').text())).not.toContain('1 500 ₸')
+    // The fare rows below keep the fare and explain the rest.
+    const fare = plain(w.findComponent(FareBreakdown).text())
+    expect(fare).toContain('Сапар құны')
+    expect(fare).toContain('1 500 ₸')
+    expect(fare).toContain('Жолаушыдан алу')
+    expect(fare).toContain('Сапардан кейін балансқа түседі')
+    expect(w.text()).not.toMatch(/омисси/)
+    w.unmount()
+  })
+
+  it.each([
+    ['ru', '№1031 · С пассажира: 1 100 ₸ · +400 ₸ акция · Наличные'],
+    ['en', '#1031 · From the passenger: 1,100 ₸ · +400 ₸ promotion · Cash'],
+  ] as const)('%s: the header line with a promotion', async (locale, line) => {
+    i18n.global.locale.value = locale
+    const w = await mountTrip(trip('accepted', [{ address: 'Абай көшесі, 12' }, { address: 'Ембі базары' }], PROMO))
+    expect(plain(w.find('.tpage__meta').text())).toBe(line)
+    w.unmount()
+  })
+
+  it('the completion screen stays the outcome only, without the fare or the promotion', async () => {
+    const stops = [{ address: 'Абай көшесі, 12', completed_at: '2026-11-02T10:00:00Z' }, { address: 'Ембі базары', completed_at: '2026-11-02T10:20:00Z' }]
+    useTripStore().apply(trip('in_progress', stops, PROMO))
+    const settled = { ...PROMO.promotion, status: 'settled', compensation: 400, settled_at: '2026-11-02T10:20:00Z' }
+    const w = await mountTrip(trip('completed', stops, { ...PROMO, promotion: settled }))
+    expect(w.find('.tpage__done-title').text()).toBe('Сапар сәтті аяқталды')
+    expect(w.find('.tpage__done').text()).not.toMatch(/₸|акция|Жолаушыдан/)
     w.unmount()
   })
 })
