@@ -144,7 +144,7 @@ func TestRegistryCoversSeedAndExtraKeys(t *testing.T) {
 		"commission.mode", "commission.fixed_amount", "commission.fixed_min", "commission.fixed_max", "driver.welcome_bonus",
 		"orders.passenger_cancels_after_accept_per_day",
 		"marketing.awards_enabled", "marketing.redemptions_enabled", "marketing.broadcasts_enabled",
-		"marketing.broadcast_rate_per_s", "marketing.broadcast_approval_threshold",
+		"marketing.broadcast_rate_per_s", "marketing.broadcast_approval_threshold", "marketing.test_recipients",
 	}
 	for _, k := range want {
 		if _, ok := Lookup(k); !ok {

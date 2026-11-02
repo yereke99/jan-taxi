@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
@@ -274,6 +276,14 @@ func saveBroadcast(ctx context.Context, tx pgx.Tx, id *uuid.UUID, in broadcastIn
 		}
 		*v = clean
 	}
+	if audience == AudienceDrivers {
+		// Drivers never read about the commission (§22.2).
+		for lang, v := range map[string]string{"kk": content.KK, "ru": content.RU, "en": content.EN} {
+			if notifications.MentionsCommission(v) {
+				fields["content."+lang] = "mentions_commission"
+			}
+		}
+	}
 	button := cur.Button
 	if in.Button != nil {
 		button = in.Button
@@ -335,7 +345,9 @@ func saveBroadcast(ctx context.Context, tx pgx.Tx, id *uuid.UUID, in broadcastIn
 // or its own filters).
 func broadcastFilters(ctx context.Context, q db.Querier, b Broadcast) (Filters, error) {
 	raw := b.Filters
-	if b.SegmentID != nil {
+	// A draft follows its saved segment; from scheduling on, the broadcast
+	// keeps the targeting that was checked (later segment edits do not move it).
+	if b.SegmentID != nil && b.Status == BroadcastDraft {
 		seg, err := loadSegment(ctx, q, *b.SegmentID)
 		if err != nil {
 			return Filters{}, err
@@ -432,9 +444,13 @@ func transitionBroadcast(ctx context.Context, tx pgx.Tx, b Broadcast, action str
 		if err := needApproval(est.Reachable); err != nil {
 			return err
 		}
+		// The checked targeting is frozen. approved_by records an approver
+		// only: a larger audience at send time needs one (startDue).
+		resolved, _ := json.Marshal(f)
 		_, err = tx.Exec(ctx, `
-			UPDATE marketing_broadcasts SET status = 'scheduled', scheduled_at = $2, approved_by = $3, approval_note = $4
-			WHERE id = $1`, b.ID, *scheduledAt, idPtr(adminID), notePtr)
+			UPDATE marketing_broadcasts SET status = 'scheduled', scheduled_at = $2, approved_by = $3, approval_note = $4,
+			       filters = $5
+			WHERE id = $1`, b.ID, *scheduledAt, approverID(adminID, canApprove), notePtr, resolved)
 		return err
 	case BroadcastActionSendNow:
 		if b.Status != BroadcastDraft && b.Status != BroadcastScheduled {
@@ -448,9 +464,9 @@ func transitionBroadcast(ctx context.Context, tx pgx.Tx, b Broadcast, action str
 			return err
 		}
 		_, err = tx.Exec(ctx, `
-			UPDATE marketing_broadcasts SET status = 'sending', started_at = now(), approved_by = $2,
+			UPDATE marketing_broadcasts SET status = 'sending', started_at = now(), approved_by = COALESCE($2, approved_by),
 			       approval_note = COALESCE($3, approval_note)
-			WHERE id = $1`, b.ID, idPtr(adminID), notePtr)
+			WHERE id = $1`, b.ID, approverID(adminID, canApprove), notePtr)
 		return err
 	case BroadcastActionPause:
 		if b.Status != BroadcastSending {
@@ -485,28 +501,44 @@ func transitionBroadcast(ctx context.Context, tx pgx.Tx, b Broadcast, action str
 // the audience's bot (found by Telegram id); it is sent even while the
 // broadcast is a draft, never to anyone else.
 func queueTest(ctx context.Context, tx pgx.Tx, b Broadcast, telegramID int64) (int64, error) {
+	if !settings.Marketing(ctx, tx).Broadcasts {
+		return 0, httpx.Conflict("broadcasts_disabled", "marketing broadcasts are switched off")
+	}
+	if b.Status != BroadcastDraft && b.Status != BroadcastScheduled {
+		return 0, httpx.NewError(409, "invalid_transition", "only a draft or scheduled broadcast can be tested").
+			WithDetails(map[string]any{"from": b.Status, "action": "test"})
+	}
+	// Only staff an approver listed may get test messages.
+	if !slices.Contains(settings.BroadcastTestRecipients(ctx, tx), telegramID) {
+		return 0, httpx.Validation(map[string]string{"telegram_user_id": "not_test_recipient"})
+	}
 	var userID uuid.UUID
 	var lang string
-	started := "u.passenger_bot_started_at"
+	var suppressed bool
+	started, blocked := "u.passenger_bot_started_at", "u.passenger_bot_blocked_at"
 	if b.Audience == AudienceDrivers {
-		started = "u.driver_bot_started_at"
+		started, blocked = "u.driver_bot_started_at", "u.driver_bot_blocked_at"
 	}
 	err := tx.QueryRow(ctx, `
-		SELECT u.id, COALESCE(p.language, 'kk') FROM users u LEFT JOIN user_preferences p ON p.user_id = u.id
-		WHERE u.telegram_user_id = $1 AND `+started+` IS NOT NULL`, telegramID).Scan(&userID, &lang)
+		SELECT u.id, COALESCE(p.language, 'kk'), p.marketing_opt_out_at IS NOT NULL OR `+blocked+` IS NOT NULL OR u.is_blocked
+		FROM users u LEFT JOIN user_preferences p ON p.user_id = u.id
+		WHERE u.telegram_user_id = $1 AND `+started+` IS NOT NULL`, telegramID).Scan(&userID, &lang, &suppressed)
 	if db.IsNoRows(err) {
 		return 0, httpx.Validation(map[string]string{"telegram_user_id": "bot_not_started"})
 	}
 	if err != nil {
 		return 0, err
 	}
-	var recent int
+	if suppressed {
+		return 0, httpx.Validation(map[string]string{"telegram_user_id": "suppressed"})
+	}
+	var perBroadcast, total int
 	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM marketing_broadcast_recipients
-		WHERE broadcast_id = $1 AND is_test AND created_at > now() - interval '1 hour'`, b.ID).Scan(&recent); err != nil {
+		SELECT count(*) FILTER (WHERE broadcast_id = $1), count(*) FROM marketing_broadcast_recipients
+		WHERE is_test AND created_at > now() - interval '1 hour'`, b.ID).Scan(&perBroadcast, &total); err != nil {
 		return 0, err
 	}
-	if recent >= 10 {
+	if perBroadcast >= 10 || total >= 30 {
 		return 0, httpx.TooManyRequests()
 	}
 	var id int64
@@ -551,4 +583,12 @@ func listRecipients(ctx context.Context, q db.Querier, broadcastID uuid.UUID, st
 		return r, err
 	})
 	return items, total, err
+}
+
+// approverID is the admin as an approver, or nil when the admin may not approve.
+func approverID(adminID uuid.UUID, canApprove bool) *uuid.UUID {
+	if !canApprove {
+		return nil
+	}
+	return idPtr(adminID)
 }

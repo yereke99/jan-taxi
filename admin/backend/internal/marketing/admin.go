@@ -275,7 +275,8 @@ func (s *Service) adminNewVersion(w http.ResponseWriter, r *http.Request) error 
 		}
 		// Changing a campaign that is (or will be) live is an approver's call;
 		// drafts are edited freely.
-		live := c.Status != StatusDraft && c.Status != StatusEnded
+		// The manual bucket counts as live: its per-credit cap is finance's.
+		live := c.Status != StatusDraft && c.Status != StatusEnded || c.Template == TemplateManualGrant
 		if live && !admin.Can(auth.PermMarketingApprove) || !live && !admin.Can(auth.PermMarketingEdit) {
 			return httpx.Forbidden()
 		}
@@ -307,6 +308,9 @@ type transitionRequest struct {
 	Reason      *string    `json:"reason"`
 	Confirm     bool       `json:"confirm"`
 	ScheduledAt *time.Time `json:"scheduled_at"`
+	// ExpectedVersion is the version the approver reviewed; a campaign
+	// changed since is refused (409 version_conflict).
+	ExpectedVersion *int `json:"expected_version"`
 }
 
 func (s *Service) adminTransition(w http.ResponseWriter, r *http.Request) error {
@@ -343,6 +347,10 @@ func (s *Service) adminTransition(w http.ResponseWriter, r *http.Request) error 
 		c, err := loadCampaign(r.Context(), tx, id, true)
 		if err != nil {
 			return err
+		}
+		if t.approve && req.ExpectedVersion != nil && *req.ExpectedVersion != c.Version {
+			return httpx.NewError(409, "version_conflict", "the campaign changed since it was reviewed").
+				WithDetails(map[string]any{"current_version": c.Version})
 		}
 		if err := applyTransition(r.Context(), tx, c, req.Action, req.ScheduledAt, admin.AdminID); err != nil {
 			return err
@@ -1037,14 +1045,17 @@ func (s *Service) adminReverseApplication(w http.ResponseWriter, r *http.Request
 			return httpx.NewError(409, "invalid_transition", "only a settled promotion can be reversed").
 				WithDetails(map[string]any{"from": status, "action": "reverse"})
 		}
+		// Lock order as in SettleOrder: promotion → bonus account → wallet.
+		var a bonusAccount
+		if kind == KindBonus {
+			if a, err = lockBonus(ctx, tx, userID); err != nil {
+				return err
+			}
+		}
 		if err := reverseCompensation(ctx, tx, *driverID, orderID, discount, *key, admin.AdminID, reason); err != nil {
 			return err
 		}
 		if kind == KindBonus {
-			a, err := lockBonus(ctx, tx, userID)
-			if err != nil {
-				return err
-			}
 			if _, err := applyBonus(ctx, tx, &a, bonusEntry{typ: BonusAdjustmentCredit, balanceDelta: discount,
 				orderID: &orderID, applicationID: &id, adminID: idPtr(admin.AdminID),
 				key: "bonus_refund:" + id.String(), description: reason}); err != nil {
@@ -1383,7 +1394,8 @@ func (s *Service) adminReconciliation(w http.ResponseWriter, r *http.Request) er
 
 // marketingSettingKeys are the app_settings keys of Marketing → Safety.
 var marketingSettingKeys = []string{"marketing.awards_enabled", "marketing.redemptions_enabled",
-	"marketing.broadcasts_enabled", "marketing.broadcast_rate_per_s", "marketing.broadcast_approval_threshold"}
+	"marketing.broadcasts_enabled", "marketing.broadcast_rate_per_s", "marketing.broadcast_approval_threshold",
+	"marketing.test_recipients"}
 
 func (s *Service) adminSettings(w http.ResponseWriter, r *http.Request) error {
 	all, err := settings.List(r.Context(), s.pool)

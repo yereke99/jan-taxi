@@ -525,3 +525,66 @@ func TestAwardsSwitchedOff(t *testing.T) {
 		t.Fatalf("events queued while off: %d", n)
 	}
 }
+
+// TestDisputeCancelledRideEarnsNothing: a first ride cancelled after
+// completion by a dispute loses its coupon even while it is reserved on the
+// next order, and a referral reward it earned is flagged for finance.
+func TestDisputeCancelledRideEarnsNothing(t *testing.T) {
+	e := newPromoEnv(t)
+	e.activate("first_ride_coupon_400")
+	e.activate("referral_300_once")
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `
+		INSERT INTO marketing_campaign_versions (campaign_id, version, title, rules)
+		SELECT id, 2, '{"kk":"Досыңды шақыр","ru":"Пригласи друга","en":"Invite a friend"}',
+		       '{"reward_amount":300,"categories":["taxi"],"attribution_window_minutes":60,"unlock":"first_ride_completed","min_ride_seconds":60}'
+		FROM marketing_campaigns WHERE key = 'referral_300_once';
+		UPDATE marketing_campaigns SET current_version = 2 WHERE key = 'referral_300_once'`); err != nil {
+		t.Fatal(err)
+	}
+	drv := e.driver(5000, true)
+	disputeCancel := func(orderID uuid.UUID, pc caller) {
+		t.Helper()
+		e.expect(e.do(pc, http.MethodPost, path("/orders/%s/dispute", orderID), map[string]any{"reason": "Сапар болмады"}),
+			http.StatusOK, "")
+		var disputeID uuid.UUID
+		if err := e.pool.QueryRow(ctx, `SELECT id FROM disputes WHERE order_id = $1 AND status = 'open'`, orderID).Scan(&disputeID); err != nil {
+			t.Fatal(err)
+		}
+		e.expect(e.resolve(disputeID, map[string]any{"outcome": "cancelled", "resolution": "Сапар болмаған", "refund_commission": false}),
+			http.StatusOK, "")
+	}
+
+	// Coupon reserved on the next order when its first ride is cancelled.
+	pid, pc := e.passenger()
+	first := e.ride(drv, pid, pc, 800, nil)
+	e.process()
+	next := e.create(pid, pc, 1500, couponPromo(400), http.StatusCreated)
+	disputeCancel(first.ID, pc)
+	e.expect(e.do(pc, http.MethodPost, path("/orders/%s/cancel", next.ID), cancelBody("changed_plans")), http.StatusOK, "")
+	var status, reason string
+	if err := e.pool.QueryRow(ctx, `SELECT status, COALESCE(void_reason, '') FROM marketing_coupons WHERE user_id = $1`, pid).
+		Scan(&status, &reason); err != nil || status != "voided" || reason != "qualifying_ride_cancelled" {
+		t.Fatalf("coupon of a cancelled first ride: %s %s %v", status, reason, err)
+	}
+
+	// The referral reward a cancelled ride earned is flagged, not kept silently.
+	aID, ac := e.passenger()
+	e.ride(drv, aID, ac, 800, nil)
+	var ref marketing.ReferralView
+	r := e.do(ac, http.MethodGet, "/promotions/referral", nil)
+	e.expect(r, http.StatusOK, "")
+	r.decode(t, &ref)
+	iID, ic := e.passenger()
+	if res, err := e.mk.CaptureReferral(ctx, iID, "ref_"+ref.Code, "bot_start"); err != nil || !res.Attributed {
+		t.Fatalf("capture: %+v %v", res, err)
+	}
+	invited := e.ride(drv, iID, ic, 800, nil)
+	e.process()
+	disputeCancel(invited.ID, ic)
+	if err := e.pool.QueryRow(ctx, `SELECT status, COALESCE(reason, '') FROM referral_attributions WHERE invitee_user_id = $1`, iID).
+		Scan(&status, &reason); err != nil || status != "rewarded" || reason != "qualifying_ride_cancelled" {
+		t.Fatalf("referral of a cancelled ride: %s %s %v", status, reason, err)
+	}
+	e.reconcile()
+}

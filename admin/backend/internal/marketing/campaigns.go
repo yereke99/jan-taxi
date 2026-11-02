@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/textutil"
@@ -103,7 +104,10 @@ func scanCampaign(row pgx.Row) (Campaign, error) {
 func loadCampaign(ctx context.Context, q db.Querier, id uuid.UUID, lock bool) (Campaign, error) {
 	sql := `SELECT ` + campaignColumns + campaignFrom + ` WHERE c.id = $1`
 	if lock {
-		sql += ` FOR UPDATE OF c`
+		// NO KEY UPDATE serialises budget checks and transitions without
+		// blocking the foreign-key checks of coupons, grants and ledger rows
+		// written meanwhile (they take FOR KEY SHARE).
+		sql += ` FOR NO KEY UPDATE OF c`
 	}
 	c, err := scanCampaign(q.QueryRow(ctx, sql, id))
 	if db.IsNoRows(err) {
@@ -306,6 +310,10 @@ func createCampaign(ctx context.Context, tx pgx.Tx, in campaignInput, adminID uu
 	}
 	title := cleanLocalized(fields, "title", in.Title, maxTitle, true)
 	desc := cleanLocalized(fields, "description", in.Description, maxDescription, false)
+	if template == TemplateDriverMilestone {
+		refuseCommission(fields, "title", title)
+		refuseCommission(fields, "description", desc)
+	}
 	if template != "" {
 		if _, rf := ParseRules(template, in.Rules); len(rf) > 0 {
 			for k, v := range rf {
@@ -421,6 +429,10 @@ func newVersion(ctx context.Context, tx pgx.Tx, c Campaign, in campaignInput, ad
 	if in.Description != nil {
 		desc = cleanLocalized(fields, "description", in.Description, maxDescription, false)
 	}
+	if c.Template == TemplateDriverMilestone {
+		refuseCommission(fields, "title", title)
+		refuseCommission(fields, "description", desc)
+	}
 	rules := c.Rules
 	if len(in.Rules) > 0 {
 		parsed, rf := ParseRules(c.Template, in.Rules)
@@ -532,9 +544,10 @@ func applyTransition(ctx context.Context, tx pgx.Tx, c Campaign, action string, 
 		return httpx.NewError(409, "invalid_transition", "campaign cannot "+action+" from "+c.Status).
 			WithDetails(map[string]any{"from": c.Status, "action": action})
 	}
-	if c.Template == TemplateManualGrant && t.to != "" && t.to != StatusArchived {
-		// The manual bucket has no lifecycle: operators' credits do not depend on it.
-		return errCampaignConflict("manual adjustments have no schedule")
+	if c.Template == TemplateManualGrant && t.to != "" {
+		// The manual bucket has no lifecycle: finance's credits depend on it,
+		// so it can be neither scheduled nor archived.
+		return errCampaignConflict("manual adjustments have no lifecycle")
 	}
 	var err error
 	switch action {
@@ -544,8 +557,19 @@ func applyTransition(ctx context.Context, tx pgx.Tx, c Campaign, action string, 
 		}
 		_, err = tx.Exec(ctx, `UPDATE marketing_campaigns SET status = 'scheduled', scheduled_at = $2, approved_by = $3 WHERE id = $1`,
 			c.ID, *scheduledAt, idPtr(adminID))
+		if err == nil && c.Template == TemplatePassengerCredit {
+			// The approver approves this audience: it is frozen now as
+			// pending grants, paid only once the campaign is active.
+			if err := beforeActivation(ctx, tx, c); err != nil {
+				return err
+			}
+			err = snapshotCredits(ctx, tx, c)
+		}
 	case ActionUnschedule:
 		_, err = tx.Exec(ctx, `UPDATE marketing_campaigns SET status = 'draft', scheduled_at = NULL WHERE id = $1`, c.ID)
+		if err == nil {
+			err = dropPendingCredits(ctx, tx, c.ID)
+		}
 	case ActionActivate, ActionResume:
 		if err := beforeActivation(ctx, tx, c); err != nil {
 			return err
@@ -558,7 +582,11 @@ func applyTransition(ctx context.Context, tx pgx.Tx, c Campaign, action string, 
 			return errCampaignConflict("another campaign of this kind is already live")
 		}
 		if err == nil && action == ActionActivate && c.Template == TemplatePassengerCredit {
-			err = snapshotCredits(ctx, tx, c)
+			var frozen bool // already snapshotted when it was scheduled
+			if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM marketing_grants WHERE campaign_id = $1)`, c.ID).
+				Scan(&frozen); err == nil && !frozen {
+				err = snapshotCredits(ctx, tx, c)
+			}
 		}
 	case ActionPause:
 		_, err = tx.Exec(ctx, `UPDATE marketing_campaigns SET status = 'paused', paused_at = now() WHERE id = $1`, c.ID)
@@ -625,13 +653,21 @@ func (s *Service) ActivateDue(ctx context.Context) error {
 				if _, err := tx.Exec(ctx, `UPDATE marketing_campaigns SET status = 'draft', scheduled_at = NULL WHERE id = $1`, id); err != nil {
 					return err
 				}
+				if err := dropPendingCredits(ctx, tx, id); err != nil {
+					return err
+				}
 			}
 		}
+		// Credits not yet paid out are not paid after the end (as ActionEnd).
 		_, err = tx.Exec(ctx, `
-			UPDATE marketing_campaigns c SET status = 'ended', ended_at = now()
-			FROM marketing_campaign_versions v
-			WHERE v.campaign_id = c.id AND v.version = c.current_version AND c.status IN ('active', 'paused')
-			  AND v.ends_at IS NOT NULL AND v.ends_at <= now()`)
+			WITH ended AS (
+				UPDATE marketing_campaigns c SET status = 'ended', ended_at = now()
+				FROM marketing_campaign_versions v
+				WHERE v.campaign_id = c.id AND v.version = c.current_version AND c.status IN ('active', 'paused')
+				  AND v.ends_at IS NOT NULL AND v.ends_at <= now()
+				RETURNING c.id)
+			UPDATE marketing_grants g SET status = 'skipped', skip_reason = 'campaign_ended'
+			FROM ended WHERE g.campaign_id = ended.id AND g.status = 'pending'`)
 		return err
 	})
 }
@@ -666,3 +702,23 @@ func listCampaigns(ctx context.Context, q db.Querier, status, template, search s
 
 // itoa is strconv.Itoa for audit ids.
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// dropPendingCredits removes the frozen audience of a passenger_credit
+// campaign that went back to draft (nothing was paid from it).
+func dropPendingCredits(ctx context.Context, tx pgx.Tx, campaignID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM marketing_grants WHERE campaign_id = $1 AND reason = 'passenger_credit' AND status = 'pending'`,
+		campaignID); err != nil {
+		return fmt.Errorf("marketing: drop pending credits: %w", err)
+	}
+	return nil
+}
+
+// refuseCommission: copy a driver reads may not name the commission (§22.2).
+func refuseCommission(fields map[string]string, name string, l settings.Localized) {
+	for lang, v := range map[string]string{"kk": l.KK, "ru": l.RU, "en": l.EN} {
+		if notifications.MentionsCommission(v) {
+			fields[name+"."+lang] = "mentions_commission"
+		}
+	}
+}

@@ -125,7 +125,7 @@ func loadRide(ctx context.Context, q db.Querier, orderID uuid.UUID) (ride, error
 	var r ride
 	err := q.QueryRow(ctx, `
 		SELECT id, number, passenger_id, driver_id, category, status, completed_at, started_at
-		FROM orders WHERE id = $1`, orderID).Scan(&r.id, &r.number, &r.passengerID, &r.driverID, &r.category,
+		FROM orders WHERE id = $1 FOR SHARE`, orderID).Scan(&r.id, &r.number, &r.passengerID, &r.driverID, &r.category,
 		&r.status, &r.completedAt, &r.startedAt)
 	return r, err
 }
@@ -258,7 +258,7 @@ func (s *Service) rewardReferral(ctx context.Context, tx pgx.Tx, c Campaign, r r
 		return "not_first_ride", nil
 	}
 	if !slices.Contains(rules.Categories, r.category) {
-		return s.decideReferral(ctx, tx, attID, r, ReferralRejected, "category_not_eligible")
+		return s.decideReferral(ctx, tx, c, attID, r, ReferralRejected, "category_not_eligible")
 	}
 	if reason, err := referralFraud(ctx, tx, referrerID, r, rules); err != nil {
 		return "", err
@@ -267,7 +267,7 @@ func (s *Service) rewardReferral(ctx context.Context, tx pgx.Tx, c Campaign, r r
 		if reason == "short_ride" {
 			decision = ReferralReview
 		}
-		return s.decideReferral(ctx, tx, attID, r, decision, reason)
+		return s.decideReferral(ctx, tx, c, attID, r, decision, reason)
 	}
 	return s.payReferral(ctx, tx, c, attID, referrerID, r.id, rules.RewardAmount, uuid.Nil)
 }
@@ -300,10 +300,14 @@ func referralFraud(ctx context.Context, q db.Querier, referrerID uuid.UUID, r ri
 	return "", nil
 }
 
-func (s *Service) decideReferral(ctx context.Context, tx pgx.Tx, attID uuid.UUID, r ride, status, reason string) (string, error) {
+// decideReferral records the outcome of a qualifying ride under campaign c,
+// which from then on owns the attribution (an approval pays from it and
+// applies its once-per-referrer cap).
+func (s *Service) decideReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID uuid.UUID, r ride, status, reason string) (string, error) {
 	_, err := tx.Exec(ctx, `
-		UPDATE referral_attributions SET status = $2, reason = $3, qualifying_order_id = $4, qualified_at = now()
-		WHERE id = $1`, attID, status, reason, r.id)
+		UPDATE referral_attributions SET status = $2, reason = $3, qualifying_order_id = $4, qualified_at = now(),
+		       campaign_id = $5, version_id = $6
+		WHERE id = $1`, attID, status, reason, r.id, c.ID, c.VersionID)
 	return "referral_" + status + ":" + reason, err
 }
 
@@ -321,8 +325,8 @@ func (s *Service) payReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID,
 	if already {
 		_, err := tx.Exec(ctx, `
 			UPDATE referral_attributions SET status = 'capped', reason = 'already_rewarded', qualifying_order_id = $2,
-			       qualified_at = COALESCE(qualified_at, now())
-			WHERE id = $1`, attID, orderID)
+			       qualified_at = COALESCE(qualified_at, now()), campaign_id = $3, version_id = $4
+			WHERE id = $1`, attID, orderID, c.ID, c.VersionID)
 		return "referral_capped", err
 	}
 	allowed, err := budgetAllows(ctx, tx, c.ID, amount)
@@ -332,8 +336,8 @@ func (s *Service) payReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID,
 	if !allowed {
 		_, err := tx.Exec(ctx, `
 			UPDATE referral_attributions SET status = 'review', reason = 'budget_exhausted', qualifying_order_id = $2,
-			       qualified_at = COALESCE(qualified_at, now())
-			WHERE id = $1`, attID, orderID)
+			       qualified_at = COALESCE(qualified_at, now()), campaign_id = $3, version_id = $4
+			WHERE id = $1`, attID, orderID, c.ID, c.VersionID)
 		return "referral_review:budget_exhausted", err
 	}
 	var grantID uuid.UUID
@@ -344,8 +348,9 @@ func (s *Service) payReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID,
 		Scan(&grantID)
 	if db.IsNoRows(err) {
 		_, err := tx.Exec(ctx, `
-			UPDATE referral_attributions SET status = 'capped', reason = 'already_rewarded', qualifying_order_id = $2
-			WHERE id = $1`, attID, orderID)
+			UPDATE referral_attributions SET status = 'capped', reason = 'already_rewarded', qualifying_order_id = $2,
+			       campaign_id = $3, version_id = $4
+			WHERE id = $1`, attID, orderID, c.ID, c.VersionID)
 		return "referral_capped", err
 	}
 	if err != nil {
@@ -357,8 +362,8 @@ func (s *Service) payReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID,
 	if _, err := tx.Exec(ctx, `
 		UPDATE referral_attributions SET status = 'rewarded', reason = NULL, qualifying_order_id = $2,
 		       qualified_at = COALESCE(qualified_at, now()), decided_at = CASE WHEN $3::uuid IS NULL THEN decided_at ELSE now() END,
-		       decided_by = COALESCE($3, decided_by)
-		WHERE id = $1`, attID, orderID, idPtr(adminID)); err != nil {
+		       decided_by = COALESCE($3, decided_by), campaign_id = $4, version_id = $5
+		WHERE id = $1`, attID, orderID, idPtr(adminID), c.ID, c.VersionID); err != nil {
 		return "", err
 	}
 	if err := notifications.Enqueue(ctx, tx, notifications.Notification{

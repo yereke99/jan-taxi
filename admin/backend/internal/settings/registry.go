@@ -493,6 +493,17 @@ var registry = []Def{
 		},
 	},
 	{
+		// Test sends reach only these people (§23.7), so a draft can never be
+		// sent to an arbitrary passenger or driver.
+		Key: "marketing.test_recipients", Kind: KindIntList, Min: 1, Max: 9_999_999_999_999, MaxItems: 20,
+		Default: []int64{},
+		Description: Localized{
+			KK: "Тест хабарламасын алатын Telegram ID-лар (ботты іске қосқан қызметкерлер)",
+			RU: "Telegram ID получателей тестовых рассылок (сотрудники, запустившие бота)",
+			EN: "Telegram ids that may receive test broadcasts (staff who started the bot)",
+		},
+	},
+	{
 		Key: "marketing.broadcast_approval_threshold", Kind: KindInt, Min: 1, Max: 10_000_000, Default: int64(100),
 		Description: Localized{
 			KK: "Алушылар саны осыдан көп рассылканы marketing.approve құқығы бар адам ғана іске қосады",

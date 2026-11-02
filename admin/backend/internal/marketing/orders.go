@@ -249,12 +249,22 @@ func ReleaseOrder(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, reason stri
 	}
 	switch kind {
 	case KindCoupon:
+		// A coupon whose own qualifying ride was cancelled meanwhile (a
+		// dispute) is voided rather than returned. The source order is read
+		// FOR SHARE so a concurrent dispute resolution is waited for.
+		var sourceCancelled bool
+		if err := tx.QueryRow(ctx, `
+			SELECT so.status = 'cancelled' FROM marketing_coupons c JOIN orders so ON so.id = c.source_order_id
+			WHERE c.id = $1 FOR SHARE OF so`, couponID).Scan(&sourceCancelled); err != nil && !db.IsNoRows(err) {
+			return 0, fmt.Errorf("marketing: release coupon: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE marketing_coupons
-			SET status = CASE WHEN expires_at > now() THEN 'issued' ELSE 'expired' END,
-			    closed_at = CASE WHEN expires_at > now() THEN NULL ELSE now() END,
+			SET status = CASE WHEN $3 THEN 'voided' WHEN expires_at > now() THEN 'issued' ELSE 'expired' END,
+			    closed_at = CASE WHEN NOT $3 AND expires_at > now() THEN NULL ELSE now() END,
+			    void_reason = CASE WHEN $3 THEN 'qualifying_ride_cancelled' ELSE void_reason END,
 			    reserved_order_id = NULL, reserved_at = NULL
-			WHERE id = $1 AND status = 'reserved' AND reserved_order_id = $2`, couponID, orderID); err != nil {
+			WHERE id = $1 AND status = 'reserved' AND reserved_order_id = $2`, couponID, orderID, sourceCancelled); err != nil {
 			return 0, fmt.Errorf("marketing: release coupon: %w", err)
 		}
 	case KindBonus:
@@ -275,14 +285,26 @@ func ReleaseOrder(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, reason stri
 	return discount, publishPromotions(ctx, tx, userID)
 }
 
-// voidEarnedCoupon voids an unused first-ride coupon whose qualifying ride
-// was cancelled after completion: "a ride that is stopped or not completed
-// earns no coupon".
+// voidEarnedCoupon handles the awards of a ride cancelled after completion
+// (a dispute): "a ride that is stopped or not completed earns nothing". Its
+// unused first-ride coupon is voided (a reserved one is voided when its order
+// ends, see ReleaseOrder and SettleOrder). A referral the ride qualified is
+// rejected while under review and flagged for finance when already paid; no
+// money moves automatically.
 func voidEarnedCoupon(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `
 		UPDATE marketing_coupons SET status = 'voided', closed_at = now(), void_reason = 'qualifying_ride_cancelled'
 		WHERE source_order_id = $1 AND status = 'issued'`, orderID); err != nil {
 		return fmt.Errorf("marketing: void earned coupon: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE referral_attributions a
+		SET status = CASE WHEN a.status = 'review' THEN 'rejected' ELSE a.status END,
+		    reason = 'qualifying_ride_cancelled'
+		FROM orders o
+		WHERE o.id = $1 AND a.invitee_user_id = o.passenger_id AND a.qualifying_order_id = o.id
+		  AND a.status IN ('review', 'rewarded')`, orderID); err != nil {
+		return fmt.Errorf("marketing: flag earned referral: %w", err)
 	}
 	return nil
 }
@@ -308,6 +330,7 @@ func SettleOrder(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) (i
 	if err != nil {
 		return 0, fmt.Errorf("marketing: settle promotion: %w", err)
 	}
+	var review *string
 	switch kind {
 	case KindCoupon:
 		tag, err := tx.Exec(ctx, `
@@ -319,6 +342,18 @@ func SettleOrder(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) (i
 		}
 		if tag.RowsAffected() != 1 {
 			return 0, fmt.Errorf("marketing: coupon of order %s is not reserved for it", orderID)
+		}
+		// The ride was done at the discounted price, so the driver is paid;
+		// finance reviews a coupon whose qualifying ride was cancelled since.
+		var sourceCancelled bool
+		if err := tx.QueryRow(ctx, `
+			SELECT so.status = 'cancelled' FROM marketing_coupons c JOIN orders so ON so.id = c.source_order_id
+			WHERE c.id = $1`, couponID).Scan(&sourceCancelled); err != nil && !db.IsNoRows(err) {
+			return 0, fmt.Errorf("marketing: redeem coupon: %w", err)
+		}
+		if sourceCancelled {
+			r := "coupon_source_cancelled"
+			review = &r
 		}
 	case KindBonus:
 		a, err := lockBonus(ctx, tx, userID)
@@ -338,8 +373,8 @@ func SettleOrder(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.UUID) (i
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE order_promotions SET status = 'settled', settled_at = now(), driver_id = $2, compensation = discount,
-		       compensation_key = $3
-		WHERE id = $1`, appID, driverID, key); err != nil {
+		       compensation_key = $3, review_reason = COALESCE($4, review_reason)
+		WHERE id = $1`, appID, driverID, key, review); err != nil {
 		return 0, fmt.Errorf("marketing: settle promotion: %w", err)
 	}
 	return discount, publishPromotions(ctx, tx, userID)

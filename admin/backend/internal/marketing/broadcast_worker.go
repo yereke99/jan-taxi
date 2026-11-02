@@ -175,9 +175,25 @@ func (w *BroadcastWorker) startDue(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if _, err := snapshotRecipients(ctx, tx, b); err != nil {
+			count, err := snapshotRecipients(ctx, tx, b)
+			if err != nil {
 				w.log.Error("broadcast snapshot failed", slog.String("broadcast", id.String()), slog.Any("err", err))
 				if _, err := tx.Exec(ctx, `UPDATE marketing_broadcasts SET status = 'failed', completed_at = now() WHERE id = $1`, id); err != nil {
+					return err
+				}
+				continue
+			}
+			// The audience grew past the approval threshold since a
+			// non-approver scheduled it: nothing is sent.
+			if b.ApprovedBy == nil && int64(count) > settings.BroadcastApprovalThreshold(ctx, tx) {
+				w.log.Warn("scheduled broadcast needs an approver", slog.String("broadcast", id.String()), slog.Int("recipients", count))
+				if _, err := tx.Exec(ctx, `
+					UPDATE marketing_broadcast_recipients SET status = 'cancelled' WHERE broadcast_id = $1 AND NOT is_test AND status = 'queued'`, id); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `
+					UPDATE marketing_broadcasts SET status = 'failed', completed_at = now(), approval_note = 'approval_required'
+					WHERE id = $1`, id); err != nil {
 					return err
 				}
 				continue
@@ -201,7 +217,7 @@ func (w *BroadcastWorker) claim(ctx context.Context, enabled bool, limit int) ([
 			FROM marketing_broadcast_recipients r JOIN marketing_broadcasts b ON b.id = r.broadcast_id
 			WHERE r.next_attempt_at <= now()
 			  AND (r.status = 'queued' OR (r.status = 'sending' AND r.locked_until < now()))
-			  AND (r.is_test OR ($1 AND b.status = 'sending'))
+			  AND $1 AND (r.is_test OR b.status = 'sending')
 			ORDER BY r.is_test DESC, r.id
 			LIMIT $2 FOR UPDATE OF r SKIP LOCKED`, enabled, limit)
 		if err != nil {
@@ -327,7 +343,7 @@ func (w *BroadcastWorker) deliver(ctx context.Context, d delivery) {
 		w.release(ctx, d, 5*time.Second)
 		return
 	}
-	if suppressed && !d.isTest {
+	if suppressed {
 		w.finish(ctx, d, RecipientSuppressed, nil, "opted out or blocked", 0, 0)
 		return
 	}
@@ -448,6 +464,15 @@ func (w *BroadcastWorker) finish(ctx context.Context, d delivery, status string,
 
 // finishBroadcasts completes sending broadcasts with nothing left to send.
 func (w *BroadcastWorker) finishBroadcasts(ctx context.Context) error {
+	// Deliveries a cancelled or failed broadcast still holds (re-queued by the
+	// batch in flight at the cancel, or leased by a crashed worker) are closed.
+	if _, err := w.pool.Exec(ctx, `
+		UPDATE marketing_broadcast_recipients r SET status = 'cancelled', locked_until = NULL
+		FROM marketing_broadcasts b
+		WHERE b.id = r.broadcast_id AND b.status IN ('cancelled', 'failed') AND NOT r.is_test
+		  AND (r.status = 'queued' OR (r.status = 'sending' AND r.locked_until < now()))`); err != nil {
+		return fmt.Errorf("marketing: close cancelled deliveries: %w", err)
+	}
 	_, err := w.pool.Exec(ctx, `
 		UPDATE marketing_broadcasts b SET status = 'completed', completed_at = now()
 		WHERE b.status = 'sending' AND NOT EXISTS (

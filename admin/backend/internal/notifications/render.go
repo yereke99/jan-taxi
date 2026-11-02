@@ -132,7 +132,14 @@ var tagRe = regexp.MustCompile(`<[^>]*>`)
 // «комиссионный», «commission» …), whatever the case, the tags or the
 // character references used.
 func mentionsCommission(body string) bool {
-	text := strings.ToLower(html.UnescapeString(tagRe.ReplaceAllString(body, "")))
+	return MentionsCommission(html.UnescapeString(tagRe.ReplaceAllString(body, "")))
+}
+
+// MentionsCommission reports whether plain text names the commission (any
+// case). Text a driver receives may not (§22.2): marketing checks broadcast
+// copy to drivers and driver campaign titles with it.
+func MentionsCommission(text string) bool {
+	text = strings.ToLower(text)
 	return strings.Contains(text, "комисси") || strings.Contains(text, "commission")
 }
 

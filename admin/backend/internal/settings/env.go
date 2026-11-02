@@ -360,3 +360,11 @@ func BroadcastRate(ctx context.Context, q db.Querier) int64 {
 func BroadcastApprovalThreshold(ctx context.Context, q db.Querier) int64 {
 	return max(effectiveInt(ctx, q, "marketing.broadcast_approval_threshold"), 1)
 }
+
+// BroadcastTestRecipients are the Telegram ids allowed to receive test
+// broadcasts.
+func BroadcastTestRecipients(ctx context.Context, q db.Querier) []int64 {
+	var ids []int64
+	_ = Effective(ctx, q, "marketing.test_recipients", &ids)
+	return ids
+}

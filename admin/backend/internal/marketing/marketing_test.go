@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -225,6 +226,15 @@ func TestAdminPermissions(t *testing.T) {
 	}
 }
 
+func (e *adminEnv) setting(key, value string) {
+	e.t.Helper()
+	if _, err := e.pool.Exec(context.Background(), `
+		INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+		key, value); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
 func countRows(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 	t.Helper()
 	var n int
@@ -297,7 +307,17 @@ func TestBroadcastPipeline(t *testing.T) {
 	if est := b["estimate"].(map[string]any); est["reachable"].(float64) != 4 || est["suppressed"].(float64) != 1 {
 		t.Fatalf("estimate: %v", est)
 	}
-	// A test send reaches one chosen person even while the broadcast is a draft.
+	// Test sends go only to people an approver listed, and never to someone
+	// who opted out; the listed person gets it even while it is a draft.
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts/"+id+"/test",
+		map[string]any{"telegram_user_id": users[0].tg}); code != 422 {
+		t.Fatalf("test send to an unlisted person: %d %v", code, body)
+	}
+	e.setting("marketing.test_recipients", fmt.Sprintf("[%d, %d]", users[0].tg, users[4].tg))
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts/"+id+"/test",
+		map[string]any{"telegram_user_id": users[4].tg}); code != 422 {
+		t.Fatalf("test send to an opted-out person: %d %v", code, body)
+	}
 	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts/"+id+"/test",
 		map[string]any{"telegram_user_id": users[0].tg}); code != 201 {
 		t.Fatalf("test send: %d %v", code, body)
@@ -435,3 +455,151 @@ func TestBroadcastApproval(t *testing.T) {
 }
 
 func itoa(i int) string { return string(rune('a' + i%26)) }
+
+// TestApprovalsHoldAtSendTime: what a non-approver scheduled cannot grow past
+// the approval threshold by send time (segment edits after scheduling do not
+// move a broadcast), and copy for drivers may not name the commission.
+func TestApprovalsHoldAtSendTime(t *testing.T) {
+	e := newAdminEnv(t)
+	ctx := context.Background()
+	e.setting("marketing.broadcast_approval_threshold", "2")
+	for range 3 {
+		id, _ := testutil.CreateUser(t, e.pool)
+		if _, err := e.pool.Exec(ctx, `UPDATE user_preferences SET language = 'ru' WHERE user_id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, seg := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/segments",
+		map[string]any{"name": "English", "audience": "passengers", "filters": map[string]any{"languages": []string{"en"}}})
+	if code != 201 {
+		t.Fatalf("segment: %d %v", code, seg)
+	}
+	_, b := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts", map[string]any{
+		"title": "Аз адамға", "audience": "passengers", "segment_id": seg["id"],
+		"content": map[string]string{"kk": "Мәтін", "ru": "Текст", "en": "Text"},
+	})
+	id := b["id"].(string)
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts/"+id+"/transition",
+		map[string]any{"action": "schedule", "scheduled_at": time.Now().Add(time.Hour).UTC(), "confirm": true}); code != 200 {
+		t.Fatalf("schedule: %d %v", code, body)
+	}
+	// Widening the segment afterwards does not move the scheduled broadcast.
+	if code, _ := e.do(auth.RoleMarketingManager, http.MethodPatch, "/marketing/segments/"+seg["id"].(string),
+		map[string]any{"filters": map[string]any{}}); code != 200 {
+		t.Fatalf("segment edit: %d", code)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE marketing_broadcasts SET scheduled_at = now() - interval '1 second' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	sender := &fakeSender{sent: map[int64]int{}, fail: map[int64]error{}}
+	worker := marketing.NewBroadcastWorker(e.pool, sender, marketing.WorkerOptions{Log: slog.New(slog.DiscardHandler)})
+	if _, err := worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var recipients *int
+	if err := e.pool.QueryRow(ctx, `SELECT status, recipient_count FROM marketing_broadcasts WHERE id = $1`, id).
+		Scan(&status, &recipients); err != nil || status != "completed" || recipients == nil || *recipients != 0 {
+		t.Fatalf("frozen targeting: %s %v %v", status, recipients, err)
+	}
+
+	// A broadcast whose audience grew past the threshold since a manager
+	// scheduled it is not sent.
+	_, b2 := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts", map[string]any{
+		"title": "Өсетін аудитория", "audience": "passengers", "filters": map[string]any{"registered_within_days": 30},
+		"content": map[string]string{"kk": "Мәтін", "ru": "Текст", "en": "Text"},
+	})
+	id2 := b2["id"].(string)
+	if _, err := e.pool.Exec(ctx, `UPDATE users SET created_at = now() - interval '60 days'`); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts/"+id2+"/transition",
+		map[string]any{"action": "schedule", "scheduled_at": time.Now().Add(time.Hour).UTC(), "confirm": true}); code != 200 {
+		t.Fatalf("schedule an empty audience: %d %v", code, body)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE users SET created_at = now()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE marketing_broadcasts SET scheduled_at = now() - interval '1 second' WHERE id = $1`, id2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.pool.QueryRow(ctx, `SELECT status FROM marketing_broadcasts WHERE id = $1`, id2).Scan(&status); err != nil || status != "failed" {
+		t.Fatalf("grown audience: %s %v", status, err)
+	}
+	if len(sender.sent) != 0 {
+		t.Fatalf("sent without approval: %v", sender.sent)
+	}
+
+	// Drivers never read about the commission.
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/broadcasts", map[string]any{
+		"title": "Жүргізушілерге", "audience": "drivers",
+		"content": map[string]string{"kk": "Бүгін комиссия 0 ₸", "ru": "Текст", "en": "Text"},
+	}); code != 422 || body["error"].(map[string]any)["fields"].(map[string]any)["content.kk"] != "mentions_commission" {
+		t.Fatalf("commission in driver copy: %d %v", code, body)
+	}
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/campaigns", map[string]any{
+		"template": "driver_milestone_bonus", "title": map[string]string{"kk": "Комиссия қайтарымы", "ru": "Бонус", "en": "Bonus"},
+		"rules":     map[string]any{"amount": 1000, "rides": 10, "categories": []string{"taxi"}},
+		"starts_at": time.Now().UTC(), "ends_at": time.Now().Add(240 * time.Hour).UTC(),
+	}); code != 422 {
+		t.Fatalf("commission in a driver campaign title: %d %v", code, body)
+	}
+}
+
+// TestManualBucketAndFrozenCredits: finance's manual-adjustment bucket can
+// be neither archived nor re-capped by a marketing manager, and a
+// passenger_credit audience is frozen when an approver schedules it.
+func TestManualBucketAndFrozenCredits(t *testing.T) {
+	e := newAdminEnv(t)
+	ctx := context.Background()
+	manual := "/marketing/campaigns/" + e.campaignID("manual_adjustments")
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, manual+"/transition", map[string]any{"action": "archive"}); code != 409 {
+		t.Fatalf("archive the manual bucket: %d %v", code, body)
+	}
+	if code, _ := e.do(auth.RoleMarketingManager, http.MethodPost, manual+"/versions",
+		map[string]any{"rules": map[string]any{"max_amount": 1000000}}); code != 403 {
+		t.Fatalf("manager re-caps manual credits: %d", code)
+	}
+
+	for range 2 {
+		testutil.CreateUser(t, e.pool)
+	}
+	_, seg := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/segments",
+		map[string]any{"name": "Барлығы", "audience": "passengers", "filters": map[string]any{}})
+	code, c := e.do(auth.RoleMarketingManager, http.MethodPost, "/marketing/campaigns", map[string]any{
+		"template": "passenger_credit", "title": map[string]string{"kk": "Сыйлық", "ru": "Подарок", "en": "Gift"},
+		"rules": map[string]any{"amount": 200, "segment_id": seg["id"]},
+	})
+	if code != 201 {
+		t.Fatalf("credit campaign: %d %v", code, c)
+	}
+	cid := c["id"].(string)
+	if code, body := e.do(auth.RoleSuperAdmin, http.MethodPost, "/marketing/campaigns/"+cid+"/transition", map[string]any{
+		"action": "schedule", "scheduled_at": time.Now().Add(time.Hour).UTC(), "reason": "Сыйлық", "confirm": true,
+		"expected_version": 1}); code != 200 {
+		t.Fatalf("schedule: %d %v", code, body)
+	}
+	if n := countRows(t, e.pool, `SELECT count(*) FROM marketing_grants WHERE campaign_id = $1 AND status = 'pending'`, cid); n != 2 {
+		t.Fatalf("frozen audience = %d", n)
+	}
+	// People who join afterwards are not part of what was approved.
+	testutil.CreateUser(t, e.pool)
+	if _, err := e.pool.Exec(ctx, `UPDATE marketing_campaigns SET scheduled_at = now() - interval '1 second' WHERE id = $1`, cid); err != nil {
+		t.Fatal(err)
+	}
+	svc := marketing.New(e.pool, marketing.Options{Log: slog.New(slog.DiscardHandler)})
+	if err := svc.ActivateDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, e.pool, `SELECT count(*) FROM marketing_grants WHERE campaign_id = $1`, cid); n != 2 {
+		t.Fatalf("grants after activation = %d", n)
+	}
+	// A version that changed since review is refused.
+	if code, body := e.do(auth.RoleSuperAdmin, http.MethodPost, "/marketing/campaigns/"+cid+"/transition", map[string]any{
+		"action": "end", "reason": "Тоқтату", "confirm": true, "expected_version": 7}); code != 409 || errCode(body) != "version_conflict" {
+		t.Fatalf("stale version: %d %v", code, body)
+	}
+}
