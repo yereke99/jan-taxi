@@ -37,7 +37,7 @@ func TestAdminLoginSessionAndCSRF(t *testing.T) {
 	csrf, _ := r.body["csrf_token"].(string)
 	a, _ := r.body["admin"].(map[string]any)
 	perms, _ := a["permissions"].([]any)
-	if csrf == "" || a["id"] != admin.ID.String() || a["role"] != "super_admin" || a["email"] != "boss@jantaxi.kz" || len(perms) != 13 {
+	if csrf == "" || a["id"] != admin.ID.String() || a["role"] != "super_admin" || a["email"] != "boss@jantaxi.kz" || len(perms) != 17 {
 		t.Fatalf("unexpected login body: %s", r.raw)
 	}
 	var setCookie *http.Cookie

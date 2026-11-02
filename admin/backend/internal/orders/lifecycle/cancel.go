@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
@@ -52,6 +53,10 @@ func Cancel(ctx context.Context, tx pgx.Tx, in CancelInput) (CancelResult, error
 	}
 	note := "order cancelled by " + in.Actor.Type
 	if res.Released, err = wallets.ReleaseForOrder(ctx, tx, in.OrderID, note); err != nil {
+		return CancelResult{}, DBError(err)
+	}
+	// A coupon or bonus reserved for the order becomes usable again (§23.6).
+	if _, err := marketing.ReleaseOrder(ctx, tx, in.OrderID, note); err != nil {
 		return CancelResult{}, DBError(err)
 	}
 	offerStatus := in.OfferStatus

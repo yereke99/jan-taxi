@@ -47,6 +47,9 @@ func (s *Service) handleTelegramAuth(app App) httpx.HandlerFunc {
 		if blocked {
 			return ErrUserBlocked
 		}
+		if app == AppPassenger && data.StartParam != "" && s.startHook != nil {
+			s.startHook(r.Context(), userID, data.StartParam)
+		}
 		token, exp, err := s.IssueAppToken(userID, app, now)
 		if err != nil {
 			return err
@@ -54,6 +57,15 @@ func (s *Service) handleTelegramAuth(app App) httpx.HandlerFunc {
 		return httpx.OK(w, telegramAuthResponse{Token: token, ExpiresAt: exp, UserID: userID})
 	}
 }
+
+// StartHook is told about the start parameter of a passenger who opened the
+// Mini App from a link (the parameter is part of the signed initData). It must
+// not fail the sign-in: errors are its own to log.
+type StartHook func(ctx context.Context, userID uuid.UUID, startParam string)
+
+// OnPassengerStart registers the start-parameter hook (e.g. referral capture).
+// Call it while wiring, before the server starts.
+func (s *Service) OnPassengerStart(h StartHook) { s.startHook = h }
 
 // upsertTelegramUser creates or refreshes the users row for a Telegram user and
 // makes sure preferences exist. The interface language always starts as Kazakh;

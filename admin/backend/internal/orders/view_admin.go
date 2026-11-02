@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/stops"
@@ -92,38 +93,42 @@ type AdminOrder struct {
 	CommissionMode     string             `json:"commission_mode"`
 	CommissionArea     *CommissionAreaRef `json:"commission_area"`
 	PaymentMethod      string             `json:"payment_method"`
-	TariffID           uuid.UUID          `json:"tariff_id"`
-	QuoteID            *uuid.UUID         `json:"quote_id"`
-	DistanceM          int                `json:"distance_m"`
-	DurationS          int                `json:"duration_s"`
-	StopCount          int                `json:"stop_count"`
-	City               CityRef            `json:"city"`
-	Stops              []stops.Stop       `json:"stops"`
-	Route              RouteSnapshot      `json:"route"`
-	Passenger          AdminPassengerRef  `json:"passenger"`
-	Driver             *DriverRef         `json:"driver"`
-	Vehicle            *Vehicle           `json:"vehicle"`
-	DriverLocation     *DriverLocation    `json:"driver_location"`
-	Offers             []OrderOffer       `json:"offers"`
-	Events             []AdminOrderEvent  `json:"events"`
-	Reservation        *WalletReservation `json:"reservation"`
-	Ledger             []LedgerRow        `json:"ledger"`
-	Dispute            *Dispute           `json:"dispute"`
-	Rating             *OrderRating       `json:"rating"`
-	CancelReason       *string            `json:"cancel_reason"`
-	CancelReasonCode   *string            `json:"cancel_reason_code"`
-	CancelledBy        *string            `json:"cancelled_by"`
-	DriverETAS         *int               `json:"driver_eta_s"`
-	DriverETAAt        *time.Time         `json:"driver_eta_at"`
-	Version            int                `json:"version"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	SearchExpiresAt    *time.Time         `json:"search_expires_at"`
-	AcceptedAt         *time.Time         `json:"accepted_at"`
-	ArrivedAt          *time.Time         `json:"arrived_at"`
-	StartedAt          *time.Time         `json:"started_at"`
-	CompletedAt        *time.Time         `json:"completed_at"`
-	CancelledAt        *time.Time         `json:"cancelled_at"`
+	// Promotion is the passenger's coupon or bonus on the order (§23.6).
+	PromoDiscount    int64                     `json:"promo_discount"`
+	CashDue          int64                     `json:"cash_due"`
+	Promotion        *marketing.OrderPromotion `json:"promotion"`
+	TariffID         uuid.UUID                 `json:"tariff_id"`
+	QuoteID          *uuid.UUID                `json:"quote_id"`
+	DistanceM        int                       `json:"distance_m"`
+	DurationS        int                       `json:"duration_s"`
+	StopCount        int                       `json:"stop_count"`
+	City             CityRef                   `json:"city"`
+	Stops            []stops.Stop              `json:"stops"`
+	Route            RouteSnapshot             `json:"route"`
+	Passenger        AdminPassengerRef         `json:"passenger"`
+	Driver           *DriverRef                `json:"driver"`
+	Vehicle          *Vehicle                  `json:"vehicle"`
+	DriverLocation   *DriverLocation           `json:"driver_location"`
+	Offers           []OrderOffer              `json:"offers"`
+	Events           []AdminOrderEvent         `json:"events"`
+	Reservation      *WalletReservation        `json:"reservation"`
+	Ledger           []LedgerRow               `json:"ledger"`
+	Dispute          *Dispute                  `json:"dispute"`
+	Rating           *OrderRating              `json:"rating"`
+	CancelReason     *string                   `json:"cancel_reason"`
+	CancelReasonCode *string                   `json:"cancel_reason_code"`
+	CancelledBy      *string                   `json:"cancelled_by"`
+	DriverETAS       *int                      `json:"driver_eta_s"`
+	DriverETAAt      *time.Time                `json:"driver_eta_at"`
+	Version          int                       `json:"version"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	UpdatedAt        time.Time                 `json:"updated_at"`
+	SearchExpiresAt  *time.Time                `json:"search_expires_at"`
+	AcceptedAt       *time.Time                `json:"accepted_at"`
+	ArrivedAt        *time.Time                `json:"arrived_at"`
+	StartedAt        *time.Time                `json:"started_at"`
+	CompletedAt      *time.Time                `json:"completed_at"`
+	CancelledAt      *time.Time                `json:"cancelled_at"`
 	// Warnings follow an assignment: offline, and one of location_required,
 	// location_stale or out_of_radius when the driver could not have taken
 	// the order themselves.
@@ -188,6 +193,12 @@ func adminOrder(ctx context.Context, q db.Querier, id uuid.UUID) (AdminOrder, er
 		DriverETAS: r.DriverETAS, DriverETAAt: r.DriverETAAt, Version: r.Version, CreatedAt: r.CreatedAt,
 		UpdatedAt: r.UpdatedAt, SearchExpiresAt: r.SearchExpiresAt, AcceptedAt: r.AcceptedAt,
 		ArrivedAt: r.ArrivedAt, StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, CancelledAt: r.CancelledAt,
+		PromoDiscount: r.PromoDiscount, CashDue: r.Fare - r.PromoDiscount,
+	}
+	if r.PromoDiscount > 0 {
+		if o.Promotion, err = marketing.LoadOrderPromotion(ctx, q, id); err != nil {
+			return AdminOrder{}, err
+		}
 	}
 	if r.Driver != nil && lifecycle.OccupiesDriver(r.Status) {
 		if o.DriverLocation, err = loadDriverLocation(ctx, q, r.Driver.ID); err != nil {

@@ -25,6 +25,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
 	"github.com/yereke99/jantaxi/admin/backend/internal/drivers/driverstest"
+	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/config"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
@@ -213,6 +214,72 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	}
 	e.wallet(b, 1900, 0)
 
+	// Marketing (§23): an approver switches the customer's two campaigns on.
+	// P4's first ride earns the 400 ₸ coupon; the second ride (1 500 ₸) uses
+	// it: P4 pays 1 100 ₸ in cash and B gets 400 ₸ on the wallet. P4 may then
+	// invite: P5 opens the Mini App from P4's link and finishes a first ride,
+	// so P4 gets 300 ₸ once; an operator credits P5 a bonus.
+	mk := marketing.New(e.pool, marketing.Options{Log: slog.New(slog.DiscardHandler)})
+	campaigns := e.admin(http.MethodGet, "/api/v1/admin/marketing/campaigns", nil, http.StatusOK)
+	campaignIDs := map[string]string{}
+	for _, it := range campaigns.body["items"].([]any) {
+		c := it.(map[string]any)
+		campaignIDs[c["key"].(string)] = c["id"].(string)
+	}
+	for _, key := range []string{"first_ride_coupon_400", "referral_300_once"} {
+		e.admin(http.MethodPost, "/api/v1/admin/marketing/campaigns/"+campaignIDs[key]+"/transition", map[string]any{
+			"action": "activate", "reason": "Акцияны іске қосу", "confirm": true}, http.StatusOK)
+	}
+	rideWithB := func(p flowUser, fare int, promo map[string]any) string {
+		o := e.createPromoOrder(p, fare, promo)
+		for _, step := range []string{"accept", "arriving", "start", "complete"} {
+			e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/driver/orders/"+o+"/"+step, nil, b.auth), "promo ride "+step)
+		}
+		return o
+	}
+	processAwards := func() {
+		if _, err := mk.ProcessEvents(ctx); err != nil {
+			t.Fatalf("marketing events: %v", err)
+		}
+	}
+	p4 := e.passenger()
+	rideWithB(p4, 800, nil)
+	processAwards()
+	e.wallet(b, 1850, 0)
+	rideWithB(p4, 1500, map[string]any{"promotion": "coupon", "promotion_discount": 400})
+	e.wallet(b, 1850-50+400, 0)
+	ref := e.must(http.StatusOK, e.call(e.h, http.MethodGet, "/api/v1/promotions/referral", nil, p4.auth), "referral")
+	code := ref.str("code")
+	if ref.str("state") != "unlocked" || len(code) != 8 {
+		t.Fatalf("referral: %s", ref.raw)
+	}
+	tg5 := testutil.NextTelegramID()
+	invited := e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/auth/telegram/passenger", map[string]any{
+		"init_data": testutil.SignInitData(config.TestPassengerBotToken, tg5, "Сәуле", time.Now(), "ref_"+code)}, nil),
+		"invited sign-in")
+	p5 := flowUser{userID: e.userID(tg5), tgID: tg5, auth: map[string]string{"Authorization": "Bearer " + invited.str("token")}}
+	rideWithB(p5, 800, nil)
+	processAwards()
+	e.wallet(b, 2150, 0)
+	// The ride took seconds, shorter than the campaign's minimum: the reward
+	// waits for an approver, who approves it.
+	held := e.admin(http.MethodGet, "/api/v1/admin/marketing/referrals?status=review", nil, http.StatusOK)
+	if items := held.body["items"].([]any); len(items) != 1 || items[0].(map[string]any)["reason"] != "short_ride" {
+		t.Fatalf("referrals under review: %s", held.raw)
+	}
+	e.admin(http.MethodPost, "/api/v1/admin/marketing/referrals/"+held.body["items"].([]any)[0].(map[string]any)["id"].(string)+"/review",
+		map[string]any{"decision": "approve", "reason": "Сапар тексерілді"}, http.StatusOK)
+	if b4, _ := marketing.GetBonus(ctx, e.pool, p4.userID); b4.Balance != 300 {
+		t.Fatalf("referrer bonus: %+v", b4)
+	}
+	e.admin(http.MethodPost, "/api/v1/admin/marketing/users/"+p5.userID.String()+"/bonus-adjustments", map[string]any{
+		"amount": 200, "reason": "Шағым бойынша өтемақы", "idempotency_key": uuid.NewString(), "confirm": true,
+	}, http.StatusOK)
+	recon := e.admin(http.MethodGet, "/api/v1/admin/marketing/reconciliation", nil, http.StatusOK)
+	if recon.body["ok"] != true {
+		t.Fatalf("marketing reconciliation: %s", recon.raw)
+	}
+
 	// Ledger and wallets agree.
 	rec := e.admin(http.MethodGet, "/api/v1/admin/wallets/reconciliation", nil, http.StatusOK)
 	if rec.body["ok"] != true {
@@ -266,6 +333,10 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		{notifications.TplDisputeOpened, b.userID, notifications.DriverBot},
 		{notifications.TplDisputeResolved, p3.userID, notifications.PassengerBot},
 		{notifications.TplDisputeResolved, b.userID, notifications.DriverBot},
+		// Marketing.
+		{notifications.TplPromoCouponIssued, p4.userID, notifications.PassengerBot},
+		{notifications.TplPromoReferralReward, p4.userID, notifications.PassengerBot},
+		{notifications.TplPromoBonusGranted, p5.userID, notifications.PassengerBot},
 	}
 	rows := e.outbox()
 	for _, w := range want {
@@ -368,6 +439,7 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 		realtime.ModerationApproved:        {realtime.DriverScope(uuid.MustParse(a.driverID)), realtime.UserScope(a.userID)},
 		realtime.ModerationRejected:        {realtime.DriverScope(uuid.MustParse(c.driverID)), realtime.UserScope(c.userID)},
 		realtime.DriverPhoneVerified:       {realtime.UserScope(a.userID)},
+		marketing.EventPromotionsUpdated:   {realtime.UserScope(p4.userID)},
 	}
 	e.events.waitFor(t, wantEvents)
 }
@@ -615,6 +687,21 @@ func (e *flowEnv) createOrder(p flowUser, n, fare int) string {
 		e.t.Fatalf("new order: %s", o.raw)
 	}
 	return o.str("id")
+}
+
+// createPromoOrder books a two-stop taxi at fare with extra body fields (a
+// promotion).
+func (e *flowEnv) createPromoOrder(p flowUser, fare int, extra map[string]any) string {
+	e.t.Helper()
+	stops := []map[string]any{embiPoints[0], embiPoints[len(embiPoints)-1]}
+	q := e.must(http.StatusOK, e.call(e.h, http.MethodPost, "/api/v1/routes/preview",
+		map[string]any{"category": "taxi", "stops": stops}, p.auth), "route preview")
+	body := map[string]any{"quote_id": q.str("quote_id"), "fare": fare, "payment_method": "cash",
+		"idempotency_key": uuid.NewString()}
+	for k, v := range extra {
+		body[k] = v
+	}
+	return e.must(http.StatusCreated, e.call(e.h, http.MethodPost, "/api/v1/orders", body, p.auth), "create promo order").str("id")
 }
 
 // wallet checks the driver's wallet as the driver app sees it.

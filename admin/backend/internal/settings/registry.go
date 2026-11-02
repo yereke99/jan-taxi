@@ -459,6 +459,48 @@ var registry = []Def{
 		},
 	},
 	{
+		// Marketing emergency stops (ARCHITECTURE §23.9). Campaigns are
+		// switched on one by one in the Marketing section.
+		Key: "marketing.awards_enabled", Kind: KindBool, Default: true,
+		Description: Localized{
+			KK: "Акциялар бойынша жаңа купондар мен бонустар беру (жалпы апаттық ажыратқыш)",
+			RU: "Выдача новых купонов и бонусов по акциям (общий аварийный выключатель)",
+			EN: "Issue new promotion coupons and bonuses (emergency master switch)",
+		},
+	},
+	{
+		Key: "marketing.redemptions_enabled", Kind: KindBool, Default: true,
+		Description: Localized{
+			KK: "Жолаушыларға купон мен бонусты тапсырыста қолдануға рұқсат беру",
+			RU: "Разрешить пассажирам применять купоны и бонусы к заказам",
+			EN: "Let passengers apply coupons and bonuses to orders",
+		},
+	},
+	{
+		Key: "marketing.broadcasts_enabled", Kind: KindBool, Default: true,
+		Description: Localized{
+			KK: "Жарнамалық хабарламалар жіберу (тапсырыс хабарламаларына әсер етпейді)",
+			RU: "Отправка рекламных рассылок (на сообщения о заказах не влияет)",
+			EN: "Send marketing broadcasts (order messages are unaffected)",
+		},
+	},
+	{
+		Key: "marketing.broadcast_rate_per_s", Kind: KindInt, Min: 1, Max: 20, Default: int64(4),
+		Description: Localized{
+			KK: "Рассылка жылдамдығы: әр бот үшін секундына хабарлама саны",
+			RU: "Скорость рассылки: сообщений в секунду на бота",
+			EN: "Broadcast speed: messages per second per bot",
+		},
+	},
+	{
+		Key: "marketing.broadcast_approval_threshold", Kind: KindInt, Min: 1, Max: 10_000_000, Default: int64(100),
+		Description: Localized{
+			KK: "Алушылар саны осыдан көп рассылканы marketing.approve құқығы бар адам ғана іске қосады",
+			RU: "Рассылку на большее число получателей запускает только администратор с правом marketing.approve",
+			EN: "Broadcasts to more recipients than this need an administrator with marketing.approve",
+		},
+	},
+	{
 		Key: "navigation.twogis_base_url", Kind: KindURL, Required: true, Default: "https://2gis.ru",
 		Description: Localized{
 			KK: "2GIS навигация сілтемелерінің негізгі мекенжайы",

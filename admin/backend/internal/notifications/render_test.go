@@ -24,6 +24,8 @@ var architectureKeys = []string{
 	"order_offer_expired",
 	// Admin controls (§22.7): a bonus credited by an operator.
 	"driver_bonus_granted",
+	// Marketing (§23): the first-ride coupon, the referral reward and bonus credits.
+	"promo_coupon_issued", "promo_referral_reward", "promo_bonus_granted",
 }
 
 func TestRegistryCoversArchitecture(t *testing.T) {

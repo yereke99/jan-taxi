@@ -164,13 +164,14 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 		cargoSize, cargo, comment *string
 		classKK, classRU, classEN string
 		locality                  *string
+		discount                  int64
 	)
 	err := tx.QueryRow(ctx, `
 		SELECT o.category, o.payment_method, COALESCE(o.distance_m,0), COALESCE(o.duration_s,0), o.passenger_count, o.cargo_size,
-		       o.cargo_description, o.comment, vc.name_kk, vc.name_ru, vc.name_en, o.locality
+		       o.cargo_description, o.comment, vc.name_kk, vc.name_ru, vc.name_en, o.locality, o.promo_discount
 		FROM orders o JOIN vehicle_classes vc ON vc.code = o.vehicle_class
 		WHERE o.id = $1`, o.ID).Scan(&category, &payment, &distanceM, &durationS, &passengers, &cargoSize,
-		&cargo, &comment, &classKK, &classRU, &classEN, &locality)
+		&cargo, &comment, &classKK, &classRU, &classEN, &locality, &discount)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: offer details: %w", err)
 	}
@@ -193,6 +194,7 @@ func offerParams(ctx context.Context, tx pgx.Tx, o lifecycle.Core) (map[string]a
 		delete(params, "route_distance")
 		delete(params, "route_duration")
 	}
+	PromoParams(params, o.Fare, discount)
 	if locality != nil && *locality != "" {
 		params["locality"] = *locality
 	}
@@ -251,4 +253,12 @@ func closeOffersOnAccept(ctx context.Context, tx pgx.Tx, orderID, driverID uuid.
 		return nil, fmt.Errorf("dispatch: close offers: %w", err)
 	}
 	return lost, nil
+}
+
+// PromoParams adds the passenger's promotion to a driver message (§23.6): the
+// cash the driver collects and the amount Jan Taxi credits after the ride.
+func PromoParams(params map[string]any, fare, discount int64) {
+	if discount > 0 {
+		params["cash_due"], params["promo_compensation"] = fare-discount, discount
+	}
 }

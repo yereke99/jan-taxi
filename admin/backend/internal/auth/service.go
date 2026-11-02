@@ -47,6 +47,10 @@ type Service struct {
 	dummyOnce sync.Once
 	dummyHash string
 
+	// startHook sees the signed start parameter of passenger sign-ins
+	// (referral links, §23.7); set by the app before serving.
+	startHook StartHook
+
 	tgLimiters    map[App]*httpx.RateLimiter
 	loginIPLimit  *httpx.RateLimiter
 	loginMailLim  *httpx.RateLimiter

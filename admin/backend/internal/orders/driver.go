@@ -10,6 +10,7 @@ import (
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
+	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
@@ -300,6 +301,19 @@ func finishCompleted(ctx context.Context, tx pgx.Tx, after lifecycle.Core, notif
 	if err != nil {
 		return 0, lifecycle.DBError(err)
 	}
+	// The passenger's promotion settles once with the ride (§23.6): the
+	// coupon is redeemed or the bonus spent and the discount is credited to
+	// this driver; then the ride is queued for the award worker (first-ride
+	// coupon, referral reward, driver milestones).
+	compensation, err := marketing.SettleOrder(ctx, tx, after.ID, driverID)
+	if err != nil {
+		return 0, lifecycle.DBError(err)
+	}
+	if after.CompletedAt != nil {
+		if err := marketing.RecordRideCompleted(ctx, tx, after.ID, *after.CompletedAt); err != nil {
+			return 0, lifecycle.DBError(err)
+		}
+	}
 	wal, err := wallets.Get(ctx, tx, driverID)
 	if err != nil {
 		return 0, httpx.Internal(err)
@@ -309,14 +323,18 @@ func finishCompleted(ctx context.Context, tx pgx.Tx, after lifecycle.Core, notif
 		if err != nil {
 			return 0, err
 		}
+		passengerParams := map[string]any{"order_id": after.ID.String(), "order_number": after.Number, "fare": after.Fare}
+		driverParams := map[string]any{"order_number": after.Number, "fare": after.Fare, "balance": wal.Balance}
+		if compensation > 0 {
+			passengerParams["discount"], passengerParams["cash_due"] = compensation, after.Fare-compensation
+			driverParams["cash_due"], driverParams["promo_compensation"] = after.Fare-compensation, compensation
+		}
 		if err := lifecycle.Notify(ctx, tx, notifications.PassengerBot, after.PassengerID, notifications.TplOrderCompletedPassenger,
-			map[string]any{"order_id": after.ID.String(), "order_number": after.Number, "fare": after.Fare},
-			"order_completed_passenger:"+after.ID.String()); err != nil {
+			passengerParams, "order_completed_passenger:"+after.ID.String()); err != nil {
 			return 0, err
 		}
 		if err := lifecycle.Notify(ctx, tx, notifications.DriverBot, info.UserID, notifications.TplOrderCompletedDriver,
-			map[string]any{"order_number": after.Number, "fare": after.Fare, "balance": wal.Balance},
-			"order_completed_driver:"+after.ID.String()); err != nil {
+			driverParams, "order_completed_driver:"+after.ID.String()); err != nil {
 			return 0, err
 		}
 	}

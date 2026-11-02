@@ -144,6 +144,46 @@ var endpointCatalogue = []string{
 	"GET /api/v1/admin/notifications",
 	"POST /api/v1/admin/notifications/{}/retry",
 	"GET /api/v1/admin/audit-logs",
+	// Marketing (§23)
+	"GET /api/v1/promotions",
+	"GET /api/v1/promotions/bonus/history",
+	"GET /api/v1/promotions/referral",
+	"PUT /api/v1/promotions/subscription",
+	"GET /api/v1/admin/marketing/overview",
+	"GET /api/v1/admin/marketing/campaigns",
+	"POST /api/v1/admin/marketing/campaigns",
+	"GET /api/v1/admin/marketing/campaigns/{}",
+	"GET /api/v1/admin/marketing/campaigns/{}/preview",
+	"POST /api/v1/admin/marketing/campaigns/{}/duplicate",
+	"POST /api/v1/admin/marketing/campaigns/{}/versions",
+	"POST /api/v1/admin/marketing/campaigns/{}/transition",
+	"PATCH /api/v1/admin/marketing/campaigns/{}/budget",
+	"GET /api/v1/admin/marketing/coupons",
+	"POST /api/v1/admin/marketing/coupons/{}/void",
+	"GET /api/v1/admin/marketing/bonus-ledger",
+	"GET /api/v1/admin/marketing/users",
+	"GET /api/v1/admin/marketing/users/{}",
+	"POST /api/v1/admin/marketing/users/{}/bonus-adjustments",
+	"GET /api/v1/admin/marketing/referrals",
+	"POST /api/v1/admin/marketing/referrals/{}/review",
+	"GET /api/v1/admin/marketing/applications",
+	"POST /api/v1/admin/marketing/applications/{}/reverse",
+	"GET /api/v1/admin/marketing/segments",
+	"POST /api/v1/admin/marketing/segments",
+	"PATCH /api/v1/admin/marketing/segments/{}",
+	"POST /api/v1/admin/marketing/segments/preview",
+	"GET /api/v1/admin/marketing/broadcasts",
+	"POST /api/v1/admin/marketing/broadcasts",
+	"GET /api/v1/admin/marketing/broadcasts/{}",
+	"PATCH /api/v1/admin/marketing/broadcasts/{}",
+	"GET /api/v1/admin/marketing/broadcasts/{}/recipients",
+	"POST /api/v1/admin/marketing/broadcasts/{}/test",
+	"POST /api/v1/admin/marketing/broadcasts/{}/transition",
+	"GET /api/v1/admin/marketing/reconciliation",
+	"GET /api/v1/admin/marketing/reports",
+	"GET /api/v1/admin/marketing/reports.csv",
+	"GET /api/v1/admin/marketing/settings",
+	"PATCH /api/v1/admin/marketing/settings",
 	// Internal (bots → API, internal listener)
 	"POST /internal/v1/bots/{}/lease",
 	"POST /internal/v1/bots/{}/offset",
@@ -160,6 +200,8 @@ var endpointCatalogue = []string{
 	"POST /internal/v1/driver/{}/location",
 	"POST /internal/v1/driver/{}/topup-receipt",
 	"GET /internal/v1/config",
+	"POST /internal/v1/passenger/{}/referral",
+	"POST /internal/v1/bots/{}/users/{}/marketing",
 }
 
 // mountedBeyondCatalogue lists routes that exist on purpose without a §19 row.
@@ -267,8 +309,8 @@ func TestInternalRoutesRequireServiceSecret(t *testing.T) {
 			t.Errorf("%s %s on the public listener: %d", method, path, res.status)
 		}
 	}
-	if n != 15 {
-		t.Fatalf("catalogue lists %d internal routes, want 15", n)
+	if n != 17 {
+		t.Fatalf("catalogue lists %d internal routes, want 17", n)
 	}
 
 	// With valid credentials the same listener answers normally.
@@ -289,17 +331,22 @@ func TestBackgroundJobsRegistered(t *testing.T) {
 	a := newTestApp(t, pool, cfg)
 
 	want := map[string]time.Duration{
-		"search_expiry":              15 * time.Second,
-		"dispatch_expand":            15 * time.Second,
-		"topup_expiry":               5 * time.Minute,
-		"quote_cleanup":              time.Hour,
-		"stale_driver_offline":       5 * time.Minute,
-		"bot_update_cleanup":         time.Hour,
-		"location_history_retention": 24 * time.Hour,
-		"session_cleanup":            time.Hour,
-		"notification_retention":     24 * time.Hour,
-		"file_orphan_cleanup":        6 * time.Hour,
-		"driver_eta":                 10 * time.Second,
+		"search_expiry":               15 * time.Second,
+		"dispatch_expand":             15 * time.Second,
+		"topup_expiry":                5 * time.Minute,
+		"quote_cleanup":               time.Hour,
+		"stale_driver_offline":        5 * time.Minute,
+		"bot_update_cleanup":          time.Hour,
+		"location_history_retention":  24 * time.Hour,
+		"session_cleanup":             time.Hour,
+		"notification_retention":      24 * time.Hour,
+		"file_orphan_cleanup":         6 * time.Hour,
+		"driver_eta":                  10 * time.Second,
+		"marketing_events":            2 * time.Second,
+		"marketing_coupon_expiry":     time.Minute,
+		"marketing_campaign_schedule": 30 * time.Second,
+		"marketing_grants":            5 * time.Second,
+		"marketing_reconcile":         time.Hour,
 	}
 	got := map[string]time.Duration{}
 	for _, j := range a.jobs {
@@ -321,7 +368,7 @@ func TestBackgroundJobsRegistered(t *testing.T) {
 	for _, w := range a.workers {
 		workers[w.name] = true
 	}
-	if !workers["notification_worker"] || !workers["realtime_listener"] {
+	if !workers["notification_worker"] || !workers["realtime_listener"] || !workers["broadcast_worker"] {
 		t.Errorf("workers: %v", workers)
 	}
 

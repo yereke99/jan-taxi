@@ -30,7 +30,7 @@ package notifications
 // such an override is refused when saved and the default is sent instead.
 //
 //	key                          bot        params (* = optional)                                  button → start param
-//	order_created_passenger      passenger  order_id, order_number, fare                           order_<order_id>
+//	order_created_passenger      passenger  order_id, order_number, fare, discount*, cash_due*     order_<order_id>
 //	order_available_driver       driver     order_id, order_number, category, vehicle_class,
 //	                                        locality*, pickup, via*, destination, pickup_distance*,
 //	                                        route_distance, route_duration, fare, payment_method,
@@ -49,8 +49,9 @@ package notifications
 //	order_driver_arriving        passenger  order_id, vehicle, plate                               order_<order_id>
 //	order_started                passenger  order_id, order_number                                 order_<order_id>
 //	order_stop_completed         passenger  order_id, order_number, stop_address                   order_<order_id>
-//	order_completed_passenger    passenger  order_id, order_number, fare                           order_<order_id>
-//	order_completed_driver       driver     order_number, fare, balance                            wallet
+//	order_completed_passenger    passenger  order_id, order_number, fare, discount*, cash_due*     order_<order_id>
+//	order_completed_driver       driver     order_number, fare, balance, cash_due*,
+//	                                        promo_compensation*                                    wallet
 //	order_cancelled_passenger    passenger  order_number, reason*                                  home
 //	order_cancelled_driver       driver     order_number, reason*, refunded*                       orders
 //	order_no_driver              passenger  order_number                                           home
@@ -69,6 +70,13 @@ package notifications
 //	dispute_opened               both       order_id, order_number                                 order_<order_id>
 //	dispute_resolved             both       order_id, order_number, resolution*                    order_<order_id>
 //	phone_verified               driver     phone                                                  register
+//	promo_coupon_issued          passenger  amount, validity                                       coupons
+//	promo_referral_reward        passenger  amount                                                 bonus
+//	promo_bonus_granted          passenger  amount, comment*                                       bonus
+//
+// order_available_driver and order_accepted_driver also take cash_due* and
+// promo_compensation* (a passenger's promotion, §23.6): the cash the driver
+// collects and the amount Jan Taxi credits to the driver's balance.
 //
 // Edit templates (Template.Edit) never send a message: an outbox row of kind
 // "edit" rewrites the message sent for another row (EnqueueEdit). The edited
@@ -111,6 +119,10 @@ package notifications
 //	              but drivers never see it
 //	passenger_name / passenger_link / passenger_phone  the passenger's first name,
 //	              Telegram link (t.me or tg://user) and verified phone
+//	discount      promotional discount on the order, KZT (coupon or bonus)
+//	cash_due      what the passenger pays the driver: fare - discount, KZT
+//	promo_compensation  the discount Jan Taxi credits to the driver's balance, KZT
+//	validity      {kk, ru, en} coupon validity, e.g. "3 күн"
 
 import (
 	"fmt"
@@ -263,6 +275,9 @@ const (
 	TplOrderOfferTaken            = "order_offer_taken"
 	TplOrderOfferCancelled        = "order_offer_cancelled"
 	TplOrderOfferExpired          = "order_offer_expired"
+	TplPromoCouponIssued          = "promo_coupon_issued"
+	TplPromoReferralReward        = "promo_referral_reward"
+	TplPromoBonusGranted          = "promo_bonus_granted"
 )
 
 // Shared params.
@@ -289,6 +304,12 @@ var (
 		Description: "{kk, ru, en} note that pickup A's address is the passenger's own words (A keeps its map point)"}
 	pRouteNote = Param{Name: "route_note", Kind: KindLocalized, Optional: true,
 		Description: "{kk, ru, en} note explaining the ✍️ stops: written by the passenger, no map point, route not calculated"}
+	// A passenger's promotion on the order (§23.6); absent without one.
+	pDiscountOpt = Param{Name: "discount", Kind: KindMoney, Optional: true, Description: "promotional discount, KZT"}
+	pCashDueOpt  = Param{Name: "cash_due", Kind: KindMoney, Optional: true,
+		Description: "what the passenger pays: fare minus the promotional discount, KZT"}
+	pPromoCompOpt = Param{Name: "promo_compensation", Kind: KindMoney, Optional: true,
+		Description: "promotional discount Jan Taxi credits to the driver's balance, KZT"}
 )
 
 // PickupTypedNote and ManualStopsNote are the pickup_note and route_note
@@ -321,11 +342,11 @@ var passengerOnly, driverOnly, bothBots = []Bot{PassengerBot}, []Bot{DriverBot},
 var registry = buildRegistry([]*Template{
 	{
 		Key: TplOrderCreatedPassenger, Bots: passengerOnly,
-		Params: []Param{pOrderID, pOrderNumber, pFare},
+		Params: []Param{pOrderID, pOrderNumber, pFare, pDiscountOpt, pCashDueOpt},
 		Bodies: labels(
-			"<b>Тапсырыс №{{order_number}} рәсімделді</b>\nЖүргізуші іздеп жатырмыз. Бағасы: {{fare}}",
-			"<b>Заказ №{{order_number}} оформлен</b>\nИщем водителя. Стоимость: {{fare}}",
-			"<b>Order #{{order_number}} placed</b>\nLooking for a driver. Fare: {{fare}}"),
+			"<b>Тапсырыс №{{order_number}} рәсімделді</b>\nЖүргізуші іздеп жатырмыз. Бағасы: {{fare}}\n🎟 Жеңілдік: −{{discount}}\nТөлейсіз: <b>{{cash_due}}</b>",
+			"<b>Заказ №{{order_number}} оформлен</b>\nИщем водителя. Стоимость: {{fare}}\n🎟 Скидка: −{{discount}}\nК оплате: <b>{{cash_due}}</b>",
+			"<b>Order #{{order_number}} placed</b>\nLooking for a driver. Fare: {{fare}}\n🎟 Discount: −{{discount}}\nYou pay: <b>{{cash_due}}</b>"),
 		Button: btnOrder,
 	},
 	{
@@ -337,7 +358,7 @@ var registry = buildRegistry([]*Template{
 			{Name: "pickup_distance", Kind: KindDistance, Optional: true, Description: "driver's distance to the pickup, metres"},
 			{Name: "route_distance", Kind: KindDistance, Optional: true, Description: "route length, metres"},
 			{Name: "route_duration", Kind: KindDuration, Optional: true, Description: "route duration, seconds"},
-			pFare, pPayment,
+			pFare, pPayment, pCashDueOpt, pPromoCompOpt,
 			{Name: "passengers", Kind: KindNumber, Optional: true, Description: "taxi passenger count"},
 			{Name: "cargo_size", Kind: KindCargoSize, Optional: true, Description: "delivery cargo size: s | m | l | xl"},
 			{Name: "cargo", Kind: KindText, Optional: true, Description: "delivery cargo description"},
@@ -346,9 +367,9 @@ var registry = buildRegistry([]*Template{
 		// acceptance, §22.2). An admin override that still names
 		// {{commission}} no longer validates, so the default body is sent.
 		Bodies: labels(
-			"🚕 <b>Жаңа тапсырыс №{{order_number}}</b> · {{category}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n✍️ {{route_note}}\n🧭 A нүктесіне дейін: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Көлік: {{vehicle_class}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}",
-			"🚕 <b>Новый заказ №{{order_number}}</b> · {{category}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n✍️ {{route_note}}\n🧭 До точки A: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Машина: {{vehicle_class}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}",
-			"🚕 <b>New order #{{order_number}}</b> · {{category}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n✍️ {{route_note}}\n🧭 To pickup: {{pickup_distance}}\n🗺 Route: {{route_distance}} · {{route_duration}}\n🚗 Vehicle: {{vehicle_class}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}"),
+			"🚕 <b>Жаңа тапсырыс №{{order_number}}</b> · {{category}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n💵 Жолаушыдан алу: <b>{{cash_due}}</b>\n🎁 Jan Taxi акциясы: +{{promo_compensation}} сапардан кейін балансқа\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n✍️ {{route_note}}\n🧭 A нүктесіне дейін: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Көлік: {{vehicle_class}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}",
+			"🚕 <b>Новый заказ №{{order_number}}</b> · {{category}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n💵 Получить с пассажира: <b>{{cash_due}}</b>\n🎁 Акция Jan Taxi: +{{promo_compensation}} на баланс после поездки\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n✍️ {{route_note}}\n🧭 До точки A: {{pickup_distance}}\n🗺 Маршрут: {{route_distance}} · {{route_duration}}\n🚗 Машина: {{vehicle_class}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}",
+			"🚕 <b>New order #{{order_number}}</b> · {{category}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n💵 Collect from the passenger: <b>{{cash_due}}</b>\n🎁 Jan Taxi promotion: +{{promo_compensation}} to your balance after the ride\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n✍️ {{pickup_note}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n✍️ {{route_note}}\n🧭 To pickup: {{pickup_distance}}\n🗺 Route: {{route_distance}} · {{route_duration}}\n🚗 Vehicle: {{vehicle_class}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}"),
 		Callback: &CallbackButton{Label: labels("✅ Тапсырысты алу", "✅ Забрать заказ", "✅ Accept order"), Data: "take:{{order_id}}"},
 		Button:   &Button{Label: labels("📱 Қосымшаны ашу", "📱 Открыть мини-приложение", "📱 Open Mini App"), StartParam: "order_{{order_id}}"},
 	},
@@ -395,7 +416,7 @@ var registry = buildRegistry([]*Template{
 			{Name: "vehicle_class", Kind: KindLocalized, Optional: true, Description: "vehicle class name {kk, ru, en}"},
 			pLocalityOpt, pPickup, pPickupNote,
 			{Name: "pickup_details", Kind: KindText, Optional: true, Description: "passenger's note for pickup A (entrance, floor)"},
-			pVia, pDestination, pRouteNote, pFare, pPayment,
+			pVia, pDestination, pRouteNote, pFare, pPayment, pCashDueOpt, pPromoCompOpt,
 			{Name: "passengers", Kind: KindNumber, Optional: true, Description: "taxi passenger count"},
 			{Name: "cargo_size", Kind: KindCargoSize, Optional: true, Description: "delivery cargo size: s | m | l | xl"},
 			{Name: "cargo", Kind: KindText, Optional: true, Description: "delivery cargo description"},
@@ -408,9 +429,9 @@ var registry = buildRegistry([]*Template{
 		// they used (§22.4); the only message that carries the passenger's
 		// contact, revalidated against the assignment when it is sent.
 		Bodies: labels(
-			"✅ <b>Тапсырыс №{{order_number}} сізге бекітілді</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n✍️ {{route_note}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Алушының телефоны: {{recipient_phone}}",
-			"✅ <b>Заказ №{{order_number}} закреплён за вами</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n✍️ {{route_note}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Телефон получателя: {{recipient_phone}}",
-			"✅ <b>Order #{{order_number}} is yours</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n✍️ {{route_note}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}\n🙋 Customer: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Phone: {{passenger_phone}}\n📦 Recipient's phone: {{recipient_phone}}"),
+			"✅ <b>Тапсырыс №{{order_number}} сізге бекітілді</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Бағасы: <b>{{fare}}</b> · {{payment_method}}\n💵 Жолаушыдан алу: <b>{{cash_due}}</b>\n🎁 Jan Taxi акциясы: +{{promo_compensation}} сапардан кейін балансқа\n🏙 {{locality}}\n📍 Қайдан (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Аялдамалар: {{via}}\n🏁 Қайда (B): {{destination}}\n✍️ {{route_note}}\n👤 Жолаушылар: {{passengers}}\n📦 Жүк көлемі: {{cargo_size}}\n📦 Жүк: {{cargo}}\n📝 Пікір: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Алушының телефоны: {{recipient_phone}}",
+			"✅ <b>Заказ №{{order_number}} закреплён за вами</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Цена: <b>{{fare}}</b> · {{payment_method}}\n💵 Получить с пассажира: <b>{{cash_due}}</b>\n🎁 Акция Jan Taxi: +{{promo_compensation}} на баланс после поездки\n🏙 {{locality}}\n📍 Откуда (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Остановки: {{via}}\n🏁 Куда (B): {{destination}}\n✍️ {{route_note}}\n👤 Пассажиров: {{passengers}}\n📦 Размер груза: {{cargo_size}}\n📦 Груз: {{cargo}}\n📝 Комментарий: {{comment}}\n🙋 Клиент: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Телефон: {{passenger_phone}}\n📦 Телефон получателя: {{recipient_phone}}",
+			"✅ <b>Order #{{order_number}} is yours</b>\n🚗 {{category}} · {{vehicle_class}}\n💰 Fare: <b>{{fare}}</b> · {{payment_method}}\n💵 Collect from the passenger: <b>{{cash_due}}</b>\n🎁 Jan Taxi promotion: +{{promo_compensation}} to your balance after the ride\n🏙 {{locality}}\n📍 Pickup (A): {{pickup}}\n✍️ {{pickup_note}}\n📌 {{pickup_details}}\n🛣 Stops: {{via}}\n🏁 Destination (B): {{destination}}\n✍️ {{route_note}}\n👤 Passengers: {{passengers}}\n📦 Cargo size: {{cargo_size}}\n📦 Cargo: {{cargo}}\n📝 Comment: {{comment}}\n🙋 Customer: <a href=\"{{passenger_link}}\">{{passenger_name}}</a>\n📞 Phone: {{passenger_phone}}\n📦 Recipient's phone: {{recipient_phone}}"),
 		Button: btnOrder,
 	},
 	{
@@ -443,20 +464,21 @@ var registry = buildRegistry([]*Template{
 	},
 	{
 		Key: TplOrderCompletedPassenger, Bots: passengerOnly,
-		Params: []Param{pOrderID, pOrderNumber, pFare},
+		Params: []Param{pOrderID, pOrderNumber, pFare, pDiscountOpt, pCashDueOpt},
+		// With a promotion "fare" is the trip's price and cash_due what is paid.
 		Bodies: labels(
-			"<b>Тапсырыс №{{order_number}} аяқталды</b>\nТөленетін сома: {{fare}}\nБізді таңдағаныңызға рахмет!",
-			"<b>Заказ №{{order_number}} завершён</b>\nК оплате: {{fare}}\nСпасибо, что выбрали нас!",
-			"<b>Order #{{order_number}} completed</b>\nAmount to pay: {{fare}}\nThank you for choosing us!"),
+			"<b>Тапсырыс №{{order_number}} аяқталды</b>\nТөленетін сома: {{fare}}\n🎟 Жеңілдік: −{{discount}}\nТөлейсіз: <b>{{cash_due}}</b>\nБізді таңдағаныңызға рахмет!",
+			"<b>Заказ №{{order_number}} завершён</b>\nК оплате: {{fare}}\n🎟 Скидка: −{{discount}}\nИтого к оплате: <b>{{cash_due}}</b>\nСпасибо, что выбрали нас!",
+			"<b>Order #{{order_number}} completed</b>\nAmount to pay: {{fare}}\n🎟 Discount: −{{discount}}\nYou pay: <b>{{cash_due}}</b>\nThank you for choosing us!"),
 		Button: &Button{Label: labels("Жүргізушіні бағалау", "Оценить водителя", "Rate your driver"), StartParam: "order_{{order_id}}"},
 	},
 	{
 		Key: TplOrderCompletedDriver, Bots: driverOnly,
-		Params: []Param{pOrderNumber, pFare, pBalance},
+		Params: []Param{pOrderNumber, pFare, pBalance, pCashDueOpt, pPromoCompOpt},
 		Bodies: labels(
-			"<b>Тапсырыс №{{order_number}} аяқталды</b>\nБағасы: {{fare}}\nБаланс: {{balance}}",
-			"<b>Заказ №{{order_number}} завершён</b>\nСтоимость: {{fare}}\nБаланс: {{balance}}",
-			"<b>Order #{{order_number}} completed</b>\nFare: {{fare}}\nBalance: {{balance}}"),
+			"<b>Тапсырыс №{{order_number}} аяқталды</b>\nБағасы: {{fare}}\n💵 Жолаушыдан алынды: {{cash_due}}\n🎁 Jan Taxi акциясы: +{{promo_compensation}} балансқа есептелді\nБаланс: {{balance}}",
+			"<b>Заказ №{{order_number}} завершён</b>\nСтоимость: {{fare}}\n💵 Получено с пассажира: {{cash_due}}\n🎁 Акция Jan Taxi: +{{promo_compensation}} зачислено на баланс\nБаланс: {{balance}}",
+			"<b>Order #{{order_number}} completed</b>\nFare: {{fare}}\n💵 Collected from the passenger: {{cash_due}}\n🎁 Jan Taxi promotion: +{{promo_compensation}} credited to your balance\nBalance: {{balance}}"),
 		Button: btnWallet,
 	},
 	{
@@ -635,6 +657,37 @@ var registry = buildRegistry([]*Template{
 			"<b>Номер телефона подтверждён</b>\n{{phone}}\nМожно продолжить регистрацию.",
 			"<b>Phone number verified</b>\n{{phone}}\nYou can continue your registration."),
 		Button: &Button{Label: labels("Тіркеуді жалғастыру", "Продолжить регистрацию", "Continue registration"), StartParam: "register"},
+	},
+	{
+		// Customer assignment «Алғашқы сапар», item 4 (§23.4).
+		Key: TplPromoCouponIssued, Bots: passengerOnly,
+		Params: []Param{{Name: "amount", Kind: KindMoney, Description: "coupon value, KZT"},
+			{Name: "validity", Kind: KindLocalized, Description: "{kk, ru, en} validity, e.g. 3 күн"}},
+		Bodies: labels(
+			"🎁 <b>Құттықтаймыз! Сізге {{amount}} купон берілді!</b>\nJan Taxi арқылы алғашқы сапарыңызды жасағаныңыз үшін рақмет!\nКелесі тапсырысыңызда {{amount}} жеңілдік пайдаланыңыз.\nЖарамдылық мерзімі: {{validity}}",
+			"🎁 <b>Поздравляем! Вам начислен купон {{amount}}!</b>\nСпасибо за первую поездку с Jan Taxi!\nИспользуйте скидку {{amount}} в следующем заказе.\nСрок действия: {{validity}}",
+			"🎁 <b>Congratulations! You got a {{amount}} coupon!</b>\nThank you for your first ride with Jan Taxi!\nUse the {{amount}} discount on your next order.\nValid for: {{validity}}"),
+		Button: &Button{Label: labels("Менің купоным", "Мои купоны", "My coupons"), StartParam: "coupons"},
+	},
+	{
+		// Customer assignment «Досыңды шақыр» (§23.5): the inviter's reward.
+		Key: TplPromoReferralReward, Bots: passengerOnly,
+		Params: []Param{{Name: "amount", Kind: KindMoney, Description: "referral bonus credited, KZT"}},
+		Bodies: labels(
+			"🎉 <b>Досыңыз алғашқы сапарын аяқтады!</b>\nБонус балансыңызға {{amount}} түсті. Оны келесі такси тапсырысында пайдалана аласыз.",
+			"🎉 <b>Ваш друг завершил первую поездку!</b>\nНа ваш бонусный баланс поступило {{amount}}. Их можно использовать при следующем заказе такси.",
+			"🎉 <b>Your friend finished their first ride!</b>\n{{amount}} went to your bonus balance. Use it on your next taxi order."),
+		Button: &Button{Label: labels("Бонустарым", "Мои бонусы", "My bonuses"), StartParam: "bonus"},
+	},
+	{
+		Key: TplPromoBonusGranted, Bots: passengerOnly,
+		Params: []Param{{Name: "amount", Kind: KindMoney, Description: "bonus credited, KZT"},
+			{Name: "comment", Kind: KindText, Optional: true, Description: "campaign or operator note"}},
+		Bodies: labels(
+			"🎁 <b>Бонус балансыңызға {{amount}} түсті</b>\n{{comment}}\nОны келесі такси тапсырысында пайдалана аласыз.",
+			"🎁 <b>На ваш бонусный баланс поступило {{amount}}</b>\n{{comment}}\nИх можно использовать при следующем заказе такси.",
+			"🎁 <b>{{amount}} went to your bonus balance</b>\n{{comment}}\nUse it on your next taxi order."),
+		Button: &Button{Label: labels("Бонустарым", "Мои бонусы", "My bonuses"), StartParam: "bonus"},
 	},
 })
 

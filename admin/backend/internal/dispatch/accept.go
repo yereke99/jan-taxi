@@ -460,14 +460,15 @@ func TripCardParams(ctx context.Context, q db.Querier, orderID uuid.UUID) (map[s
 		cargoSize, cargo, comment *string
 		recipient                 *string
 		classKK, classRU, classEN string
+		discount                  int64
 	)
 	err := q.QueryRow(ctx, `
 		SELECT o.number, o.fare, o.category, o.payment_method, u.first_name, u.username, u.telegram_user_id,
 		       u.phone_e164, u.phone_verified_at IS NOT NULL, o.locality, o.passenger_count, o.cargo_size,
-		       o.cargo_description, o.comment, o.recipient_phone, vc.name_kk, vc.name_ru, vc.name_en
+		       o.cargo_description, o.comment, o.recipient_phone, vc.name_kk, vc.name_ru, vc.name_en, o.promo_discount
 		FROM orders o JOIN users u ON u.id = o.passenger_id JOIN vehicle_classes vc ON vc.code = o.vehicle_class
 		WHERE o.id = $1`, orderID).Scan(&number, &fare, &category, &payment, &firstName, &username, &tgID, &phone,
-		&verified, &locality, &passengers, &cargoSize, &cargo, &comment, &recipient, &classKK, &classRU, &classEN)
+		&verified, &locality, &passengers, &cargoSize, &cargo, &comment, &recipient, &classKK, &classRU, &classEN, &discount)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: trip card: %w", err)
 	}
@@ -486,6 +487,7 @@ func TripCardParams(ctx context.Context, q db.Querier, orderID uuid.UUID) (map[s
 		"passenger_name": name, "passenger_link": lifecycle.TelegramLink(username, tgID),
 	}
 	route.AddressParams(params)
+	PromoParams(params, fare, discount)
 	if route.PickupDetails != "" {
 		params["pickup_details"] = route.PickupDetails
 	}

@@ -32,21 +32,25 @@ type OrderCard struct {
 	CargoVolumeL     int                 `json:"cargo_volume_l"`
 	// Locality is the settlement of the pickup (nil when unknown, never
 	// coordinates); TariffRegion is the region whose tariff priced the order.
-	Locality          *string         `json:"locality"`
-	TariffRegion      cities.Region   `json:"tariff_region"`
-	Stops             []stops.Summary `json:"stops"`
-	StopCount         int             `json:"stop_count"`
-	Comment           *string         `json:"comment"`
-	CargoDescription  *string         `json:"cargo_description"`
-	Fare              int64           `json:"fare"`
-	Currency          string          `json:"currency"`
-	CommissionAmount  int64           `json:"commission_amount"`
-	PaymentMethod     string          `json:"payment_method"`
-	DistanceM         int             `json:"distance_m"`
-	DurationS         int             `json:"duration_s"`
-	DistanceToPickupM *int            `json:"distance_to_pickup_m"`
-	CreatedAt         time.Time       `json:"created_at"`
-	SearchExpiresAt   *time.Time      `json:"search_expires_at"`
+	Locality         *string         `json:"locality"`
+	TariffRegion     cities.Region   `json:"tariff_region"`
+	Stops            []stops.Summary `json:"stops"`
+	StopCount        int             `json:"stop_count"`
+	Comment          *string         `json:"comment"`
+	CargoDescription *string         `json:"cargo_description"`
+	Fare             int64           `json:"fare"`
+	Currency         string          `json:"currency"`
+	CommissionAmount int64           `json:"commission_amount"`
+	PaymentMethod    string          `json:"payment_method"`
+	// PromoDiscount is a passenger's coupon or bonus (§23.6): the driver
+	// collects CashDue and Jan Taxi credits the discount after the ride.
+	PromoDiscount     int64      `json:"promo_discount"`
+	CashDue           int64      `json:"cash_due"`
+	DistanceM         int        `json:"distance_m"`
+	DurationS         int        `json:"duration_s"`
+	DistanceToPickupM *int       `json:"distance_to_pickup_m"`
+	CreatedAt         time.Time  `json:"created_at"`
+	SearchExpiresAt   *time.Time `json:"search_expires_at"`
 }
 
 // Available is the GET /driver/orders response (openapi AvailableOrders).
@@ -91,7 +95,7 @@ func listCards(ctx context.Context, q db.Querier, p settings.DispatchSettings, d
 		       o.cargo_description, o.fare, o.currency, o.commission_amount, o.payment_method,
 		       COALESCE(o.distance_m,0), COALESCE(o.duration_s,0), o.created_at, o.search_expires_at, `+distanceToPickup+`,
 		       o.vehicle_class, cvc.name_kk, cvc.name_ru, cvc.name_en, o.passenger_count, o.cargo_size, o.cargo_volume_l,
-		       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en
+		       o.locality, trc.code, trc.name_kk, trc.name_ru, trc.name_en, o.promo_discount
 		`+orderFrom+`
 		JOIN vehicle_classes cvc ON cvc.code = o.vehicle_class
 		JOIN cities trc ON trc.id = o.city_id
@@ -109,7 +113,9 @@ func listCards(ctx context.Context, q db.Querier, p settings.DispatchSettings, d
 			&c.DistanceM, &c.DurationS, &c.CreatedAt, &c.SearchExpiresAt, &c.DistanceToPickupM,
 			&c.VehicleClass, &c.VehicleClassName.KK, &c.VehicleClassName.RU, &c.VehicleClassName.EN,
 			&c.PassengerCount, &c.CargoSize, &c.CargoVolumeL,
-			&c.Locality, &c.TariffRegion.Code, &c.TariffRegion.Name.KK, &c.TariffRegion.Name.RU, &c.TariffRegion.Name.EN)
+			&c.Locality, &c.TariffRegion.Code, &c.TariffRegion.Name.KK, &c.TariffRegion.Name.RU, &c.TariffRegion.Name.EN,
+			&c.PromoDiscount)
+		c.CashDue = c.Fare - c.PromoDiscount
 		c.CreatedAt = c.CreatedAt.UTC()
 		if c.SearchExpiresAt != nil {
 			*c.SearchExpiresAt = c.SearchExpiresAt.UTC()

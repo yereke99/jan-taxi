@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
+	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
@@ -38,24 +39,29 @@ type DriverOrderDetail struct {
 	// CommissionCharged is what the driver's wallet actually paid for this
 	// order (charges minus refunds); 0 when the order is not theirs. It stays
 	// when the passenger cancels (§22.2).
-	CommissionCharged int64           `json:"commission_charged"`
-	PaymentMethod     string          `json:"payment_method"`
-	DistanceM         int             `json:"distance_m"`
-	DurationS         int             `json:"duration_s"`
-	DistanceToPickupM *int            `json:"distance_to_pickup_m"`
-	StopCount         int             `json:"stop_count"`
-	Stops             []stops.Stop    `json:"stops"`
-	Route             RouteSnapshot   `json:"route"`
-	Passenger         *OrderPassenger `json:"passenger"`
-	NextStopID        *uuid.UUID      `json:"next_stop_id"`
-	Events            []OrderEvent    `json:"events"`
-	Rating            *OrderRating    `json:"rating"`
-	CancelReason      *string         `json:"cancel_reason"`
-	CancelledBy       *string         `json:"cancelled_by"`
-	CanAccept         bool            `json:"can_accept"`
-	CanArrive         bool            `json:"can_arrive"`
-	CanStart          bool            `json:"can_start"`
-	CanComplete       bool            `json:"can_complete"`
+	CommissionCharged int64  `json:"commission_charged"`
+	PaymentMethod     string `json:"payment_method"`
+	// A passenger's promotion (§23.6): the driver collects CashDue in cash
+	// and Jan Taxi credits PromoDiscount to the wallet when the ride completes.
+	PromoDiscount     int64                     `json:"promo_discount"`
+	CashDue           int64                     `json:"cash_due"`
+	Promotion         *marketing.OrderPromotion `json:"promotion"`
+	DistanceM         int                       `json:"distance_m"`
+	DurationS         int                       `json:"duration_s"`
+	DistanceToPickupM *int                      `json:"distance_to_pickup_m"`
+	StopCount         int                       `json:"stop_count"`
+	Stops             []stops.Stop              `json:"stops"`
+	Route             RouteSnapshot             `json:"route"`
+	Passenger         *OrderPassenger           `json:"passenger"`
+	NextStopID        *uuid.UUID                `json:"next_stop_id"`
+	Events            []OrderEvent              `json:"events"`
+	Rating            *OrderRating              `json:"rating"`
+	CancelReason      *string                   `json:"cancel_reason"`
+	CancelledBy       *string                   `json:"cancelled_by"`
+	CanAccept         bool                      `json:"can_accept"`
+	CanArrive         bool                      `json:"can_arrive"`
+	CanStart          bool                      `json:"can_start"`
+	CanComplete       bool                      `json:"can_complete"`
 	// CanCancel is always false: drivers cannot cancel (§22.3).
 	CanCancel       bool       `json:"can_cancel"`
 	Version         int        `json:"version"`
@@ -184,6 +190,17 @@ func driverOrder(ctx context.Context, q db.Querier, id, driverID uuid.UUID) (Dri
 		CancelReason: cancelReason, CancelledBy: r.CancelledBy, Version: r.Version, CreatedAt: r.CreatedAt,
 		SearchExpiresAt: r.SearchExpiresAt, AcceptedAt: r.AcceptedAt, ArrivedAt: r.ArrivedAt,
 		StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, CancelledAt: r.CancelledAt,
+		PromoDiscount: r.PromoDiscount, CashDue: r.Fare - r.PromoDiscount,
+	}
+	if r.PromoDiscount > 0 {
+		p, err := marketing.LoadOrderPromotion(ctx, q, r.ID)
+		if err != nil {
+			return DriverOrderDetail{}, err
+		}
+		if p != nil {
+			p.Title, p.Kind = nil, "" // how the passenger paid is not the driver's business
+		}
+		v.Promotion = p
 	}
 	if !mine {
 		withheld := make([]stops.Stop, len(d.Stops))
@@ -237,6 +254,8 @@ type DriverOrderSummary struct {
 	// (charges minus refunds), e.g. 50 on an order the passenger cancelled.
 	CommissionCharged int64         `json:"commission_charged"`
 	PaymentMethod     string        `json:"payment_method"`
+	PromoDiscount     int64         `json:"promo_discount"`
+	CashDue           int64         `json:"cash_due"`
 	Pickup            stops.Summary `json:"pickup"`
 	Destination       stops.Summary `json:"destination"`
 	StopCount         int           `json:"stop_count"`
@@ -254,7 +273,7 @@ func listDriverHistory(ctx context.Context, q db.Querier, driverID uuid.UUID, li
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.status, o.category, o.fare, o.currency, o.commission_amount, `+commissionChargedColumn+`,
 		       o.payment_method, o.stop_count, COALESCE(o.distance_m,0), o.distance_m IS NULL, o.created_at, o.completed_at, o.cancelled_at, o.cancelled_by,
-		       `+endpointColumns+`,
+		       o.promo_discount, `+endpointColumns+`,
 		       `+loadColumns+`, `+placeColumns+`
 		FROM orders o `+endpointJoins+loadJoin+placeJoin+`
 		WHERE o.driver_id = $1 AND o.status = ANY($2)
@@ -267,11 +286,13 @@ func listDriverHistory(ctx context.Context, q db.Querier, driverID uuid.UUID, li
 	items, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DriverOrderSummary, error) {
 		var s DriverOrderSummary
 		dest := []any{&s.ID, &s.Number, &s.Status, &s.Category, &s.Fare, &s.Currency, &s.CommissionAmount,
-			&s.CommissionCharged, &s.PaymentMethod, &s.StopCount, &s.DistanceM, &s.Unknown, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt, &s.CancelledBy}
+			&s.CommissionCharged, &s.PaymentMethod, &s.StopCount, &s.DistanceM, &s.Unknown, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt, &s.CancelledBy,
+			&s.PromoDiscount}
 		dest = append(dest, endpointDest(&s.Pickup, &s.Destination)...)
 		dest = append(dest, loadDest(&s.OrderLoad)...)
 		err := row.Scan(append(dest, placeDest(&s.OrderPlace)...)...)
 		utc(&s.CreatedAt, s.CompletedAt, s.CancelledAt)
+		s.CashDue = s.Fare - s.PromoDiscount
 		return s, err
 	})
 	if err != nil {

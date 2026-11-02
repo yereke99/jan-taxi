@@ -43,12 +43,18 @@ const (
 	EntryAdjustmentCredit  = "adjustment_credit"
 	EntryAdjustmentDebit   = "adjustment_debit"
 	EntryBonusCredit       = "bonus_credit"
+	// EntryPromoCompensation credits the driver the discount a passenger's
+	// promotion took off the fare (§23.6); EntryPromoReversal takes it back on
+	// an operator's decision.
+	EntryPromoCompensation = "promo_compensation"
+	EntryPromoReversal     = "promo_compensation_reversal"
 )
 
 // EntryTypes lists every ledger entry type, for filter validation.
 var EntryTypes = []string{
 	EntryTopUpCredit, EntryTopUpRefund, EntryCommissionReserve, EntryCommissionRelease,
 	EntryCommissionCharge, EntryCommissionRefund, EntryAdjustmentCredit, EntryAdjustmentDebit, EntryBonusCredit,
+	EntryPromoCompensation, EntryPromoReversal,
 }
 
 // ValidEntryType reports whether t is a known ledger entry type.

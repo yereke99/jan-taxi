@@ -166,7 +166,7 @@ migrate-status: ## Show the database schema version
 admin-create: ## Create an admin: make admin-create EMAIL=a@b.kz ROLE=super_admin NAME="Full Name"
 	$(require_env_file)
 	@test -n "$(EMAIL)" -a -n "$(ROLE)" || { \
-		echo "usage: make admin-create EMAIL=... ROLE=super_admin|operator|driver_moderator|finance_manager|auditor [NAME=...]"; exit 2; }
+		echo "usage: make admin-create EMAIL=... ROLE=super_admin|operator|driver_moderator|finance_manager|auditor|marketing_manager [NAME=...]"; exit 2; }
 	@read -r -s -p "Password for $(EMAIL) (12+ characters): " pw; echo; \
 	read -r -s -p "Repeat password: " pw2; echo; \
 	if [ "$$pw" != "$$pw2" ]; then echo "passwords do not match"; exit 1; fi; \

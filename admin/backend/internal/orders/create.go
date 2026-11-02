@@ -15,6 +15,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
 	"github.com/yereke99/jantaxi/admin/backend/internal/commissionareas"
 	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
+	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
@@ -41,6 +42,11 @@ type createRequest struct {
 	RecipientPhone     *string `json:"recipient_phone"`
 	ProhibitedItemsAck *bool   `json:"prohibited_items_ack"`
 	IdempotencyKey     *string `json:"idempotency_key"`
+	// Promotion is "coupon", "bonus" or "none" (default); PromotionDiscount
+	// is the discount the app showed (§23.6). The server computes the real
+	// one and refuses the order (409 promotion_changed) when they differ.
+	Promotion         *string `json:"promotion"`
+	PromotionDiscount *int64  `json:"promotion_discount"`
 }
 
 // newOrder is a validated create request.
@@ -53,6 +59,7 @@ type newOrder struct {
 	CargoDescription *string
 	RecipientPhone   *string
 	Ack              bool
+	Promotion        marketing.PromotionRequest
 }
 
 // parseCreate validates everything that does not depend on the quote. fields
@@ -102,6 +109,7 @@ func parseCreate(req createRequest, fields map[string]string) (newOrder, bool) {
 	if req.ProhibitedItemsAck != nil {
 		n.Ack = *req.ProhibitedItemsAck
 	}
+	n.Promotion = marketing.ParseRequest(req.Promotion, req.PromotionDiscount, fields)
 	return n, ok
 }
 
@@ -314,7 +322,11 @@ func (s *Service) createOrder(w http.ResponseWriter, r *http.Request) error {
 		if err := checkCancelsAfterAccept(ctx, tx, p.UserID); err != nil {
 			return err
 		}
-		orderID, err = insertOrder(ctx, tx, p.UserID, quote, n)
+		plan, err := marketing.PlanOrder(ctx, tx, p.UserID, quote.Category, int64(n.Fare), n.Promotion)
+		if err != nil {
+			return err
+		}
+		orderID, err = insertOrder(ctx, tx, p.UserID, quote, n, plan)
 		return err
 	})
 	switch {
@@ -353,7 +365,8 @@ func (s *Service) createOrder(w http.ResponseWriter, r *http.Request) error {
 // insertOrder writes the order, its stops, route snapshot and first status
 // event, consumes the quote, offers the order to eligible drivers and queues
 // the passenger notification and realtime events.
-func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricing.StoredQuote, n newOrder) (uuid.UUID, error) {
+func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricing.StoredQuote, n newOrder,
+	promo marketing.Plan) (uuid.UUID, error) {
 	if len(q.Stops) < stops.MinPoints || len(q.Stops) > stops.MaxPoints {
 		return uuid.Nil, httpx.Validation(map[string]string{"quote_id": "invalid"})
 	}
@@ -383,10 +396,10 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 		                    commission_amount, payment_method, tariff_id, quote_id, distance_m, duration_s,
 		                    stop_count, pickup_lat, pickup_lon, idempotency_key, search_expires_at,
 		                    vehicle_class, passenger_count, cargo_size, cargo_volume_l, commission_mode, locality,
-		                    commission_area_id, commission_area_name)
+		                    commission_area_id, commission_area_name, promo_discount)
 		SELECT $1, c.id, $3, $4, $5, $6, $7, $8, $9, 'searching', $10, $11, $12, $13, $14, $15, $16, $17,
 		       $18, $19, $20, $21, now() + make_interval(secs => c.search_timeout_s), $22, $23, $24, $25, $26, $27,
-		       $28, $29
+		       $28, $29, $30
 		FROM cities c WHERE c.id = $2
 		RETURNING id, number`,
 		passengerID, q.CityID, q.Category, lifecycle.ServiceType(q.Category), lifecycle.CargoType(q.Category),
@@ -394,7 +407,7 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 		bps, commission, n.PaymentMethod, q.TariffID, q.ID, pricing.Metric(q.DistanceM, pricing.Manual(q.Stops)), pricing.Metric(q.DurationS, pricing.Manual(q.Stops)),
 		len(q.Stops), pickup.Lat, pickup.Lon, n.IdempotencyKey,
 		q.VehicleClass, q.PassengerCount, q.CargoSize, q.CargoVolumeL, mode, q.Locality,
-		areaID, areaName).Scan(&id, &number)
+		areaID, areaName, promo.Discount).Scan(&id, &number)
 	switch {
 	case db.IsUniqueViolation(err, lifecycle.IdxOneActivePerPassenger):
 		return uuid.Nil, errActiveRace
@@ -425,12 +438,20 @@ func insertOrder(ctx context.Context, tx pgx.Tx, passengerID uuid.UUID, q pricin
 	if err := pricing.MarkQuoteUsed(ctx, tx, q.ID); err != nil {
 		return uuid.Nil, err
 	}
+	// The promotion is reserved before drivers are offered the order, so
+	// their offers already show the cash to collect.
+	if err := marketing.Reserve(ctx, tx, promo, id); err != nil {
+		return uuid.Nil, err
+	}
 	if _, err := dispatch.OfferNewOrder(ctx, tx, id); err != nil {
 		return uuid.Nil, err
 	}
+	created := map[string]any{"order_id": id.String(), "order_number": number, "fare": n.Fare}
+	if !promo.None() {
+		created["discount"], created["cash_due"] = promo.Discount, int64(n.Fare)-promo.Discount
+	}
 	if err := lifecycle.Notify(ctx, tx, notifications.PassengerBot, passengerID, notifications.TplOrderCreatedPassenger,
-		map[string]any{"order_id": id.String(), "order_number": number, "fare": n.Fare},
-		"order_created_passenger:"+id.String()); err != nil {
+		created, "order_created_passenger:"+id.String()); err != nil {
 		return uuid.Nil, err
 	}
 	data := map[string]any{"order_id": id.String(), "order_number": number, "status": lifecycle.StatusSearching,

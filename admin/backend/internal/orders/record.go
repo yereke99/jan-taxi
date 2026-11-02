@@ -47,6 +47,7 @@ type record struct {
 	CommissionMode     string
 	DriverETAS         *int
 	DriverETAAt        *time.Time
+	PromoDiscount      int64
 	SearchExpiresAt    *time.Time
 	AcceptedAt         *time.Time
 	ArrivedAt          *time.Time
@@ -125,7 +126,7 @@ const recordColumns = `
 	o.commission_bps, o.commission_amount, o.payment_method, o.tariff_id, o.quote_id, COALESCE(o.distance_m,0), COALESCE(o.duration_s,0),
 	o.stop_count, o.cancel_reason, o.cancelled_by, o.search_expires_at, o.accepted_at, o.arrived_at, o.started_at,
 	o.completed_at, o.cancelled_at, o.version, o.created_at, o.updated_at,
-	o.cancel_reason_code, o.commission_mode, o.driver_eta_s, o.driver_eta_at,
+	o.cancel_reason_code, o.commission_mode, o.driver_eta_s, o.driver_eta_at, o.promo_discount,
 	c.code, c.name_kk, c.name_ru, c.name_en,
 	pu.telegram_user_id, pu.first_name, pu.last_name, pu.username, pu.phone_e164, pu.phone_verified_at IS NOT NULL,
 	pu.is_blocked,
@@ -165,7 +166,7 @@ func scanRecord(row scanner) (record, error) {
 		&r.CommissionBps, &r.CommissionAmount, &r.PaymentMethod, &r.TariffID, &r.QuoteID, &r.DistanceM, &r.DurationS,
 		&r.StopCount, &r.CancelReason, &r.CancelledBy, &r.SearchExpiresAt, &r.AcceptedAt, &r.ArrivedAt, &r.StartedAt,
 		&r.CompletedAt, &r.CancelledAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
-		&r.CancelReasonCode, &r.CommissionMode, &r.DriverETAS, &r.DriverETAAt,
+		&r.CancelReasonCode, &r.CommissionMode, &r.DriverETAS, &r.DriverETAAt, &r.PromoDiscount,
 		&r.City.Code, &r.City.Name.KK, &r.City.Name.RU, &r.City.Name.EN,
 		&r.Passenger.TelegramID, &r.Passenger.FirstName, &r.Passenger.LastName, &r.Passenger.Username,
 		&r.Passenger.Phone, &r.Passenger.PhoneVerified, &r.Passenger.IsBlocked,

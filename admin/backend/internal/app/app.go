@@ -125,6 +125,7 @@ func NewWithPool(ctx context.Context, cfg config.Config, log *slog.Logger, pool 
 		{"orders", a.wireOrders},
 		{"drivers", a.wireDrivers},
 		{"finance", a.wireFinance},
+		{"marketing", a.wireMarketing},
 		{"bot api", a.wireBotAPI},
 	}
 	for _, h := range hooks {

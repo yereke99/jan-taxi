@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders/lifecycle"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/httpx"
@@ -26,27 +27,32 @@ type Order struct {
 	CargoType   string    `json:"cargo_type"`
 	OrderLoad
 	OrderPlace
-	CargoDescription *string           `json:"cargo_description"`
-	RecipientPhone   *string           `json:"recipient_phone"`
-	Comment          *string           `json:"comment"`
-	Fare             int64             `json:"fare"`
-	Currency         string            `json:"currency"`
-	PaymentMethod    string            `json:"payment_method"`
-	DistanceM        int               `json:"distance_m"`
-	DurationS        int               `json:"duration_s"`
-	StopCount        int               `json:"stop_count"`
-	City             CityRef           `json:"city"`
-	Stops            []stops.Stop      `json:"stops"`
-	Route            RouteSnapshot     `json:"route"`
-	Driver           *OrderDriver      `json:"driver"`
-	Vehicle          *Vehicle          `json:"vehicle"`
-	DriverLocation   *DriverLocation   `json:"driver_location"`
-	Events           []OrderEvent      `json:"events"`
-	Rating           *OrderRating      `json:"rating"`
-	Dispute          *OrderDisputeInfo `json:"dispute"`
-	CancelReason     *string           `json:"cancel_reason"`
-	CancelReasonCode *string           `json:"cancel_reason_code"`
-	CancelledBy      *string           `json:"cancelled_by"`
+	CargoDescription *string `json:"cargo_description"`
+	RecipientPhone   *string `json:"recipient_phone"`
+	Comment          *string `json:"comment"`
+	Fare             int64   `json:"fare"`
+	Currency         string  `json:"currency"`
+	PaymentMethod    string  `json:"payment_method"`
+	// PromoDiscount is the coupon or bonus taken off the fare (§23.6);
+	// CashDue = Fare - PromoDiscount is what the passenger pays the driver.
+	PromoDiscount    int64                     `json:"promo_discount"`
+	CashDue          int64                     `json:"cash_due"`
+	Promotion        *marketing.OrderPromotion `json:"promotion"`
+	DistanceM        int                       `json:"distance_m"`
+	DurationS        int                       `json:"duration_s"`
+	StopCount        int                       `json:"stop_count"`
+	City             CityRef                   `json:"city"`
+	Stops            []stops.Stop              `json:"stops"`
+	Route            RouteSnapshot             `json:"route"`
+	Driver           *OrderDriver              `json:"driver"`
+	Vehicle          *Vehicle                  `json:"vehicle"`
+	DriverLocation   *DriverLocation           `json:"driver_location"`
+	Events           []OrderEvent              `json:"events"`
+	Rating           *OrderRating              `json:"rating"`
+	Dispute          *OrderDisputeInfo         `json:"dispute"`
+	CancelReason     *string                   `json:"cancel_reason"`
+	CancelReasonCode *string                   `json:"cancel_reason_code"`
+	CancelledBy      *string                   `json:"cancelled_by"`
 	// DriverETAS is the driver's estimated time to the pickup in seconds,
 	// computed from the driver's latest location while the order is accepted
 	// (§22.6); DriverETAAt is when it was computed.
@@ -159,6 +165,12 @@ func passengerOrder(ctx context.Context, q db.Querier, id, passengerID uuid.UUID
 	if latest != nil {
 		o.Dispute = latest.info()
 	}
+	o.PromoDiscount, o.CashDue = r.PromoDiscount, r.Fare-r.PromoDiscount
+	if r.PromoDiscount > 0 {
+		if o.Promotion, err = marketing.LoadOrderPromotion(ctx, q, r.ID); err != nil {
+			return Order{}, err
+		}
+	}
 	if r.Status == lifecycle.StatusAccepted || r.Status == lifecycle.StatusDriverArriving {
 		o.DriverETAS, o.DriverETAAt = r.DriverETAS, r.DriverETAAt
 	}
@@ -196,6 +208,8 @@ type OrderSummary struct {
 	Fare            int64         `json:"fare"`
 	Currency        string        `json:"currency"`
 	PaymentMethod   string        `json:"payment_method"`
+	PromoDiscount   int64         `json:"promo_discount"`
+	CashDue         int64         `json:"cash_due"`
 	Pickup          stops.Summary `json:"pickup"`
 	Destination     stops.Summary `json:"destination"`
 	StopCount       int           `json:"stop_count"`
@@ -232,7 +246,7 @@ func listPassengerOrders(ctx context.Context, q db.Querier, passengerID uuid.UUI
 	rows, err := q.Query(ctx, `
 		SELECT o.id, o.number, o.status, o.category, o.service_type, o.fare, o.currency, o.payment_method,
 		       o.stop_count, COALESCE(o.distance_m,0), o.distance_m IS NULL, d.first_name, r.rating, o.driver_id IS NOT NULL,
-		       o.created_at, o.completed_at, o.cancelled_at, `+endpointColumns+`, `+loadColumns+`, `+placeColumns+`
+		       o.created_at, o.completed_at, o.cancelled_at, o.promo_discount, `+endpointColumns+`, `+loadColumns+`, `+placeColumns+`
 		FROM orders o
 		LEFT JOIN driver_profiles d ON d.id = o.driver_id
 		LEFT JOIN order_ratings r ON r.order_id = o.id
@@ -249,13 +263,15 @@ func listPassengerOrders(ctx context.Context, q db.Querier, passengerID uuid.UUI
 		var rating *int16
 		var hasDriver bool
 		dest := []any{&s.ID, &s.Number, &s.Status, &s.Category, &s.ServiceType, &s.Fare, &s.Currency, &s.PaymentMethod,
-			&s.StopCount, &s.DistanceM, &s.Unknown, &s.DriverFirstName, &rating, &hasDriver, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt}
+			&s.StopCount, &s.DistanceM, &s.Unknown, &s.DriverFirstName, &rating, &hasDriver, &s.CreatedAt, &s.CompletedAt, &s.CancelledAt,
+			&s.PromoDiscount}
 		dest = append(dest, endpointDest(&s.Pickup, &s.Destination)...)
 		dest = append(dest, loadDest(&s.OrderLoad)...)
 		if err := row.Scan(append(dest, placeDest(&s.OrderPlace)...)...); err != nil {
 			return s, err
 		}
 		utc(&s.CreatedAt, s.CompletedAt, s.CancelledAt)
+		s.CashDue = s.Fare - s.PromoDiscount
 		if rating != nil {
 			v := int(*rating)
 			s.Rating = &v

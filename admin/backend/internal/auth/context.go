@@ -49,10 +49,13 @@ const (
 	RoleDriverModerator Role = "driver_moderator"
 	RoleFinanceManager  Role = "finance_manager"
 	RoleAuditor         Role = "auditor"
+	// RoleMarketingManager prepares campaigns, segments and broadcasts; money
+	// switches and activations need marketing.approve (ARCHITECTURE §23.10).
+	RoleMarketingManager Role = "marketing_manager"
 )
 
 // Roles lists all roles in display order.
-var Roles = []Role{RoleSuperAdmin, RoleOperator, RoleDriverModerator, RoleFinanceManager, RoleAuditor}
+var Roles = []Role{RoleSuperAdmin, RoleOperator, RoleDriverModerator, RoleFinanceManager, RoleAuditor, RoleMarketingManager}
 
 // Permission is a capability checked on admin routes.
 type Permission string
@@ -71,20 +74,29 @@ const (
 	PermAdminsManage    Permission = "admins.manage"
 	PermAuditView       Permission = "audit.view"
 	PermReportsExport   Permission = "reports.export"
+	// Marketing (§23.10): view campaigns and reports; edit drafts and
+	// segments; approve activations, budgets and money switches; send
+	// broadcasts.
+	PermMarketingView      Permission = "marketing.view"
+	PermMarketingEdit      Permission = "marketing.edit"
+	PermMarketingApprove   Permission = "marketing.approve"
+	PermMarketingBroadcast Permission = "marketing.broadcast"
 )
 
 var rolePermissions = map[Role]map[Permission]bool{
 	RoleSuperAdmin: set(PermDashboardView, PermOrdersView, PermOrdersManage, PermDriversView, PermDriversModerate,
 		PermDriversManage, PermDocumentsView, PermFinanceView, PermFinanceManage, PermConfigManage, PermAdminsManage,
-		PermAuditView, PermReportsExport),
+		PermAuditView, PermReportsExport, PermMarketingView, PermMarketingEdit, PermMarketingApprove,
+		PermMarketingBroadcast),
 	RoleOperator: set(PermDashboardView, PermOrdersView, PermOrdersManage, PermDriversView, PermDriversManage,
-		PermAuditView, PermReportsExport),
+		PermAuditView, PermReportsExport, PermMarketingView),
 	RoleDriverModerator: set(PermDashboardView, PermOrdersView, PermDriversView, PermDriversModerate, PermDriversManage,
 		PermDocumentsView),
 	RoleFinanceManager: set(PermDashboardView, PermOrdersView, PermDriversView, PermFinanceView, PermFinanceManage,
-		PermAuditView, PermReportsExport),
+		PermAuditView, PermReportsExport, PermMarketingView, PermMarketingApprove),
 	RoleAuditor: set(PermDashboardView, PermOrdersView, PermDriversView, PermFinanceView, PermAuditView,
-		PermReportsExport),
+		PermReportsExport, PermMarketingView),
+	RoleMarketingManager: set(PermDashboardView, PermMarketingView, PermMarketingEdit, PermMarketingBroadcast),
 }
 
 func set(ps ...Permission) map[Permission]bool {
@@ -106,7 +118,8 @@ func (r Role) Permissions() []Permission {
 	out := make([]Permission, 0, len(rolePermissions[r]))
 	for _, p := range []Permission{PermDashboardView, PermOrdersView, PermOrdersManage, PermDriversView,
 		PermDriversModerate, PermDriversManage, PermDocumentsView, PermFinanceView, PermFinanceManage,
-		PermConfigManage, PermAdminsManage, PermAuditView, PermReportsExport} {
+		PermConfigManage, PermAdminsManage, PermAuditView, PermReportsExport, PermMarketingView, PermMarketingEdit,
+		PermMarketingApprove, PermMarketingBroadcast} {
 		if r.Has(p) {
 			out = append(out, p)
 		}

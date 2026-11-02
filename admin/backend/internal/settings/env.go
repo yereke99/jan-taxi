@@ -330,3 +330,33 @@ func CompanyDetails(ctx context.Context, q db.Querier) Company {
 	_ = Effective(ctx, q, "company.address", &c.Address)
 	return c
 }
+
+// MarketingSwitches are the global marketing switches (ARCHITECTURE §23.9).
+// Turning awards off stops new coupons and bonuses; turning redemptions off
+// stops new reservations on orders (promotions already reserved still settle
+// or release); turning broadcasts off pauses every marketing send.
+type MarketingSwitches struct {
+	Awards      bool `json:"awards_enabled"`
+	Redemptions bool `json:"redemptions_enabled"`
+	Broadcasts  bool `json:"broadcasts_enabled"`
+}
+
+// Marketing returns the effective marketing switches.
+func Marketing(ctx context.Context, q db.Querier) MarketingSwitches {
+	var m MarketingSwitches
+	_ = Effective(ctx, q, "marketing.awards_enabled", &m.Awards)
+	_ = Effective(ctx, q, "marketing.redemptions_enabled", &m.Redemptions)
+	_ = Effective(ctx, q, "marketing.broadcasts_enabled", &m.Broadcasts)
+	return m
+}
+
+// BroadcastRate is the marketing send rate per bot (messages per second).
+func BroadcastRate(ctx context.Context, q db.Querier) int64 {
+	return max(effectiveInt(ctx, q, "marketing.broadcast_rate_per_s"), 1)
+}
+
+// BroadcastApprovalThreshold is the recipient count above which a broadcast
+// needs marketing.approve.
+func BroadcastApprovalThreshold(ctx context.Context, q db.Querier) int64 {
+	return max(effectiveInt(ctx, q, "marketing.broadcast_approval_threshold"), 1)
+}
