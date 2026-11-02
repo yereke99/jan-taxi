@@ -275,8 +275,9 @@ func (s *Service) adminNewVersion(w http.ResponseWriter, r *http.Request) error 
 		}
 		// Changing a campaign that is (or will be) live is an approver's call;
 		// drafts are edited freely.
-		// The manual bucket counts as live: its per-credit cap is finance's.
-		live := c.Status != StatusDraft && c.Status != StatusEnded || c.Template == TemplateManualGrant
+		// System campaigns count as live: the launch promotions' rules and the
+		// manual bucket's per-credit cap are approvers' decisions.
+		live := c.Status != StatusDraft && c.Status != StatusEnded || c.IsSystem
 		if live && !admin.Can(auth.PermMarketingApprove) || !live && !admin.Can(auth.PermMarketingEdit) {
 			return httpx.Forbidden()
 		}
@@ -342,13 +343,21 @@ func (s *Service) adminTransition(w http.ResponseWriter, r *http.Request) error 
 		if err := requireConfirm(req.Confirm); err != nil {
 			return err
 		}
+		if req.ExpectedVersion == nil {
+			return httpx.Validation(map[string]string{"expected_version": "required"})
+		}
 	}
 	err = s.tx(r, func(tx pgx.Tx) error {
 		c, err := loadCampaign(r.Context(), tx, id, true)
 		if err != nil {
 			return err
 		}
-		if t.approve && req.ExpectedVersion != nil && *req.ExpectedVersion != c.Version {
+		// The system campaigns (the customer's launch promotions and the
+		// manual bucket) are switched, paused and archived by approvers only.
+		if c.IsSystem && !admin.Can(auth.PermMarketingApprove) {
+			return httpx.Forbidden()
+		}
+		if t.approve && *req.ExpectedVersion != c.Version {
 			return httpx.NewError(409, "version_conflict", "the campaign changed since it was reviewed").
 				WithDetails(map[string]any{"current_version": c.Version})
 		}

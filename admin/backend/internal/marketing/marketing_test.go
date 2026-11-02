@@ -135,7 +135,7 @@ func errCode(body map[string]any) string {
 func TestAdminPermissions(t *testing.T) {
 	e := newAdminEnv(t)
 	coupon := "/marketing/campaigns/" + e.campaignID("first_ride_coupon_400")
-	activate := map[string]any{"action": "activate", "reason": "Іске қосу", "confirm": true}
+	activate := map[string]any{"action": "activate", "reason": "Іске қосу", "confirm": true, "expected_version": 1}
 
 	if code, body := e.do(auth.RoleAuditor, http.MethodGet, "/marketing/campaigns", nil); code != 200 || body["total"].(float64) < 3 {
 		t.Fatalf("auditor list: %d %v", code, body)
@@ -149,23 +149,31 @@ func TestAdminPermissions(t *testing.T) {
 		}
 	}
 	if code, body := e.do(auth.RoleFinanceManager, http.MethodPost, coupon+"/transition",
-		map[string]any{"action": "activate", "confirm": true}); code != 422 {
+		map[string]any{"action": "activate", "confirm": true, "expected_version": 1}); code != 422 {
 		t.Fatalf("activation without a reason: %d %v", code, body)
 	}
 	if code, body := e.do(auth.RoleFinanceManager, http.MethodPost, coupon+"/transition",
-		map[string]any{"action": "activate", "reason": "Іске қосу"}); code != 422 {
+		map[string]any{"action": "activate", "reason": "Іске қосу", "expected_version": 1}); code != 422 {
 		t.Fatalf("activation without confirmation: %d %v", code, body)
+	}
+	if code, body := e.do(auth.RoleFinanceManager, http.MethodPost, coupon+"/transition",
+		map[string]any{"action": "activate", "reason": "Іске қосу", "confirm": true}); code != 422 {
+		t.Fatalf("activation without the reviewed version: %d %v", code, body)
 	}
 	if code, body := e.do(auth.RoleFinanceManager, http.MethodPost, coupon+"/transition", activate); code != 200 || body["status"] != "active" {
 		t.Fatalf("approver activates: %d %v", code, body)
 	}
-	// A marketing manager may stop money from flowing, not restart it.
-	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, coupon+"/transition",
+	// The launch promotions are switched on and off by approvers only.
+	if code, _ := e.do(auth.RoleMarketingManager, http.MethodPost, coupon+"/transition",
+		map[string]any{"action": "pause"}); code != 403 {
+		t.Fatalf("manager pauses a launch campaign: %d", code)
+	}
+	if code, body := e.do(auth.RoleFinanceManager, http.MethodPost, coupon+"/transition",
 		map[string]any{"action": "pause"}); code != 200 || body["status"] != "paused" {
-		t.Fatalf("manager pauses: %d %v", code, body)
+		t.Fatalf("approver pauses: %d %v", code, body)
 	}
 	if code, _ := e.do(auth.RoleMarketingManager, http.MethodPost, coupon+"/transition",
-		map[string]any{"action": "resume", "reason": "Қайта қосу", "confirm": true}); code != 403 {
+		map[string]any{"action": "resume", "reason": "Қайта қосу", "confirm": true, "expected_version": 1}); code != 403 {
 		t.Fatalf("manager resumes: %d", code)
 	}
 	// A second live first-ride campaign is refused.
@@ -556,7 +564,10 @@ func TestManualBucketAndFrozenCredits(t *testing.T) {
 	e := newAdminEnv(t)
 	ctx := context.Background()
 	manual := "/marketing/campaigns/" + e.campaignID("manual_adjustments")
-	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, manual+"/transition", map[string]any{"action": "archive"}); code != 409 {
+	if code, body := e.do(auth.RoleMarketingManager, http.MethodPost, manual+"/transition", map[string]any{"action": "archive"}); code != 403 {
+		t.Fatalf("manager archives the manual bucket: %d %v", code, body)
+	}
+	if code, body := e.do(auth.RoleSuperAdmin, http.MethodPost, manual+"/transition", map[string]any{"action": "archive"}); code != 409 {
 		t.Fatalf("archive the manual bucket: %d %v", code, body)
 	}
 	if code, _ := e.do(auth.RoleMarketingManager, http.MethodPost, manual+"/versions",

@@ -228,7 +228,7 @@ func TestBusinessFlowsNotifyAndPublish(t *testing.T) {
 	}
 	for _, key := range []string{"first_ride_coupon_400", "referral_300_once"} {
 		e.admin(http.MethodPost, "/api/v1/admin/marketing/campaigns/"+campaignIDs[key]+"/transition", map[string]any{
-			"action": "activate", "reason": "Акцияны іске қосу", "confirm": true}, http.StatusOK)
+			"action": "activate", "reason": "Акцияны іске қосу", "confirm": true, "expected_version": 1}, http.StatusOK)
 	}
 	rideWithB := func(p flowUser, fare int, promo map[string]any) string {
 		o := e.createPromoOrder(p, fare, promo)
