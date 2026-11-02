@@ -23,6 +23,7 @@ import { ROUTE } from '../../router/names'
 import { useAutoFit, useStageScreen } from '../../stage/mapStage'
 import { MANUAL_DISABLED, useBookingStore } from '../../stores/booking'
 import { POOR_ACCURACY_M, useLocationStore } from '../../stores/location'
+import { usePromotionsStore } from '../../stores/promotions'
 import { useSessionStore } from '../../stores/session'
 import { haptics } from '../../telegram'
 import { hasCoordinates, roundCoord, type LatLon } from '../../utils/geo'
@@ -35,6 +36,7 @@ const router = useRouter()
 const stage = useStageScreen()
 const booking = useBookingStore()
 const location = useLocationStore()
+const promotions = usePromotionsStore()
 const session = useSessionStore()
 
 stage.controls.locate = true
@@ -177,6 +179,8 @@ onMounted(() => {
   booking.pruneEmptyStops()
   booking.schedulePreview(true)
   void fillPickup()
+  // The confirmation shows the passenger's coupon or bonus: read them while the route is chosen.
+  void promotions.ensureLoaded()
 })
 
 onBeforeUnmount(() => {

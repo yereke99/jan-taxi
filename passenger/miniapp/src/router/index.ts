@@ -12,6 +12,7 @@ declare module 'vue-router' {
 
 const home = { name: ROUTE.home }
 const book = { name: ROUTE.book }
+const profile = { name: ROUTE.profile }
 
 // Map-first screens are children of MapShell, so the one map instance stays
 // alive while the bottom sheet changes (§14).
@@ -56,6 +57,10 @@ const routes: RouteRecordRaw[] = [
   { path: '/driver', name: ROUTE.becomeDriver, component: () => import('../pages/BecomeDriverPage.vue'), meta: { backTo: home } },
   { path: '/language', name: ROUTE.language, component: () => import('../pages/LanguagePage.vue'), meta: { backTo: home } },
   { path: '/profile', name: ROUTE.profile, component: () => import('../pages/ProfilePage.vue'), meta: { backTo: home } },
+  // Promotions (§23), opened from the profile or a bot button (start parameters coupons / bonus / invite).
+  { path: '/coupons', name: ROUTE.coupons, component: () => import('../pages/CouponsPage.vue'), meta: { backTo: profile } },
+  { path: '/bonus', name: ROUTE.bonus, component: () => import('../pages/BonusPage.vue'), meta: { backTo: profile } },
+  { path: '/invite', name: ROUTE.invite, component: () => import('../pages/InvitePage.vue'), meta: { backTo: profile } },
   { path: '/:pathMatch(.*)*', redirect: home },
 ]
 

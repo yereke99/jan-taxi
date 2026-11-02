@@ -14,6 +14,12 @@ describe('parseStartParam (passenger, §18)', () => {
     ['orders', { kind: 'orders' }],
     ['support', { kind: 'support' }],
     ['driver', { kind: 'become_driver' }],
+    ['coupons', { kind: 'coupons' }],
+    ['bonus', { kind: 'bonus' }],
+    ['invite', { kind: 'invite' }],
+    // An invitation link: the server reads the code from the signed initData; the app opens home.
+    ['ref_AB2C3D4E', { kind: 'home' }],
+    ['ref_', { kind: 'home' }],
     ['order_7D9F2C1E-1111-4A2B-9C3D-123456789ABC', { kind: 'order', orderId: '7d9f2c1e-1111-4a2b-9c3d-123456789abc' }],
     ['order_not-a-uuid', { kind: 'home' }],
     ['unknown', { kind: 'home' }],
@@ -31,6 +37,9 @@ describe('parseStartParam (passenger, §18)', () => {
     'a'.repeat(65),
     'support%20',
     'тaxi',
+    'COUPONS',
+    'bonus ',
+    'invite_x',
   ])('rejects %j (strict format) and falls back to home', (param) => {
     expect(parseStartParam(param)).toEqual({ kind: 'home' })
   })
@@ -44,5 +53,8 @@ describe('intentLocation', () => {
     expect(intentLocation({ kind: 'order', orderId: 'abc' })).toEqual({ name: ROUTE.order, params: { id: 'abc' } })
     expect(intentLocation({ kind: 'support' })).toEqual({ name: ROUTE.support })
     expect(intentLocation({ kind: 'become_driver' })).toEqual({ name: ROUTE.becomeDriver })
+    expect(intentLocation({ kind: 'coupons' })).toEqual({ name: ROUTE.coupons })
+    expect(intentLocation({ kind: 'bonus' })).toEqual({ name: ROUTE.bonus })
+    expect(intentLocation({ kind: 'invite' })).toEqual({ name: ROUTE.invite })
   })
 })

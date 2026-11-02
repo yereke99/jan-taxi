@@ -1,7 +1,9 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
+import { defineComponent, h, type PropType } from 'vue'
 import { parseOrder } from '../../api/parse'
 import type { OrderSummary } from '../../api/types'
+import { usePromoText, type PromoBreakdownSource } from '../../composables/usePromoText'
 import { createI18nInstance } from '../../i18n/core'
 import { en } from '../../i18n/messages/en'
 import { kk } from '../../i18n/messages/kk'
@@ -10,6 +12,8 @@ import OrderStopList from './OrderStopList.vue'
 import OrderSummaryRow from './OrderSummaryRow.vue'
 
 const global = { plugins: [createI18nInstance({ kk, ru, en })] }
+/** Money uses no-break spaces. */
+const plain = (s: string) => s.replace(/\u00a0/g, ' ')
 
 function summary(over: Partial<OrderSummary> = {}): OrderSummary {
   return {
@@ -87,5 +91,44 @@ describe('OrderStopList', () => {
     const rows = w.findAll('.order-stops__row')
     expect(rows.map((r) => r.find('.order-stops__address').text())).toEqual(['Мешіттің жанында, көк қақпа', 'Картадағы нүкте', 'Ескі мәдениет үйі'])
     expect(rows.map((r) => r.text().includes('Жолаушы көрсеткен орын'))).toEqual([true, false, true])
+  })
+})
+
+describe('an order with a coupon or bonus (§23.6)', () => {
+  it('lists what the passenger pays with the fare crossed out under it', () => {
+    const w = mountRow({ fare: 1500, promo_discount: 400, cash_due: 1100 })
+    expect(plain(w.find('.summary__fare').text())).toBe('1 100 ₸')
+    const gross = w.find('s.summary__gross')
+    expect(plain(gross.text())).toBe('Сапар құны: 1 500 ₸')
+    expect(gross.find('.jt-visually-hidden').text()).toBe('Сапар құны:')
+  })
+
+  it('lists the fare alone without a promotion', () => {
+    const w = mountRow({ fare: 700, promo_discount: 0, cash_due: 700 })
+    expect(plain(w.find('.summary__fare').text())).toBe('700 ₸')
+    expect(w.find('.summary__gross').exists()).toBe(false)
+  })
+
+  it('lists a cancelled order at its plain fare: the discount is only a snapshot, nothing was paid', () => {
+    const w = mountRow({ status: 'cancelled', fare: 1500, promo_discount: 400, cash_due: 1100, cancelled_at: '2026-10-19T10:05:00Z' })
+    expect(plain(w.find('.summary__fare').text())).toBe('1 500 ₸')
+    expect(w.find('.summary__gross').exists()).toBe(false)
+  })
+
+  it('writes the compact breakdown under the price: the fare and what the coupon or bonus took off', () => {
+    const Line = defineComponent({
+      props: { o: { type: Object as PropType<PromoBreakdownSource>, required: true } },
+      setup(props) {
+        const promo = usePromoText()
+        return () => h('p', promo.breakdown(props.o))
+      },
+    })
+    const line = (o: PromoBreakdownSource) => plain(mount(Line, { props: { o }, global }).text())
+    expect(line({ fare: 1500, promo_discount: 400, cash_due: 1100, promotion: { kind: 'coupon' } })).toBe('1 500 ₸ · Купон −400 ₸')
+    expect(line({ fare: 700, promo_discount: 300, cash_due: 400, promotion: { kind: 'bonus' } })).toBe('700 ₸ · Бонус −300 ₸')
+    // A list row knows only the amounts.
+    expect(line({ fare: 1500, promo_discount: 400, cash_due: 1100 })).toBe('1 500 ₸ · Жеңілдік −400 ₸')
+    expect(line({ fare: 700, promo_discount: 0, cash_due: 700 })).toBe('')
+    expect(line({ fare: 1500, promo_discount: 400, cash_due: 1100, status: 'cancelled', promotion: { kind: 'coupon' } })).toBe('')
   })
 })

@@ -24,21 +24,34 @@
 //   map picker, a dragged marker); a place chosen for A replaces it. The
 //   default map centre named after a failed GPS attempt is not a point for
 //   such a text (pickupFallback).
+// * An order asks for the passenger's promotion (§23.6) as the server would
+//   apply it: a usable coupon of the order's service by itself (a delivery
+//   too, when the coupon covers it, at the fare the passenger chose), else
+//   the bonus balance (the services in bonus_categories: taxi) behind the
+//   «Бонусты қолдану» switch (on by default); never both. The fare stays what
+//   the passenger confirms (a taxi's class price); the discount and the cash
+//   price come from the promotions store's data, the server recomputes them.
 // * POST /orders carries an idempotency key that stays the same while the
-//   payload is the same, so a retry after a lost response replays the
-//   original order instead of creating a second one.
+//   payload (promotion included) is the same, so a retry after a lost
+//   response replays the original order instead of creating a second one.
 // * quote_expired / fare_not_allowed re-quote silently and ask the passenger
-//   to confirm again; active_order_exists hands over the existing order.
+//   to confirm again; active_order_exists hands over the existing order;
+//   promotion_changed re-reads the promotions and asks to confirm the new
+//   price (never re-sent by itself). A promotion the server refused although
+//   the fresh data still offers it is left out: a coupon (its campaign's
+//   coupons frozen) until GET /promotions changes it (promotions store), the
+//   bonus for this booking.
 
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch } from 'vue'
 import { reverseGeocode } from '../api/geo'
 import { createOrder } from '../api/orders'
 import { previewRoute } from '../api/routes'
-import type { Order, RoutePreviewRequest, RouteQuote, RouteQuoteOption, StopInput } from '../api/types'
+import type { Order, OrderCreateRequest, PromotionKind, RoutePreviewRequest, RouteQuote, RouteQuoteOption, StopInput } from '../api/types'
 import { detailsPayload, isDelivery, validateDetails, type DetailsField, type DetailsInput } from '../domain/details'
 import { clampFare, fareAfterRequote, isAllowedFare } from '../domain/fare'
 import { createLatest } from '../domain/latest'
+import { choosePromotion, couponBelowMinimum, type PromotionOffer } from '../domain/promotions'
 import {
   addStop as addStopTo,
   canAddStop,
@@ -64,6 +77,7 @@ import { isApiError, newIdempotencyKey } from '../services/http'
 import type { DeviceLocation } from '../telegram'
 import type { Category, PaymentMethod } from '../utils/status'
 import { cleanText, codePointLength } from '../utils/text'
+import { usePromotionsStore } from './promotions'
 import { useSessionStore } from './session'
 import { hasCoordinates, roundCoord, isValidLatLon } from '../utils/geo'
 
@@ -82,6 +96,8 @@ export type SubmitResult =
   | { kind: 'invalid' }
   /** The stops need changes (see stopErrors / previewError). */
   | { kind: 'route_invalid' }
+  /** The server would apply another promotion than the one shown; the passenger confirms the new price. */
+  | { kind: 'promotion_changed' }
   | { kind: 'busy' }
   | { kind: 'failed'; error: unknown }
 
@@ -146,6 +162,7 @@ export function stopErrorsFrom(err: unknown, stops: readonly RouteStop[] = []): 
 
 export const useBookingStore = defineStore('booking', () => {
   const session = useSessionStore()
+  const promotions = usePromotionsStore()
 
   // --- Route ---------------------------------------------------------------
   const category = ref<Category>('taxi')
@@ -242,6 +259,53 @@ export const useBookingStore = defineStore('booking', () => {
     recipientPhone: recipientPhone.value,
     prohibitedItemsAck: prohibitedItemsAck.value,
   }))
+
+  // --- Promotion (§23.6) -----------------------------------------------------
+  /** «Бонусты қолдану» on the confirmation sheet; on for every new booking. */
+  const useBonus = ref(true)
+  /** Kinds the server refused for this booking although the fresh promotions still offer them (the bonus). */
+  const refusedPromotions = ref<PromotionKind[]>([])
+  /** Set after 409 promotion_changed: the passenger checks the new price and confirms again. */
+  const promotionChanged = ref(false)
+
+  /** The promotion this booking can use at the fare `at`, before the bonus switch. */
+  function promotionAt(at: number | null): PromotionOffer | null {
+    return choosePromotion(promotions.usable, category.value, at, promotions.clock, refusedPromotions.value)
+  }
+
+  /** What the order would ask for at the fare `at`: the coupon, or the bonus while its switch is on. */
+  function appliedAt(at: number | null): PromotionOffer | null {
+    const p = promotionAt(at)
+    return p && (p.kind === 'coupon' || useBonus.value) ? p : null
+  }
+
+  /** The promotion this order can use at its fare. */
+  const promotion = computed<PromotionOffer | null>(() => promotionAt(fare.value))
+  /** What the order asks for: the coupon, or the bonus while its switch is on. */
+  const appliedPromotion = computed<PromotionOffer | null>(() => appliedAt(fare.value))
+  /** What the passenger pays the driver: the fare less the applied promotion. */
+  const payable = computed(() => (fare.value === null ? null : payableAt(fare.value)))
+  /** An active coupon this order is too cheap for ("applies from 400 ₸"). */
+  const couponFloor = computed(() => couponBelowMinimum(promotions.usable, category.value, fare.value, promotions.clock))
+
+  /**
+   * What the passenger would pay at the fare `at` (another class's price):
+   * the fare less the promotion this booking would apply to it.
+   */
+  function payableAt(at: number): number {
+    return at - (appliedAt(at)?.discount ?? 0)
+  }
+
+  /**
+   * The promotion fields of POST /orders: the applied promotion and the
+   * discount shown, or an explicit "none". Nothing while the promotions are
+   * unknown (an API without them refuses unknown fields).
+   */
+  function promotionFields(): Pick<OrderCreateRequest, 'promotion' | 'promotion_discount'> {
+    if (!promotions.data) return {}
+    const p = appliedPromotion.value
+    return p ? { promotion: p.kind, promotion_discount: p.discount } : { promotion: 'none', promotion_discount: 0 }
+  }
 
   // --- Preview -------------------------------------------------------------
   /**
@@ -390,6 +454,14 @@ export const useBookingStore = defineStore('booking', () => {
     fare.value = null
     syncFare(selectedOption.value)
     reconfirm.value = false
+    resetPromotion()
+  }
+
+  /** A new booking: the bonus switch on again, the bonus no longer refused (refused coupons stay with the promotions store). */
+  function resetPromotion(): void {
+    useBonus.value = true
+    refusedPromotions.value = []
+    promotionChanged.value = false
   }
 
   // --- Route editing -------------------------------------------------------
@@ -549,7 +621,26 @@ export const useBookingStore = defineStore('booking', () => {
     return Object.keys(next).length > 0
   }
 
-  async function handleSubmitError(err: unknown): Promise<SubmitResult> {
+  /**
+   * 409 promotion_changed: the server would apply another promotion (or none)
+   * than `sent`. The promotions are read again and the new price waits for
+   * the passenger's confirmation. When the fresh data still offers exactly
+   * what was refused, the reason is one the app cannot see (the campaign's
+   * coupons frozen): that coupon is left out until GET /promotions changes it
+   * (later bookings too), the bonus for this booking.
+   */
+  async function promotionRefused(sent: PromotionOffer | null): Promise<SubmitResult> {
+    await promotions.refresh()
+    const fresh = appliedPromotion.value
+    if (sent && fresh && fresh.kind === sent.kind && fresh.discount === sent.discount && fresh.coupon?.id === sent.coupon?.id) {
+      if (fresh.coupon) promotions.refuseCoupon(fresh.coupon)
+      else refusedPromotions.value = [...refusedPromotions.value, sent.kind]
+    }
+    promotionChanged.value = true
+    return { kind: 'promotion_changed' }
+  }
+
+  async function handleSubmitError(err: unknown, sent: PromotionOffer | null): Promise<SubmitResult> {
     if (!isApiError(err)) return { kind: 'failed', error: err }
     switch (err.code) {
       case 'quote_expired':
@@ -560,6 +651,8 @@ export const useBookingStore = defineStore('booking', () => {
           return { kind: 'requoted' }
         }
         return { kind: 'route_invalid' }
+      case 'promotion_changed':
+        return await promotionRefused(sent)
       case 'conflict': {
         const reason = err.details.reason
         const activeId = err.details.active_order_id
@@ -599,6 +692,7 @@ export const useBookingStore = defineStore('booking', () => {
     const q = selectedOption.value
     if (!q || !quoteCurrent.value || blockedStops.value.length > 0) return { kind: 'route_invalid' }
     submitting.value = true
+    const sent = appliedPromotion.value
     try {
       if (quoteExpiring(q)) {
         if (await requote()) {
@@ -612,14 +706,16 @@ export const useBookingStore = defineStore('booking', () => {
         fare: fare.value!,
         payment_method: paymentMethod.value,
         ...detailsPayload(detailsInput.value),
+        ...promotionFields(),
       }
       const idempotencyKey = idempotencyKeyFor(JSON.stringify(body))
       reconfirm.value = false
+      promotionChanged.value = false
       const order = await createOrder({ ...body, idempotency_key: idempotencyKey })
       resetDraft()
       return { kind: 'created', order }
     } catch (err) {
-      return await handleSubmitError(err)
+      return await handleSubmitError(err, sent)
     } finally {
       submitting.value = false
     }
@@ -650,6 +746,7 @@ export const useBookingStore = defineStore('booking', () => {
     classChoice.value = null
     fieldErrors.value = {}
     reconfirm.value = false
+    resetPromotion()
     attempt = null
   }
 
@@ -692,6 +789,14 @@ export const useBookingStore = defineStore('booking', () => {
     fieldErrors,
     submitting,
     reconfirm,
+    // promotion
+    useBonus,
+    promotionChanged,
+    promotion,
+    appliedPromotion,
+    payable,
+    couponFloor,
+    payableAt,
     // actions
     setCategory,
     setPassengerCount,

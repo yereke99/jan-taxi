@@ -8,9 +8,19 @@ import type { LineStringGeometry, Position } from '../maps'
 import { CARGO_SIZE_CODES, localizedOrNull, VEHICLE_ICONS, type CargoSize } from '../services/config'
 import { ApiError } from '../services/http'
 import { CATEGORIES, ORDER_STATUSES, PAYMENT_METHODS, type Category, type OrderStatus, type PaymentMethod } from '../utils/status'
-import { CANCEL_REASON_CODES } from './types'
+import {
+  BONUS_ENTRY_TYPES,
+  CANCEL_REASON_CODES,
+  COUPON_STATUSES,
+  ORDER_PROMOTION_STATUSES,
+  PROMOTION_KINDS,
+  REFERRAL_FRIEND_STATUSES,
+  REFERRAL_LOCK_REASONS,
+  REFERRAL_STATES,
+} from './types'
 import type {
   BBox,
+  BonusEntry,
   CityRef,
   CursorPage,
   DriverLocation,
@@ -23,10 +33,19 @@ import type {
   OrderEvent,
   OrderLoad,
   OrderPlace,
+  OrderPromoAmounts,
+  OrderPromotion,
   OrderRating,
   OrderStop,
   OrderSummary,
+  PromoBanner,
+  PromoCoupon,
+  PromoOffer,
+  Promotions,
   QuoteStop,
+  ReferralFriend,
+  ReferralSummary,
+  ReferralView,
   RouteLeg,
   RouteQuote,
   RouteQuoteOption,
@@ -131,6 +150,47 @@ function parsePlace(r: Rec): OrderPlace {
   return {
     locality: isUnnamedPlace(locality) ? null : locality,
     tariff_region: parseTariffRegion(r.tariff_region),
+  }
+}
+
+/** A whole, non-negative KZT amount. */
+function money(v: unknown): number {
+  return Math.max(0, Math.round(num(v)))
+}
+
+function categories(v: unknown): Category[] {
+  return arr(v)
+    .map((c) => oneOf(CATEGORIES, c))
+    .filter((c): c is Category => c !== null)
+}
+
+/**
+ * What a coupon or bonus took off an order and the cash the passenger pays
+ * (§23.6). An API without promotions reads as no discount: the passenger
+ * pays the fare.
+ */
+function parsePromoAmounts(r: Rec, fare: number): OrderPromoAmounts {
+  const discount = Math.min(money(r.promo_discount), Math.max(0, fare))
+  const cash = numOrNull(r.cash_due)
+  return { promo_discount: discount, cash_due: cash !== null && cash >= 0 ? cash : fare - discount }
+}
+
+function parseOrderPromotion(v: unknown): OrderPromotion | null {
+  const r = rec(v)
+  const kind = oneOf(PROMOTION_KINDS, r.kind)
+  if (!kind) return null
+  const discount = money(r.discount)
+  const gross = money(r.gross_fare)
+  const cash = numOrNull(r.cash_due)
+  return {
+    kind,
+    title: localizedOrNull(r.title),
+    discount,
+    gross_fare: gross,
+    cash_due: cash !== null && cash >= 0 ? cash : Math.max(0, gross - discount),
+    status: oneOf(ORDER_PROMOTION_STATUSES, r.status) ?? 'reserved',
+    compensation: numOrNull(r.compensation),
+    settled_at: strOrNull(r.settled_at),
   }
 }
 
@@ -424,6 +484,7 @@ export function parseOrder(v: unknown): Order {
   const id = strOrNull(r.id)
   if (!id) throw bad('order')
   const stops = arr(r.stops)
+  const fare = num(r.fare)
   return {
     id,
     number: num(r.number),
@@ -434,7 +495,9 @@ export function parseOrder(v: unknown): Order {
     cargo_description: strOrNull(r.cargo_description),
     recipient_phone: strOrNull(r.recipient_phone),
     comment: strOrNull(r.comment),
-    fare: num(r.fare),
+    fare,
+    ...parsePromoAmounts(r, fare),
+    promotion: parseOrderPromotion(r.promotion),
     payment_method: paymentMethod(r.payment_method),
     distance_m: numOrNull(r.distance_m),
     duration_s: numOrNull(r.duration_s),
@@ -487,6 +550,7 @@ export function parseOrderSummary(v: unknown): OrderSummary | null {
   const id = strOrNull(r.id)
   const st = oneOf(ORDER_STATUSES, r.status)
   if (!id || !st) return null
+  const fare = num(r.fare)
   return {
     id,
     number: num(r.number),
@@ -494,7 +558,8 @@ export function parseOrderSummary(v: unknown): OrderSummary | null {
     category: category(r.category),
     ...parseLoad(r),
     ...parsePlace(r),
-    fare: num(r.fare),
+    fare,
+    ...parsePromoAmounts(r, fare),
     payment_method: paymentMethod(r.payment_method),
     pickup: parseStopSummary(r.pickup, 'pickup'),
     destination: parseStopSummary(r.destination, 'destination'),
@@ -515,6 +580,149 @@ export function parseOrderPage(v: unknown): CursorPage<OrderSummary> {
     items: arr(r.items)
       .map(parseOrderSummary)
       .filter((o): o is OrderSummary => o !== null),
+    next_cursor: strOrNull(r.next_cursor),
+  }
+}
+
+// --- Promotions (§23) --------------------------------------------------------------
+
+function parseCoupon(v: unknown): PromoCoupon | null {
+  const r = rec(v)
+  const id = strOrNull(r.id)
+  const st = oneOf(COUPON_STATUSES, r.status)
+  const amount = money(r.amount)
+  if (!id || !st || amount <= 0) return null
+  return {
+    id,
+    title: localizedOrNull(r.title),
+    amount,
+    min_order_fare: money(r.min_order_fare),
+    categories: categories(r.categories),
+    status: st,
+    issued_at: str(r.issued_at),
+    expires_at: str(r.expires_at),
+    reserved_order_id: strOrNull(r.reserved_order_id),
+    redeemed_at: strOrNull(r.redeemed_at),
+  }
+}
+
+/** Offers the app can present; another kind is skipped. */
+function parseOffer(v: unknown): PromoOffer | null {
+  const r = rec(v)
+  const amount = money(r.amount)
+  if (r.kind !== 'first_ride_coupon' || amount <= 0) return null
+  return {
+    kind: 'first_ride_coupon',
+    title: localizedOrNull(r.title),
+    description: localizedOrNull(r.description),
+    amount,
+    validity_hours: positiveIntOrNull(r.validity_hours),
+    categories: categories(r.categories),
+  }
+}
+
+function parseBanner(v: unknown): PromoBanner | null {
+  const r = rec(v)
+  const id = strOrNull(r.id)
+  const title = localizedOrNull(r.title)
+  const description = localizedOrNull(r.description)
+  return id && (title || description) ? { id, title, description } : null
+}
+
+function parseReferralSummary(r: Rec): ReferralSummary {
+  return {
+    state: oneOf(REFERRAL_STATES, r.state) ?? 'unavailable',
+    lock_reason: oneOf(REFERRAL_LOCK_REASONS, r.lock_reason),
+    reward_amount: money(r.reward_amount),
+    rewarded: bool(r.rewarded),
+  }
+}
+
+/**
+ * GET /promotions. Missing parts read as nothing to offer: no coupons, an
+ * empty bonus balance, inviting unavailable.
+ */
+export function parsePromotions(v: unknown): Promotions {
+  const r = rec(v)
+  const bonus = rec(r.bonus)
+  const balance = money(bonus.balance)
+  const reserved = money(bonus.reserved)
+  return {
+    server_time: str(r.server_time),
+    redemptions_enabled: bool(r.redemptions_enabled),
+    coupons: arr(r.coupons)
+      .map(parseCoupon)
+      .filter((c): c is PromoCoupon => c !== null),
+    bonus: { balance, reserved, available: bonus.available === undefined ? Math.max(0, balance - reserved) : money(bonus.available) },
+    bonus_categories: categories(r.bonus_categories),
+    offers: arr(r.offers)
+      .map(parseOffer)
+      .filter((o): o is PromoOffer => o !== null),
+    banners: arr(r.banners)
+      .map(parseBanner)
+      .filter((b): b is PromoBanner => b !== null),
+    referral: parseReferralSummary(rec(r.referral)),
+    // The API's default: marketing messages stay on until the passenger turns them off.
+    marketing_subscribed: r.marketing_subscribed !== false,
+  }
+}
+
+/** The invitation links the API builds: https://t.me/<bot>?start=ref_<code> or ?startapp=ref_<code>. */
+const REFERRAL_LINK_RE = /^https:\/\/t\.me\/[A-Za-z][A-Za-z0-9_]{3,31}\?start(?:app)?=ref_[A-Za-z0-9]{4,16}$/
+const REFERRAL_CODE_RE = /^[A-Za-z0-9]{4,16}$/
+
+/** Only an invitation link of the passenger bot is kept; anything else is dropped rather than shared. */
+function referralLink(v: unknown): string | null {
+  const s = str(v).trim()
+  return REFERRAL_LINK_RE.test(s) ? s : null
+}
+
+function parseFriend(v: unknown): ReferralFriend | null {
+  const r = rec(v)
+  const st = oneOf(REFERRAL_FRIEND_STATUSES, r.status)
+  if (!st) return null
+  return { name: str(r.name).trim() || 'Telegram', status: st, attributed_at: str(r.attributed_at) }
+}
+
+/** GET /promotions/referral. */
+export function parseReferral(v: unknown): ReferralView {
+  const r = rec(v)
+  const code = str(r.code).trim()
+  return {
+    ...parseReferralSummary(r),
+    title: localizedOrNull(r.title),
+    description: localizedOrNull(r.description),
+    code: REFERRAL_CODE_RE.test(code) ? code : null,
+    link: referralLink(r.link),
+    app_link: referralLink(r.app_link),
+    earned: money(r.earned),
+    friends: arr(r.friends)
+      .map(parseFriend)
+      .filter((f): f is ReferralFriend => f !== null),
+  }
+}
+
+function parseBonusEntry(v: unknown): BonusEntry | null {
+  const r = rec(v)
+  const id = numOrNull(r.id)
+  const type = oneOf(BONUS_ENTRY_TYPES, r.type)
+  if (id === null || !type) return null
+  return {
+    id,
+    type,
+    amount: Math.round(num(r.amount)),
+    order_number: positiveIntOrNull(r.order_number),
+    created_at: str(r.created_at),
+  }
+}
+
+/** GET /promotions/bonus/history: newest first, cursor pages. */
+export function parseBonusPage(v: unknown): CursorPage<BonusEntry> {
+  const r = rec(v)
+  return {
+    items: arr(r.items)
+      .map(parseBonusEntry)
+      .filter((e): e is BonusEntry => e !== null),
     next_cursor: strOrNull(r.next_cursor),
   }
 }

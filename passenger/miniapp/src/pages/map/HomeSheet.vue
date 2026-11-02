@@ -21,6 +21,7 @@ import { JSheet } from '../../components/ui'
 import { useStopText } from '../../composables/useStopText'
 import { createLatest } from '../../domain/latest'
 import { placeKey } from '../../domain/places'
+import { hasPromo, payable } from '../../domain/promotions'
 import type { PlaceValue } from '../../domain/route'
 import { BOOKING_FROM_HOME, ROUTE } from '../../router/names'
 import { useRealtime } from '../../services/realtime'
@@ -266,7 +267,10 @@ onBeforeUnmount(() => {
           <span class="home-active__status">{{ t(`order_status.${o.status}`) }}</span>
           <span class="home-active__route">{{ stopText(o.pickup) }} → {{ stopText(o.destination) }}</span>
         </span>
-        <span class="home-active__fare jt-tabular">{{ formatMoney(o.fare, session.language) }}</span>
+        <span class="home-active__price">
+          <span class="home-active__fare jt-tabular">{{ formatMoney(payable(o), session.language) }}</span>
+          <s v-if="hasPromo(o)" class="home-active__gross jt-tabular"><span class="jt-visually-hidden">{{ t('promo.trip_fare') }}: </span>{{ formatMoney(o.fare, session.language) }}</s>
+        </span>
         <ChevronRight :size="20" class="home-chevron" aria-hidden="true" />
       </button>
     </section>
@@ -364,9 +368,22 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.home-active__price {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
 .home-active__fare {
   font: var(--jt-font-subheadline);
   font-weight: 600;
+}
+
+/* The fare before a coupon or bonus, under what the passenger pays. */
+.home-active__gross {
+  font: var(--jt-font-footnote);
+  opacity: 0.6;
 }
 
 .home-chevron {

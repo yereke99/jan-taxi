@@ -3,18 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { reverseGeocode } from '../api/geo'
 import { createOrder } from '../api/orders'
-import { parseQuote } from '../api/parse'
+import { parsePromotions, parseQuote } from '../api/parse'
+import { getPromotions } from '../api/promotions'
 import { previewRoute } from '../api/routes'
 import type { Order, RouteQuote, RouteQuoteOption } from '../api/types'
 import type { PlaceValue } from '../domain/route'
 import { ApiError } from '../services/http'
 import type { Category } from '../utils/status'
 import { MANUAL_DISABLED, PREVIEW_DEBOUNCE_MS, useBookingStore } from './booking'
+import { usePromotionsStore } from './promotions'
 import { useSessionStore } from './session'
 
 vi.mock('../api/routes', () => ({ previewRoute: vi.fn() }))
 vi.mock('../api/orders', () => ({ createOrder: vi.fn() }))
 vi.mock('../api/geo', () => ({ reverseGeocode: vi.fn() }))
+vi.mock('../api/promotions', () => ({ getPromotions: vi.fn() }))
 
 const preview = vi.mocked(previewRoute)
 const create = vi.mocked(createOrder)
@@ -99,6 +102,7 @@ beforeEach(() => {
   preview.mockReset()
   create.mockReset()
   vi.mocked(reverseGeocode).mockReset()
+  vi.mocked(getPromotions).mockReset()
 })
 
 afterEach(() => vi.useRealTimers())
@@ -838,5 +842,233 @@ describe('booking store: manual stops switched off by the administrator', () => 
     expect(b.blockedStops).toEqual([1])
     expect(session.manualDestinations).toBe(false)
     expect(preview).toHaveBeenCalledTimes(1)
+  })
+})
+
+/** A taxi quote whose (only) class costs 1 500 ₸. */
+const FARE_1500 = { recommended: 1500, min: 1500, max: 2000, step: 100, options: [1500, 1600, 1700, 1800, 1900, 2000] }
+
+/** GET /promotions as the API answers it: a 400 ₸ coupon from 400 ₸ (valid 72 h; taxi unless `categories`) and/or a bonus balance. */
+function promotionsAnswer(opts: { coupon?: boolean; bonus?: number; minFare?: number; couponStatus?: string; categories?: string[] } = {}) {
+  const now = Date.now()
+  return parsePromotions({
+    server_time: new Date(now).toISOString(),
+    redemptions_enabled: true,
+    coupons:
+      opts.coupon === false
+        ? []
+        : [
+            {
+              id: 'c1',
+              amount: 400,
+              min_order_fare: opts.minFare ?? 400,
+              categories: opts.categories ?? ['taxi'],
+              status: opts.couponStatus ?? 'issued',
+              issued_at: new Date(now - 3_600_000).toISOString(),
+              expires_at: new Date(now + 72 * 3_600_000).toISOString(),
+            },
+          ],
+    bonus: { balance: opts.bonus ?? 0, reserved: 0, available: opts.bonus ?? 0 },
+    bonus_categories: ['taxi'],
+    referral: { state: 'unavailable' },
+    marketing_subscribed: true,
+  })
+}
+
+/** The promotions store reads `answer` (as on the confirmation screen). */
+async function loadPromotions(answer = promotionsAnswer()) {
+  vi.mocked(getPromotions).mockResolvedValue(answer)
+  await usePromotionsStore().refresh()
+}
+
+function promotionChanged(reason: string, discount = 0): ApiError {
+  return new ApiError(409, 'promotion_changed', 'the promotion changed; review the price', {}, { reason, discount })
+}
+
+describe('booking store: promotion (§23.6)', () => {
+  it('applies the coupon by itself and sends it with the discount shown; the fare stays the class price', async () => {
+    const b = await readyBooking(quote({ fare: FARE_1500 }))
+    await loadPromotions()
+    expect(b.promotion).toMatchObject({ kind: 'coupon', discount: 400 })
+    expect(b.appliedPromotion).toMatchObject({ kind: 'coupon', discount: 400 })
+    expect(b.fare).toBe(1500)
+    expect(b.payable).toBe(1100)
+
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).toMatchObject({ fare: 1500, promotion: 'coupon', promotion_discount: 400 })
+  })
+
+  it('offers the bonus behind a switch that is on by default and pays at most the fare', async () => {
+    const b = await readyBooking()
+    await loadPromotions(promotionsAnswer({ coupon: false, bonus: 900 }))
+    expect(b.useBonus).toBe(true)
+    expect(b.appliedPromotion).toEqual({ kind: 'bonus', discount: 700, coupon: null })
+    expect(b.payable).toBe(0)
+
+    b.useBonus = false
+    expect(b.promotion).toMatchObject({ kind: 'bonus' })
+    expect(b.appliedPromotion).toBeNull()
+    expect(b.payable).toBe(700)
+
+    // A new booking from home: the switch is on again.
+    b.startNewBooking()
+    expect(b.useBonus).toBe(true)
+  })
+
+  it('keeps the idempotency key while the promotion is the same and takes a new one when it changes', async () => {
+    const b = await readyBooking(quote({ fare: FARE_1500 }))
+    await loadPromotions(promotionsAnswer({ coupon: false, bonus: 300 }))
+    create.mockRejectedValueOnce(new ApiError(0, 'network_error', 'offline'))
+    create.mockRejectedValueOnce(new ApiError(0, 'network_error', 'offline'))
+    create.mockResolvedValueOnce(order())
+
+    expect((await b.submit()).kind).toBe('failed')
+    expect((await b.submit()).kind).toBe('failed')
+    b.useBonus = false
+    expect((await b.submit()).kind).toBe('created')
+
+    const [first, retry, withoutBonus] = create.mock.calls.map((c) => c[0])
+    expect(first).toMatchObject({ promotion: 'bonus', promotion_discount: 300 })
+    expect(retry!.idempotency_key).toBe(first!.idempotency_key)
+    expect(withoutBonus).toMatchObject({ promotion: 'none', promotion_discount: 0 })
+    expect(withoutBonus!.idempotency_key).not.toBe(first!.idempotency_key)
+  })
+
+  /** A parcel booking with its details filled in and the promotions store reading `answer`. */
+  async function parcelBooking(answer: ReturnType<typeof promotionsAnswer>) {
+    const b = await readyBooking(quote({ category: 'parcel' }))
+    b.setCategory('parcel')
+    preview.mockResolvedValue(quote({ category: 'parcel' }))
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    await loadPromotions(answer)
+    b.cargoDescription = 'Құжаттар'
+    b.recipientPhone = '+7 701 234 56 78'
+    b.prohibitedItemsAck = true
+    return b
+  }
+
+  it('asks for no promotion on a delivery that neither the taxi coupon nor the bonus covers', async () => {
+    const b = await parcelBooking(promotionsAnswer({ bonus: 300 }))
+    expect(b.promotion).toBeNull()
+    expect(b.couponFloor).toBeNull()
+    expect(b.payable).toBe(b.fare)
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).toMatchObject({ fare: 700, promotion: 'none', promotion_discount: 0 })
+  })
+
+  it('applies a coupon that covers deliveries to the fare the passenger chose', async () => {
+    const b = await parcelBooking(promotionsAnswer({ categories: ['taxi', 'parcel'], bonus: 300 }))
+    expect(b.promotion).toEqual({ kind: 'coupon', discount: 400, coupon: expect.objectContaining({ id: 'c1' }) })
+    expect(b.payable).toBe(300)
+
+    b.fare = 850
+    expect(b.payable).toBe(450)
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).toMatchObject({ fare: 850, promotion: 'coupon', promotion_discount: 400 })
+  })
+
+  it('names the coupon minimum a delivery fare is below', async () => {
+    const b = await parcelBooking(promotionsAnswer({ categories: ['parcel'], minFare: 800 }))
+    expect(b.fare).toBe(700)
+    expect(b.promotion).toBeNull()
+    expect(b.couponFloor).toMatchObject({ amount: 400, min_order_fare: 800 })
+    b.fare = 800
+    expect(b.couponFloor).toBeNull()
+    expect(b.appliedPromotion).toMatchObject({ kind: 'coupon', discount: 400 })
+  })
+
+  it('orders a taxi at the class price without the promotion fields while the promotions are unknown', async () => {
+    const b = await readyBooking()
+    vi.mocked(getPromotions).mockRejectedValue(new ApiError(404, 'not_found', 'no route'))
+    await usePromotionsStore().ensureLoaded()
+    expect(b.payable).toBe(700)
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[0]![0]).not.toHaveProperty('promotion')
+    expect(create.mock.calls[0]![0]).not.toHaveProperty('promotion_discount')
+  })
+
+  it('asks for no promotion when the passenger has nothing to use, and shows the coupon minimum', async () => {
+    const b = await readyBooking()
+    await loadPromotions(promotionsAnswer({ minFare: 1000 }))
+    expect(b.promotion).toBeNull()
+    expect(b.couponFloor).toMatchObject({ amount: 400, min_order_fare: 1000 })
+    create.mockResolvedValueOnce(order())
+    await b.submit()
+    expect(create.mock.calls[0]![0]).toMatchObject({ fare: 700, promotion: 'none', promotion_discount: 0 })
+  })
+
+  it('promotion_changed: re-reads the promotions, waits for the passenger and never re-sends by itself', async () => {
+    const b = await readyBooking(quote({ fare: FARE_1500 }))
+    await loadPromotions()
+    create.mockRejectedValueOnce(promotionChanged('coupon_expired'))
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer({ couponStatus: 'expired' }))
+
+    expect(await b.submit()).toEqual({ kind: 'promotion_changed' })
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(getPromotions).toHaveBeenCalledTimes(2)
+    expect(b.promotionChanged).toBe(true)
+    expect(b.promotion).toBeNull()
+    expect(b.payable).toBe(1500)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(create).toHaveBeenCalledTimes(1)
+
+    // The passenger confirms the new price.
+    create.mockResolvedValueOnce(order())
+    expect((await b.submit()).kind).toBe('created')
+    expect(create.mock.calls[1]![0]).toMatchObject({ fare: 1500, promotion: 'none', promotion_discount: 0 })
+    expect(b.promotionChanged).toBe(false)
+  })
+
+  it('leaves out a coupon the server refuses although the fresh data still offers it (frozen), in later bookings too', async () => {
+    const b = await readyBooking(quote({ fare: FARE_1500 }))
+    const answer = promotionsAnswer({ bonus: 300 })
+    await loadPromotions(answer)
+    create.mockRejectedValueOnce(promotionChanged('coupon_frozen'))
+
+    expect((await b.submit()).kind).toBe('promotion_changed')
+    expect(b.promotion).toEqual({ kind: 'bonus', discount: 300, coupon: null })
+    expect(b.payable).toBe(1200)
+
+    create.mockRejectedValueOnce(new ApiError(0, 'network_error', 'offline'))
+    await b.submit()
+    expect(create.mock.calls[1]![0]).toMatchObject({ promotion: 'bonus', promotion_discount: 300 })
+
+    // The next booking does not run into the same refusal, even after the promotions are read again.
+    b.startNewBooking()
+    await loadPromotions(answer)
+    expect(b.promotion).toEqual({ kind: 'bonus', discount: 300, coupon: null })
+    expect(usePromotionsStore().couponRefused('c1')).toBe(true)
+
+    // The coupon was taken by an order since (so it is not frozen) and given back: offered again.
+    await loadPromotions(promotionsAnswer({ bonus: 300, couponStatus: 'reserved' }))
+    await loadPromotions(answer)
+    expect(b.promotion).toMatchObject({ kind: 'coupon', discount: 400 })
+  })
+
+  it('leaves out the bonus the server refuses for this booking only', async () => {
+    const b = await readyBooking(quote({ fare: FARE_1500 }))
+    await loadPromotions(promotionsAnswer({ coupon: false, bonus: 300 }))
+    create.mockRejectedValueOnce(promotionChanged('no_bonus'))
+    expect((await b.submit()).kind).toBe('promotion_changed')
+    expect(b.promotion).toBeNull()
+    expect(b.payable).toBe(1500)
+
+    b.startNewBooking()
+    expect(b.promotion).toEqual({ kind: 'bonus', discount: 300, coupon: null })
+  })
+
+  it('prices another class with the promotion this booking would apply to it', async () => {
+    const b = await readyBooking(twoClasses())
+    await loadPromotions(promotionsAnswer({ minFare: 1000, bonus: 200 }))
+    // Sedan 700: below the coupon minimum, so the bonus; minivan 1 200: the coupon.
+    expect(b.payableAt(700)).toBe(500)
+    expect(b.payableAt(1200)).toBe(800)
+    b.useBonus = false
+    expect(b.payableAt(700)).toBe(700)
+    expect(b.payableAt(1200)).toBe(800)
   })
 })

@@ -10,8 +10,19 @@
 //   ?demo=found       live order, driver on the way
 //   &phone=unverified the passenger has not shared a phone (the first order
 //                     asks for it)
+//   ?demo=coupons     «Менің купоным»: the first-ride coupon, 400 ₸, counting
+//                     down (~2 days)
+//   ?demo=profile     the profile with the promotion rows (inviting locked
+//                     until the coupon is used)
+//   ?demo=bonus       «Бонус балансы» a week on: 300 ₸ from a friend's first ride
+//   ?demo=invite      «Досыңды шақыр» a week on: open, with a code and two friends
+// The passenger is new (the first ride, yesterday, earned the coupon);
+// ?demo=bonus and ?demo=invite show them a week on, after the coupon was
+// used, as the customer's rules require (see Promotions below).
 // Without ?demo the app starts on home and the whole flow is clickable: the
-// in-memory API quotes the route, creates the order and assigns the driver.
+// in-memory API quotes the route, creates the order (the coupon applies to a
+// taxi by itself; the bonus pays when there is no coupon) and assigns the
+// driver; cancelling returns the coupon or bonus.
 
 import type { Pinia } from 'pinia'
 import type { Router } from 'vue-router'
@@ -42,6 +53,13 @@ const COMMENT = '2-кіреберіс, сыртта күтемін'
 const SEARCH_ELAPSED_S = 42
 
 type Status = 'searching' | 'accepted' | 'cancelled'
+
+/** A promotion on the demo order (§23.6). */
+interface DemoPromo {
+  kind: 'coupon' | 'bonus'
+  discount: number
+  status: 'reserved' | 'released'
+}
 
 interface DemoClass {
   code: string
@@ -90,6 +108,7 @@ interface DemoState {
   acceptedAt: string | null
   /** 0..1 progress of the driver along the approach route. */
   approach: number
+  promo: DemoPromo | null
   version: number
 }
 
@@ -103,6 +122,7 @@ const state: DemoState = {
   cancelReason: null,
   acceptedAt: null,
   approach: 0,
+  promo: null,
   version: 1,
 }
 
@@ -201,6 +221,169 @@ function loadDto(l: DemoLoad) {
   }
 }
 
+// --- Promotions (§23) -------------------------------------------------------------
+
+/**
+ * Follows the customer's rules (§23.4, §23.5, unlock coupon_redeemed): the
+ * passenger is new, and the first ride (yesterday) earned the 400 ₸
+ * first-ride coupon for 72 hours, so inviting stays locked until it is used.
+ * ?demo=invite and ?demo=bonus show the same passenger a week on: the coupon
+ * was used on the next ride, which opened inviting, and the first ride of
+ * Арман, invited with the code, paid the 300 ₸ reward (once).
+ */
+const WEEK_ON = params.get('demo') === 'invite' || params.get('demo') === 'bonus'
+/** Days ago of the passenger's first completed ride, which earned the coupon. */
+const FIRST_RIDE_DAYS = WEEK_ON ? 7 : 1
+/** A week on: days ago of the ride the coupon paid part of. */
+const COUPON_RIDE_DAYS = 6
+
+/** Seconds ago a ride of `daysAgo` completed (15 minutes after it was ordered). */
+function completedAgo(daysAgo: number): number {
+  return daysAgo * 86_400 - 900
+}
+
+/** Issued when the first ride completed, valid 72 hours. */
+const couponIssuedAt = Date.now() - completedAgo(FIRST_RIDE_DAYS) * 1000
+
+const promos = {
+  coupon: {
+    id: 'e4b1c8a2-6d3f-4a9e-8b7c-1f2e3d4c5b6a',
+    title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' },
+    amount: 400,
+    min_order_fare: 400,
+    categories: ['taxi'],
+    status: (WEEK_ON ? 'redeemed' : 'issued') as 'issued' | 'reserved' | 'redeemed',
+    issued_at: new Date(couponIssuedAt).toISOString(),
+    expires_at: new Date(couponIssuedAt + 72 * 3_600_000).toISOString(),
+    reserved_order_id: null as string | null,
+    redeemed_at: WEEK_ON ? isoAgo(completedAgo(COUPON_RIDE_DAYS)) : null,
+  },
+  bonus: { balance: WEEK_ON ? 300 : 0, reserved: 0 },
+  subscribed: true,
+}
+
+const REFERRAL_CODE = 'JT7K2M9Q'
+
+/** The invitation as GET /promotions sums it up: open once the first-ride coupon was used. */
+function referralSummary() {
+  return promos.coupon.status === 'redeemed'
+    ? { state: 'unlocked', reward_amount: 300, rewarded: true }
+    : { state: 'locked', lock_reason: 'coupon_not_redeemed', reward_amount: 300, rewarded: false }
+}
+
+function promotionsDto() {
+  return {
+    server_time: new Date().toISOString(),
+    redemptions_enabled: true,
+    coupons: [{ ...promos.coupon }],
+    bonus: { ...promos.bonus, available: promos.bonus.balance - promos.bonus.reserved },
+    bonus_categories: ['taxi'],
+    offers: [],
+    banners: [
+      {
+        id: 'b7a6c5d4-3e2f-4a1b-9c8d-7e6f5a4b3c2d',
+        title: { kk: 'Сәлемдеме жеткізу', ru: 'Доставка посылок', en: 'Parcel delivery' },
+        description: {
+          kk: 'Құжат пен шағын жүкті қала ішінде жеткіземіз. Тапсырысты басты беттен беріңіз.',
+          ru: 'Доставим документы и небольшие посылки по городу. Закажите на главном экране.',
+          en: 'We deliver documents and small parcels across town. Order from the home screen.',
+        },
+      },
+    ],
+    referral: referralSummary(),
+    marketing_subscribed: promos.subscribed,
+  }
+}
+
+/** Locked: the campaign text alone. Open: the code, the links and the friends (Арман joined after it opened). */
+function referralDto() {
+  const summary = referralSummary()
+  const campaign = {
+    title: { kk: 'Досыңды шақыр', ru: 'Пригласи друга', en: 'Invite a friend' },
+    description: {
+      kk: 'Досыңды Jan Taxi-ге шақыр! Ол алғашқы сапарын аяқтаған соң, бонус балансыңа 300 ₸ түседі.',
+      ru: 'Пригласите друга в Jan Taxi! Когда он завершит первую поездку, на ваш бонусный баланс поступит 300 ₸.',
+      en: 'Invite a friend to Jan Taxi! When they finish their first ride, 300 ₸ goes to your bonus balance.',
+    },
+  }
+  if (summary.state !== 'unlocked') return { ...summary, ...campaign, earned: 0, friends: [] }
+  return {
+    ...summary,
+    ...campaign,
+    code: REFERRAL_CODE,
+    link: `https://t.me/jantaxi_bot?start=ref_${REFERRAL_CODE}`,
+    app_link: `https://t.me/jantaxi_bot?startapp=ref_${REFERRAL_CODE}`,
+    earned: 300,
+    friends: [
+      { name: 'Дана Қ.', status: 'attributed', attributed_at: isoAgo(5 * 3600) },
+      { name: 'Арман Б.', status: 'rewarded', attributed_at: isoAgo(5 * 86_400) },
+    ],
+  }
+}
+
+/** The bonus history: a week on, the reward for Арман's first ride (4 days ago); a new passenger has none. */
+function bonusHistory() {
+  return WEEK_ON ? [{ id: 1, type: 'grant', amount: 300, order_number: null, created_at: isoAgo(4 * 86_400) }] : []
+}
+
+function promotionChanged(reason: string, discount = 0): DemoResponse {
+  return new DemoResponse(409, { error: { code: 'promotion_changed', message: 'the promotion changed; review the price', details: { reason, discount } } })
+}
+
+/**
+ * Checks and reserves the promotion of a new order like the server (§23.6):
+ * the coupon or the bonus, at exactly the discount the app showed.
+ */
+function reservePromotion(kind: string | undefined, shown: number | undefined, category: string, fare: number): DemoPromo | null | DemoResponse {
+  if (kind !== 'coupon' && kind !== 'bonus') return null
+  const c = promos.coupon
+  const available = promos.bonus.balance - promos.bonus.reserved
+  if (kind === 'coupon' && (c.status !== 'issued' || Date.parse(c.expires_at) <= Date.now() || category !== 'taxi' || fare < c.min_order_fare)) {
+    return promotionChanged('no_coupon')
+  }
+  if (kind === 'bonus' && (category !== 'taxi' || available <= 0)) return promotionChanged('no_bonus')
+  const discount = kind === 'coupon' ? c.amount : Math.min(available, fare)
+  if (shown !== undefined && shown !== discount) return promotionChanged('discount_changed', discount)
+  if (kind === 'coupon') {
+    c.status = 'reserved'
+    c.reserved_order_id = ORDER_ID
+  } else promos.bonus.reserved += discount
+  broadcast('promotions.updated', {})
+  return { kind, discount, status: 'reserved' }
+}
+
+/** A cancelled order gives its coupon or bonus back. */
+function releasePromotion(): void {
+  const p = state.promo
+  if (!p || p.status !== 'reserved') return
+  if (p.kind === 'coupon') {
+    promos.coupon.status = 'issued'
+    promos.coupon.reserved_order_id = null
+  } else promos.bonus.reserved = Math.max(0, promos.bonus.reserved - p.discount)
+  p.status = 'released'
+  broadcast('promotions.updated', {})
+}
+
+function orderPromotion() {
+  const p = state.promo
+  if (!p) return { promo_discount: 0, cash_due: state.fare, promotion: null }
+  const cash = state.fare - p.discount
+  return {
+    promo_discount: p.discount,
+    cash_due: cash,
+    promotion: {
+      kind: p.kind,
+      title: p.kind === 'coupon' ? promos.coupon.title : null,
+      discount: p.discount,
+      gross_fare: state.fare,
+      cash_due: cash,
+      status: p.status,
+      compensation: null,
+      settled_at: null,
+    },
+  }
+}
+
 const driver = {
   id: 'a1b2c3d4-0000-4000-8000-00000000e001',
   code: 'EMB001',
@@ -240,6 +423,7 @@ function orderDto() {
     recipient_phone: null,
     comment: state.comment,
     fare: state.fare,
+    ...orderPromotion(),
     payment_method: 'cash',
     distance_m: ROUTE.distance_m,
     duration_s: ROUTE.duration_s,
@@ -294,6 +478,8 @@ function summary(o: ReturnType<typeof orderDto>) {
     ...loadDto(state.load),
     ...place,
     fare: o.fare,
+    promo_discount: o.promo_discount,
+    cash_due: o.cash_due,
     payment_method: o.payment_method,
     pickup: { seq: first.seq, kind: first.kind, lat: first.lat, lon: first.lon, address: first.address },
     destination: { seq: last.seq, kind: last.kind, lat: last.lat, lon: last.lon, address: last.address },
@@ -308,29 +494,40 @@ function summary(o: ReturnType<typeof orderDto>) {
   }
 }
 
-/** Two finished trips: their destinations are the "recent addresses" on home. */
+/**
+ * Two finished orders; their destinations are the "recent addresses" on
+ * home. A new passenger: the first ride (yesterday), which earned the coupon,
+ * and an order cancelled before it (a cancelled order is not a ride). A week
+ * on: the first ride and the next one, which the coupon paid 400 ₸ of.
+ */
 function history() {
-  const done = (id: string, dest: { lat: number; lon: number; title: string }, daysAgo: number) => ({
+  const row = (id: string, number: number, dest: { lat: number; lon: number; title: string }, daysAgo: number, coupon = 0) => ({
     id,
-    number: 1000 + daysAgo,
+    number,
     status: 'completed',
     category: 'taxi',
     ...loadDto({ category: 'taxi', vehicleClass: 'sedan', passengerCount: 1, cargoSize: null, cargoVolumeL: 0 }),
     ...place,
     fare: 600,
+    promo_discount: coupon,
+    cash_due: 600 - coupon,
     payment_method: 'cash',
     pickup: { seq: 0, kind: 'pickup', lat: STOPS[0].lat, lon: STOPS[0].lon, address: STOPS[0].title },
     destination: { seq: 1, kind: 'destination', lat: dest.lat, lon: dest.lon, address: dest.title },
     stop_count: 2,
     distance_m: 2400,
-    driver_first_name: 'Ерлан',
-    rating: 5,
+    driver_first_name: 'Ерлан' as string | null,
+    rating: 5 as number | null,
     can_rate: false,
     created_at: isoAgo(daysAgo * 86_400),
-    completed_at: isoAgo(daysAgo * 86_400 - 900),
-    cancelled_at: null,
+    completed_at: isoAgo(completedAgo(daysAgo)) as string | null,
+    cancelled_at: null as string | null,
   })
-  return [done('0f1e2d3c-0000-4000-8000-0000000000a1', STOPS[3], 1), done('0f1e2d3c-0000-4000-8000-0000000000a2', PLACES[0], 3)]
+  const [a1, a2] = ['0f1e2d3c-0000-4000-8000-0000000000a1', '0f1e2d3c-0000-4000-8000-0000000000a2']
+  if (WEEK_ON) return [row(a1, 1015, STOPS[3], COUPON_RIDE_DAYS, promos.coupon.amount), row(a2, 1009, PLACES[0], FIRST_RIDE_DAYS)]
+  // Cancelled by the passenger while a driver was being searched for.
+  const cancelled = { ...row(a2, 1012, PLACES[0], 3), status: 'cancelled', driver_first_name: null, rating: null, completed_at: null, cancelled_at: isoAgo(3 * 86_400 - 120) }
+  return [row(a1, 1019, STOPS[3], FIRST_RIDE_DAYS), cancelled]
 }
 
 function notify(type: string): void {
@@ -428,13 +625,17 @@ function api(): DemoApi {
     .on('GET', '/geo/search', (r) => search(r.query.get('q') ?? '').map((p) => ({ ...p, source: 'demo' })))
     .on('POST', '/routes/preview', (r) => quote(r.body as PreviewBody))
     .on('POST', '/orders', (r) => {
-      const body = r.body as { quote_id?: string; fare?: number; comment?: string }
+      const body = r.body as { quote_id?: string; fare?: number; comment?: string; promotion?: string; promotion_discount?: number }
       const load = quoted.get(body.quote_id ?? '')
       if (!load) return apiError(404, 'not_found')
+      const fare = body.fare ?? FARE.recommended
+      const promo = reservePromotion(body.promotion, body.promotion_discount, load.category, fare)
+      if (promo instanceof DemoResponse) return promo
+      state.promo = promo
       state.load = load
       state.cancelReasonCode = null
       state.cancelReason = null
-      state.fare = body.fare ?? FARE.recommended
+      state.fare = fare
       state.comment = body.comment?.trim() || null
       state.createdAt = new Date().toISOString()
       startSearching()
@@ -454,8 +655,16 @@ function api(): DemoApi {
       state.status = 'cancelled'
       clearTimeout(searchTimer)
       clearInterval(driverTimer)
+      releasePromotion()
       notify('order.cancelled')
       return orderDto()
+    })
+    .on('GET', '/promotions', () => promotionsDto())
+    .on('GET', '/promotions/referral', () => referralDto())
+    .on('GET', '/promotions/bonus/history', () => ({ items: bonusHistory(), next_cursor: null }))
+    .on('PUT', '/promotions/subscription', (r) => {
+      promos.subscribed = (r.body as { subscribed?: boolean } | undefined)?.subscribed !== false
+      return { marketing_subscribed: promos.subscribed }
     })
 }
 
@@ -489,5 +698,7 @@ export async function openDemoScreen(pinia: Pinia, router: Router): Promise<void
     await router.replace({ name: screen === 'route' ? 'book' : 'confirm', query: { category: 'taxi' } })
   } else if (screen === 'searching' || screen === 'found') {
     await router.replace({ name: 'order', params: { id: ORDER_ID } })
+  } else if (screen === 'coupons' || screen === 'bonus' || screen === 'invite' || screen === 'profile') {
+    await router.replace({ name: screen })
   }
 }

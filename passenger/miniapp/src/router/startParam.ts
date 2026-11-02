@@ -1,6 +1,8 @@
 // Passenger start parameters (ARCHITECTURE §18). Parameters are navigation
 // hints only: every screen re-fetches its data with full authorisation.
-// Anything that is not exactly one of the documented values is ignored.
+// Anything that is not exactly one of the documented values is ignored. An
+// invitation (ref_<code>, §23.5) opens home: the server takes the code from
+// the signed initData when the passenger signs in.
 
 import type { RouteLocationRaw } from 'vue-router'
 import { isUuid } from '../utils/id'
@@ -18,6 +20,9 @@ export type PassengerStartIntent =
   | { kind: 'order'; orderId: string }
   | { kind: 'support' }
   | { kind: 'become_driver' }
+  | { kind: 'coupons' }
+  | { kind: 'bonus' }
+  | { kind: 'invite' }
 
 export function parseStartParam(param: string | null | undefined): PassengerStartIntent {
   if (typeof param !== 'string' || !START_PARAM_RE.test(param)) return { kind: 'home' }
@@ -32,6 +37,10 @@ export function parseStartParam(param: string | null | undefined): PassengerStar
       return { kind: 'support' }
     case 'driver':
       return { kind: 'become_driver' }
+    case 'coupons':
+    case 'bonus':
+    case 'invite':
+      return { kind: param }
   }
   const m = ORDER_PARAM_RE.exec(param)
   if (m && isUuid(m[1]!)) return { kind: 'order', orderId: m[1]!.toLowerCase() }
@@ -53,5 +62,11 @@ export function intentLocation(intent: PassengerStartIntent): RouteLocationRaw {
       return { name: ROUTE.support }
     case 'become_driver':
       return { name: ROUTE.becomeDriver }
+    case 'coupons':
+      return { name: ROUTE.coupons }
+    case 'bonus':
+      return { name: ROUTE.bonus }
+    case 'invite':
+      return { name: ROUTE.invite }
   }
 }

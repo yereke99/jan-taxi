@@ -10,6 +10,9 @@
   realtime events with REST re-sync and a polling fallback (useLiveOrder).
   Pickup A carries the order's place under its address: the settlement from
   the API (`locality`), else the pickup's locality line seen while booking.
+  An order with a coupon or bonus (§23.6) shows the cash the passenger pays
+  with the fare and the discount under it; a cancelled one shows its fare and
+  says the coupon or bonus came back.
 -->
 <script setup lang="ts">
 import { Banknote, ChevronRight, Ellipsis, ShieldCheck } from '@lucide/vue'
@@ -26,10 +29,12 @@ import { JButton, JEmptyState, JSheet, JSkeleton, JSpinner, showActionSheet, toa
 import VehicleClassIcon from '../../components/VehicleClassIcon.vue'
 import { useDriverPhoto } from '../../composables/useDriverPhoto'
 import { useLiveOrder } from '../../composables/useLiveOrder'
+import { usePromoText } from '../../composables/usePromoText'
 import { useStopText } from '../../composables/useStopText'
 import { useVehicleText } from '../../composables/useVehicleText'
 import { arrivalMinutes, cancelInfo, framingPoints, hasActiveDriver, headlineKey, isDeliveryOrder, orderLocality, orderMarkers } from '../../domain/orderView'
 import { placesOfStops } from '../../domain/places'
+import { payable } from '../../domain/promotions'
 import { useErrorText } from '../../i18n/core'
 import { straightLine } from '../../maps'
 import { ROUTE } from '../../router/names'
@@ -47,6 +52,7 @@ import { formatKzPhone, telHref } from '../../utils/phone'
 const { t } = useI18n()
 const stopText = useStopText()
 const vehicleText = useVehicleText()
+const promoText = usePromoText()
 const errorText = useErrorText()
 const route = useRoute()
 const router = useRouter()
@@ -103,11 +109,16 @@ const headline = computed(() => {
   return t(headlineKey(o))
 })
 
+/** "1 100 ₸ · Қолма-қол": what the passenger pays (the fare less a coupon or bonus) and how. */
 const farePayment = computed(() =>
   order.value
-    ? t('order.fare_payment', { fare: formatMoney(order.value.fare, lang.value), payment: t(`payment_method.${order.value.payment_method}`) })
+    ? t('order.fare_payment', { fare: formatMoney(payable(order.value), lang.value), payment: t(`payment_method.${order.value.payment_method}`) })
     : '',
 )
+/** "1 500 ₸ · Купон −400 ₸" under the price; '' without a promotion (or once cancelled). */
+const promoLine = computed(() => (order.value ? promoText.breakdown(order.value) : ''))
+/** A cancelled order gave its coupon or bonus back. */
+const promoReturned = computed(() => (order.value ? promoText.returned(order.value) : ''))
 
 // --- Map ---------------------------------------------------------------------
 
@@ -320,7 +331,8 @@ function toHome(): void {
       </button>
 
       <section class="trip-order">
-        <p class="trip-order__fare jt-tabular">{{ formatMoney(order.fare, lang) }} · {{ t(`payment_method.${order.payment_method}`) }}</p>
+        <p class="trip-order__fare jt-tabular">{{ farePayment }}</p>
+        <p v-if="promoLine" class="trip-promo trip-order__promo jt-tabular">{{ promoLine }}</p>
         <span class="trip-order__chips">
           <span class="trip-order__chip">{{ categoryChip }}</span>
           <span class="trip-order__chip">{{ className }}</span>
@@ -371,7 +383,10 @@ function toHome(): void {
         </div>
         <div class="trip-list__row">
           <Banknote :size="24" :stroke-width="1.8" class="trip-list__icon" aria-hidden="true" />
-          <span class="trip-list__text jt-tabular"><strong>{{ formatMoney(order.fare, lang) }}</strong> · {{ t(`payment_method.${order.payment_method}`) }}</span>
+          <span class="trip-list__text jt-tabular">
+            <strong>{{ formatMoney(payable(order), lang) }}</strong> · {{ t(`payment_method.${order.payment_method}`) }}
+            <span v-if="promoLine" class="trip-promo">{{ promoLine }}</span>
+          </span>
         </div>
       </section>
 
@@ -381,6 +396,7 @@ function toHome(): void {
         <p v-if="cancel.reasonKey" class="trip-text" :class="{ 'is-secondary': cancel.byKey }">{{ t(cancel.reasonKey) }}</p>
         <p v-if="cancel.labelKey" class="trip-text is-secondary">{{ t('order.reason_text', { reason: t(cancel.labelKey) }) }}</p>
         <p v-if="cancel.text" class="trip-text is-secondary">{{ cancel.labelKey ? cancel.text : t('order.reason_text', { reason: cancel.text }) }}</p>
+        <p v-if="promoReturned" class="trip-text is-secondary">{{ promoReturned }}</p>
       </div>
 
       <!-- Disputed -->
@@ -393,7 +409,10 @@ function toHome(): void {
       <!-- Finished orders: route and facts -->
       <section v-if="order.status !== 'searching'" class="trip-card">
         <OrderStopList :stops="order.stops" :show-done="order.status === 'in_progress'" :pickup-locality="locality" />
-        <p class="trip-card__fare jt-tabular">{{ farePayment }}</p>
+        <p class="trip-card__fare jt-tabular">
+          {{ farePayment }}
+          <span v-if="promoLine" class="trip-promo">{{ promoLine }}</span>
+        </p>
         <p class="trip-card__line">
           <span class="trip-card__label">{{ t('confirm.vehicle_class') }}</span> {{ className }}<template v-if="loadLine"> · {{ loadLine }}</template>
         </p>
@@ -502,6 +521,17 @@ function toHome(): void {
 .trip-order__fare {
   font: var(--jt-font-headline);
   font-size: 19px;
+}
+
+/* "1 500 ₸ · Купон −400 ₸" under the price the passenger pays. */
+.trip-promo {
+  display: block;
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+}
+
+.trip-order__promo {
+  margin-top: -6px;
 }
 
 .trip-order__chips {

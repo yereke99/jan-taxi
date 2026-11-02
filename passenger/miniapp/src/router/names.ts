@@ -14,6 +14,9 @@ export const ROUTE = {
   becomeDriver: 'become-driver',
   language: 'language',
   profile: 'profile',
+  coupons: 'coupons',
+  bonus: 'bonus',
+  invite: 'invite',
 } as const
 
 export type RouteName = (typeof ROUTE)[keyof typeof ROUTE]

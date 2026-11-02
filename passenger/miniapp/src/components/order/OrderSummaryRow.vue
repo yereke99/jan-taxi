@@ -1,10 +1,16 @@
-<!-- One order in a list: category, pickup (with its settlement) → destination, date, vehicle class, fare and status. -->
+<!--
+  One order in a list: category, pickup (with its settlement) → destination,
+  date, vehicle class, price and status. With a coupon or bonus (§23.6) the
+  price is what the passenger pays, the fare crossed out under it; a
+  cancelled order shows its plain fare.
+-->
 <script setup lang="ts">
 import { ChevronRight } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { OrderSummary } from '../../api/types'
 import { orderLocality } from '../../domain/orderView'
+import { hasPromo, payable } from '../../domain/promotions'
 import { formatDateTime, formatMoney, type Locale } from '../../utils/format'
 import { orderStatusTone } from '../../utils/status'
 import CategoryIcon from '../CategoryIcon.vue'
@@ -45,7 +51,10 @@ const locality = computed(() => orderLocality(props.order, props.pickupSubtitle)
       </span>
       <span class="summary__badge"><JBadge :tone="orderStatusTone(order.status)" :label="t(`order_status.${order.status}`)" /></span>
     </span>
-    <span class="summary__fare jt-tabular">{{ formatMoney(order.fare, locale) }}</span>
+    <span class="summary__price">
+      <span class="summary__fare jt-tabular">{{ formatMoney(payable(order), locale) }}</span>
+      <s v-if="hasPromo(order)" class="summary__gross jt-tabular"><span class="jt-visually-hidden">{{ t('promo.trip_fare') }}: </span>{{ formatMoney(order.fare, locale) }}</s>
+    </span>
     <ChevronRight :size="18" class="summary__chevron" aria-hidden="true" />
   </button>
 </template>
@@ -133,10 +142,22 @@ const locality = computed(() => orderLocality(props.order, props.pickupSubtitle)
   display: flex;
 }
 
-.summary__fare {
+.summary__price {
   flex: none;
   align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.summary__fare {
   font: var(--jt-font-headline);
+}
+
+/* The fare before a coupon or bonus, under what the passenger pays. */
+.summary__gross {
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
 }
 
 .summary__chevron {

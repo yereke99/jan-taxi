@@ -4,6 +4,7 @@
 // into the wrong catalogue.
 
 import { describe, expect, it } from 'vitest'
+import { BONUS_ENTRY_TYPES, COUPON_STATUSES, REFERRAL_FRIEND_STATUSES, REFERRAL_LOCK_REASONS } from '../api/types'
 import { KNOWN_PROHIBITED_ITEMS } from '../domain/prohibited'
 import { CATEGORIES, MODERATION_STATUSES, ORDER_STATUSES, PAYMENT_METHODS, TOPUP_STATUSES } from '../utils/status'
 import { ApiError } from '../services/http'
@@ -95,6 +96,10 @@ describe('passenger message catalogue', () => {
       ...TOPUP_STATUSES.map((s) => `topup_status.${s}`),
       ...[...KNOWN_PROHIBITED_ITEMS, 'other'].map((c) => `prohibited.${c}`),
       ...LOCALES.map((l) => `languages.${l}`),
+      ...COUPON_STATUSES.map((s) => `coupons.status.${s}`),
+      ...BONUS_ENTRY_TYPES.map((e) => `bonus.entry.${e}`),
+      ...REFERRAL_FRIEND_STATUSES.map((s) => `invite.friend_status.${s}`),
+      ...REFERRAL_LOCK_REASONS.map((r) => `invite.lock.${r}`),
     ]
     expect(keys.filter((k) => !kk.has(k))).toEqual([])
   })

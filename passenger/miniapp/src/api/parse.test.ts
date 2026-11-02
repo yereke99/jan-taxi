@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseOrder, parseOrderSummary, parseQuote } from './parse'
+import { parseBonusPage, parseOrder, parseOrderSummary, parsePromotions, parseQuote, parseReferral } from './parse'
 
 const fare = { recommended: 700, min: 700, max: 900, step: 50, options: [700, 750, 800, 850, 900] }
 
@@ -142,5 +142,114 @@ describe('parseOrder / parseOrderSummary', () => {
   it('maps the load of a list row', () => {
     const s = parseOrderSummary({ id: 's1', status: 'completed', category: 'taxi', vehicle_class: 'minivan', passenger_count: 6, cargo_size: null, cargo_volume_l: 0 })
     expect(s).toMatchObject({ vehicle_class: 'minivan', passenger_count: 6, cargo_size: null, cargo_volume_l: 0 })
+  })
+})
+
+describe('order promotion (§23.6)', () => {
+  it('maps the discount, the cash due and the promotion of an order', () => {
+    const promotion = { kind: 'coupon', title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' }, discount: 400, gross_fare: 1500, cash_due: 1100, status: 'reserved', compensation: null, settled_at: null }
+    const o = parseOrder({ ...order, status: 'searching', fare: 1500, promo_discount: 400, cash_due: 1100, promotion })
+    expect(o).toMatchObject({ fare: 1500, promo_discount: 400, cash_due: 1100 })
+    expect(o.promotion).toEqual(promotion)
+    const s = parseOrderSummary({ id: 's1', status: 'completed', category: 'taxi', fare: 1500, promo_discount: 400, cash_due: 1100 })
+    expect(s).toMatchObject({ fare: 1500, promo_discount: 400, cash_due: 1100 })
+  })
+
+  it('reads an order without a promotion, or from an API without them, as the full fare', () => {
+    const o = parseOrder({ ...order, fare: 700 })
+    expect(o).toMatchObject({ fare: 700, promo_discount: 0, cash_due: 700, promotion: null })
+    expect(parseOrderSummary({ id: 's1', status: 'completed', category: 'taxi', fare: 700 })).toMatchObject({ promo_discount: 0, cash_due: 700 })
+    // A cash due missing from the payload is the fare less the discount; an unknown kind is no promotion.
+    expect(parseOrder({ ...order, fare: 1500, promo_discount: 300, promotion: { kind: 'voucher' } })).toMatchObject({ cash_due: 1200, promotion: null })
+  })
+})
+
+// Shape of admin/backend/internal/marketing/passenger.go PassengerPromotions.
+const promotions = {
+  server_time: '2026-11-02T10:00:00Z',
+  redemptions_enabled: true,
+  coupons: [
+    { id: 'c1', title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' }, amount: 400, min_order_fare: 400, categories: ['taxi'], status: 'issued', issued_at: '2026-11-01T10:00:00Z', expires_at: '2026-11-04T10:00:00Z', reserved_order_id: null, redeemed_at: null },
+    { id: 'c2', title: null, amount: 400, min_order_fare: 400, categories: ['taxi', 'rocket'], status: 'redeemed', issued_at: '2026-10-01T10:00:00Z', expires_at: '2026-10-04T10:00:00Z', reserved_order_id: null, redeemed_at: '2026-10-02T10:00:00Z' },
+    { id: 'c3', amount: 400, status: 'lost' },
+    { id: 'c4', amount: 0, status: 'issued' },
+  ],
+  bonus: { balance: 300, reserved: 100, available: 200 },
+  bonus_categories: ['taxi'],
+  offers: [
+    { kind: 'first_ride_coupon', title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' }, description: { kk: 'Сипаттама', ru: 'Описание', en: 'Text' }, amount: 400, validity_hours: 72, categories: ['taxi'] },
+    { kind: 'lottery', amount: 1000 },
+  ],
+  banners: [{ id: 'b1', title: { kk: 'Жаңалық', ru: 'Новость', en: 'News' }, description: { kk: '', ru: '', en: '' } }, { id: 'b2' }],
+  referral: { state: 'locked', lock_reason: 'coupon_not_redeemed', reward_amount: 300, rewarded: false },
+  marketing_subscribed: false,
+}
+
+describe('parsePromotions', () => {
+  it('maps coupons, the bonus, offers, banners and the invitation state', () => {
+    const p = parsePromotions(promotions)
+    expect(p.server_time).toBe('2026-11-02T10:00:00Z')
+    expect(p.redemptions_enabled).toBe(true)
+    expect(p.coupons.map((c) => c.id)).toEqual(['c1', 'c2'])
+    expect(p.coupons[0]).toEqual({ ...promotions.coupons[0] })
+    expect(p.coupons[1]!.categories).toEqual(['taxi'])
+    expect(p.bonus).toEqual({ balance: 300, reserved: 100, available: 200 })
+    expect(p.bonus_categories).toEqual(['taxi'])
+    expect(p.offers).toEqual([{ ...promotions.offers[0] }])
+    expect(p.banners.map((b) => b.id)).toEqual(['b1'])
+    expect(p.referral).toEqual({ state: 'locked', lock_reason: 'coupon_not_redeemed', reward_amount: 300, rewarded: false })
+    expect(p.marketing_subscribed).toBe(false)
+  })
+
+  it('reads a missing part as nothing to offer and keeps marketing messages on by default', () => {
+    const p = parsePromotions({ server_time: '2026-11-02T10:00:00Z', bonus: { balance: 500, reserved: 200 }, referral: { state: 'paused', lock_reason: 'later' } })
+    expect(p).toMatchObject({ redemptions_enabled: false, coupons: [], offers: [], banners: [], bonus_categories: [], marketing_subscribed: true })
+    expect(p.bonus).toEqual({ balance: 500, reserved: 200, available: 300 })
+    expect(p.referral).toEqual({ state: 'unavailable', lock_reason: null, reward_amount: 0, rewarded: false })
+  })
+})
+
+describe('parseReferral / parseBonusPage', () => {
+  it('keeps only the invitation links of the passenger bot and a well-formed code', () => {
+    const v = parseReferral({
+      state: 'unlocked',
+      reward_amount: 300,
+      rewarded: true,
+      title: { kk: 'Досыңды шақыр', ru: 'Пригласи друга', en: 'Invite a friend' },
+      description: { kk: 'Сипаттама', ru: 'Описание', en: 'Text' },
+      code: 'AB2C3D4E',
+      link: 'https://t.me/jantaxi_bot?start=ref_AB2C3D4E',
+      app_link: 'https://evil.example/jantaxi_bot?startapp=ref_AB2C3D4E',
+      earned: 300,
+      friends: [
+        { name: 'Дана Қ.', status: 'rewarded', attributed_at: '2026-10-30T10:00:00Z' },
+        { name: '', status: 'not_counted', attributed_at: '2026-10-31T10:00:00Z' },
+        { name: 'X', status: 'review', attributed_at: '2026-10-31T10:00:00Z' },
+      ],
+    })
+    expect(v).toMatchObject({ state: 'unlocked', lock_reason: null, reward_amount: 300, rewarded: true, code: 'AB2C3D4E', earned: 300 })
+    expect(v.link).toBe('https://t.me/jantaxi_bot?start=ref_AB2C3D4E')
+    expect(v.app_link).toBeNull()
+    expect(v.friends).toEqual([
+      { name: 'Дана Қ.', status: 'rewarded', attributed_at: '2026-10-30T10:00:00Z' },
+      { name: 'Telegram', status: 'not_counted', attributed_at: '2026-10-31T10:00:00Z' },
+    ])
+    expect(parseReferral({ state: 'unlocked', code: 'a b', link: 'javascript:alert(1)' })).toMatchObject({ code: null, link: null, friends: [] })
+  })
+
+  it('maps the bonus history with signed amounts and the cursor', () => {
+    const page = parseBonusPage({
+      items: [
+        { id: 12, type: 'grant', amount: 300, order_number: null, created_at: '2026-11-01T10:00:00Z' },
+        { id: 11, type: 'spend', amount: -200, order_number: 1024, created_at: '2026-10-30T10:00:00Z' },
+        { id: 10, type: 'reserve', amount: 0, order_number: 1024, created_at: '2026-10-30T09:00:00Z' },
+      ],
+      next_cursor: '10',
+    })
+    expect(page.items).toEqual([
+      { id: 12, type: 'grant', amount: 300, order_number: null, created_at: '2026-11-01T10:00:00Z' },
+      { id: 11, type: 'spend', amount: -200, order_number: 1024, created_at: '2026-10-30T10:00:00Z' },
+    ])
+    expect(page.next_cursor).toBe('10')
   })
 })

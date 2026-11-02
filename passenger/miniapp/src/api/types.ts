@@ -1,6 +1,7 @@
 // Passenger API types (admin/backend/api/openapi.yaml: GeoPlace,
-// GeoReverseResult, RouteQuote, Order, OrderSummary…). Field names are the
-// API's snake_case; parsers in ./parse.ts fill these from raw JSON.
+// GeoReverseResult, RouteQuote, Order, OrderSummary, PassengerPromotions,
+// ReferralView…). Field names are the API's snake_case; parsers in ./parse.ts
+// fill these from raw JSON.
 
 import type { LineStringGeometry } from '../maps'
 import type { CargoSize, LocalizedText, VehicleIcon } from '../services/config'
@@ -127,6 +128,13 @@ export interface OrderCreateRequest {
   cargo_description?: string
   recipient_phone?: string
   prohibited_items_ack?: boolean
+  /**
+   * The promotion the passenger confirmed (§23.6). The server computes the
+   * discount itself and refuses the order (409 promotion_changed) when it is
+   * not promotion_discount, the discount the app showed.
+   */
+  promotion?: PromotionKind | 'none'
+  promotion_discount?: number
   idempotency_key: string
 }
 
@@ -255,7 +263,17 @@ export interface OrderDispute {
   resolved_at: string | null
 }
 
-export interface Order extends OrderLoad, OrderPlace {
+/**
+ * A coupon or bonus on an order (§23.6). The fare stays the class price;
+ * promo_discount is what the promotion took off and cash_due (= fare -
+ * promo_discount) what the passenger pays the driver.
+ */
+export interface OrderPromoAmounts {
+  promo_discount: number
+  cash_due: number
+}
+
+export interface Order extends OrderLoad, OrderPlace, OrderPromoAmounts {
   id: string
   number: number
   status: OrderStatus
@@ -265,6 +283,8 @@ export interface Order extends OrderLoad, OrderPlace {
   comment: string | null
   fare: number
   payment_method: PaymentMethod
+  /** The promotion applied to the order, null without one. */
+  promotion: OrderPromotion | null
   distance_m: number | null
   duration_s: number | null
   city: CityRef | null
@@ -308,7 +328,7 @@ export interface StopSummary {
   address_typed: boolean
 }
 
-export interface OrderSummary extends OrderLoad, OrderPlace {
+export interface OrderSummary extends OrderLoad, OrderPlace, OrderPromoAmounts {
   id: string
   number: number
   status: OrderStatus
@@ -333,3 +353,135 @@ export interface CursorPage<T> {
 }
 
 export type OrderScope = 'active' | 'history'
+
+// --- Promotions (§23: GET /promotions, /promotions/referral, /promotions/bonus/history) ---
+
+export const PROMOTION_KINDS = ['coupon', 'bonus'] as const
+export type PromotionKind = (typeof PROMOTION_KINDS)[number]
+
+/** The promotion of an order: reserved while it runs, released when cancelled, settled when completed. */
+export const ORDER_PROMOTION_STATUSES = ['reserved', 'released', 'settled', 'reversed'] as const
+export type OrderPromotionStatus = (typeof ORDER_PROMOTION_STATUSES)[number]
+
+export interface OrderPromotion {
+  kind: PromotionKind
+  /** The campaign's name; null for the bonus balance. */
+  title: LocalizedText | null
+  discount: number
+  gross_fare: number
+  cash_due: number
+  status: OrderPromotionStatus
+  /** What Jan Taxi credited the driver once the order completed. */
+  compensation: number | null
+  settled_at: string | null
+}
+
+/** "expired" also comes from the server for an issued coupon past expires_at. */
+export const COUPON_STATUSES = ['issued', 'reserved', 'redeemed', 'expired', 'voided'] as const
+export type CouponStatus = (typeof COUPON_STATUSES)[number]
+
+export interface PromoCoupon {
+  id: string
+  title: LocalizedText | null
+  amount: number
+  /** The coupon applies to an order whose fare is at least this. */
+  min_order_fare: number
+  categories: Category[]
+  status: CouponStatus
+  issued_at: string
+  /** Decided on the server's clock: the coupon is unusable from this instant. */
+  expires_at: string
+  /** The order the coupon is reserved for while it runs. */
+  reserved_order_id: string | null
+  redeemed_at: string | null
+}
+
+export interface BonusAccount {
+  balance: number
+  /** Earmarked for an active order. */
+  reserved: number
+  available: number
+}
+
+/** A promotion the passenger can still earn ("after your first ride you get a 400 ₸ coupon"). */
+export interface PromoOffer {
+  kind: 'first_ride_coupon'
+  title: LocalizedText | null
+  description: LocalizedText | null
+  amount: number
+  /** Null when the API did not say. */
+  validity_hours: number | null
+  categories: Category[]
+}
+
+/** An informational campaign without money. */
+export interface PromoBanner {
+  id: string
+  title: LocalizedText | null
+  description: LocalizedText | null
+}
+
+export const REFERRAL_STATES = ['unavailable', 'locked', 'unlocked'] as const
+export type ReferralState = (typeof REFERRAL_STATES)[number]
+
+/** Why inviting is not open yet; the app explains each. */
+export const REFERRAL_LOCK_REASONS = ['coupon_not_redeemed', 'coupon_not_used', 'first_ride_required', 'paused', 'disabled'] as const
+export type ReferralLockReason = (typeof REFERRAL_LOCK_REASONS)[number]
+
+export interface ReferralSummary {
+  state: ReferralState
+  lock_reason: ReferralLockReason | null
+  reward_amount: number
+  /** The inviter already received the reward (it is paid once). */
+  rewarded: boolean
+}
+
+export interface Promotions {
+  /** The database clock when the answer was made; coupon validity is decided on it. */
+  server_time: string
+  redemptions_enabled: boolean
+  coupons: PromoCoupon[]
+  bonus: BonusAccount
+  /** Order categories the bonus balance pays for. */
+  bonus_categories: Category[]
+  offers: PromoOffer[]
+  banners: PromoBanner[]
+  referral: ReferralSummary
+  marketing_subscribed: boolean
+}
+
+export const REFERRAL_FRIEND_STATUSES = ['attributed', 'rewarded', 'capped', 'not_counted'] as const
+export type ReferralFriendStatus = (typeof REFERRAL_FRIEND_STATUSES)[number]
+
+/** An invited friend: first name and last-name initial only. */
+export interface ReferralFriend {
+  name: string
+  status: ReferralFriendStatus
+  attributed_at: string
+}
+
+export interface ReferralView extends ReferralSummary {
+  title: LocalizedText | null
+  description: LocalizedText | null
+  /** Only while inviting is open. */
+  code: string | null
+  /** https://t.me/<passenger bot>?start=ref_<code> */
+  link: string | null
+  /** https://t.me/<passenger bot>?startapp=ref_<code> */
+  app_link: string | null
+  earned: number
+  friends: ReferralFriend[]
+}
+
+/** What the passenger sees in the bonus history (reservations stay internal). */
+export const BONUS_ENTRY_TYPES = ['grant', 'spend', 'adjustment_credit', 'adjustment_debit'] as const
+export type BonusEntryType = (typeof BONUS_ENTRY_TYPES)[number]
+
+export interface BonusEntry {
+  id: number
+  type: BonusEntryType
+  /** Signed: positive came in, negative went out. */
+  amount: number
+  order_number: number | null
+  created_at: string
+}

@@ -9,11 +9,18 @@
   class only on a genuine tap (VehicleOptions). The confirm button names the
   class and the price ("Тапсырыс беру · Седан · 700 ₸"), and a big vehicle for
   a small taxi party (e.g. a minibus for one passenger) is confirmed in an
-  action sheet first. Before the first order the passenger is asked once to
-  share the phone (§22.5). Confirm sends POST /orders with the chosen class's
-  quote and an idempotency key that stays the same on retries. When the
-  passenger wrote a stop in their own words, the route summary lists the stop
-  texts as drivers get them; a route without a calculated length says so.
+  action sheet first, at the prices the passenger would pay. Before the first
+  order the passenger is asked once to share the phone (§22.5). Confirm sends
+  POST /orders with the chosen class's quote and an idempotency key that
+  stays the same on retries. When the passenger wrote a stop in their own
+  words, the route summary lists the stop texts as drivers get them; a route
+  without a calculated length says so.
+  An order with a promotion (§23.6) shows the coupon (or the bonus, behind its
+  switch) and what the passenger pays: a taxi in the order facts under its
+  trip fare, a delivery under its fare picker. The button names that price;
+  the class rows keep their own prices. A coupon the fare is too low for gets
+  a hint. When the server answers that the promotion changed, a notice asks
+  to check the new price; nothing is re-sent by itself.
 -->
 <script setup lang="ts">
 import { ChevronRight, Circle, CircleCheck, Info } from '@lucide/vue'
@@ -27,7 +34,7 @@ import PassengerStepper from '../../components/booking/PassengerStepper.vue'
 import VehicleOptions from '../../components/booking/VehicleOptions.vue'
 import PhoneShareSheet from '../../components/PhoneShareSheet.vue'
 import StopBadge from '../../components/StopBadge.vue'
-import { JButton, JSheet, JSkeleton, JSpinner, JTextArea, JTextField, showActionSheet, toast, type SheetSnap } from '../../components/ui'
+import { JButton, JSheet, JSkeleton, JSpinner, JSwitch, JTextArea, JTextField, showActionSheet, toast, type SheetSnap } from '../../components/ui'
 import { useStopText } from '../../composables/useStopText'
 import { useVehicleText } from '../../composables/useVehicleText'
 import { isDelivery } from '../../domain/details'
@@ -41,6 +48,7 @@ import { useAutoFit, useStageScreen } from '../../stage/mapStage'
 import { useBookingStore, type FormField } from '../../stores/booking'
 import { useOrdersStore } from '../../stores/orders'
 import { usePhoneStore } from '../../stores/phone'
+import { usePromotionsStore } from '../../stores/promotions'
 import { useSessionStore } from '../../stores/session'
 import { haptics, navigateBack } from '../../telegram'
 import { formatDistance, formatDuration, formatMoney } from '../../utils/format'
@@ -61,11 +69,13 @@ const booking = useBookingStore()
 const orders = useOrdersStore()
 const session = useSessionStore()
 const phoneShare = usePhoneStore()
+const promotions = usePromotionsStore()
 const vehicleText = useVehicleText()
 const stopText = useStopText()
 
 const snap = ref<SheetSnap>('half')
 const contentEl = ref<HTMLElement | null>(null)
+const promoNotice = ref<HTMLElement | null>(null)
 const lang = computed(() => session.language)
 /** Quote of the current route (distance, duration, map); the load may still be re-quoting. */
 const quote = computed(() => (booking.routeCurrent ? booking.quote : null))
@@ -103,14 +113,15 @@ function optionName(o: RouteQuoteOption): string {
 const NBSP = String.fromCharCode(0xa0)
 
 /**
- * "Тапсырыс беру · Микроавтобус · 2 150 ₸": what exactly will be ordered.
- * Spaces inside each part do not break, so on a narrow screen the label wraps
- * only after a "·" and the class and the price are never cut off.
+ * "Тапсырыс беру · Микроавтобус · 2 150 ₸": what exactly will be ordered, at
+ * the price the passenger pays (the fare less a coupon or bonus). Spaces
+ * inside each part do not break, so on a narrow screen the label wraps only
+ * after a "·" and the class and the price are never cut off.
  */
 const submitLabel = computed(() => {
   const o = option.value
-  if (!o || booking.fare === null) return t('confirm.submit')
-  const label = t('confirm.submit_with', { vehicle: optionName(o), price: formatMoney(booking.fare, lang.value) })
+  if (!o || booking.payable === null) return t('confirm.submit')
+  const label = t('confirm.submit_with', { vehicle: optionName(o), price: formatMoney(booking.payable, lang.value) })
   return label
     .split(' · ')
     .map((part) => part.replace(/ /g, NBSP))
@@ -138,6 +149,19 @@ const phone = computed({
 const cargoPlaceholder = computed(() =>
   booking.category === 'parcel' ? t('confirm.cargo_placeholder_parcel') : t('confirm.cargo_placeholder_other'),
 )
+
+// --- Promotion (§23.6) -------------------------------------------------------------
+
+/** The promotion the order can use, shown once a class is chosen. */
+const promo = computed(() => (option.value ? booking.promotion : null))
+/** The promotion the order goes out with: the coupon, or the bonus while it is switched on. */
+const applied = computed(() => (option.value ? booking.appliedPromotion : null))
+const appliedLabel = computed(() => (applied.value?.kind === 'coupon' ? t('promo.coupon') : t('promo.bonus')))
+const bonusAvailable = computed(() => formatMoney(promotions.data?.bonus.available ?? 0, lang.value))
+const couponHint = computed(() => {
+  const c = option.value ? booking.couponFloor : null
+  return c ? t('promo.coupon_from', { amount: formatMoney(c.amount, lang.value), min: formatMoney(c.min_order_fare, lang.value) }) : ''
+})
 
 // --- Map: the route being confirmed ---------------------------------------------
 
@@ -169,6 +193,8 @@ onMounted(() => {
   }
   if (!booking.quoteCurrent) booking.schedulePreview(true)
   void session.ensureConfig()
+  // The price confirmed here includes the coupon or bonus: read them fresh.
+  if (!promotions.unavailable) void promotions.refresh()
   booking.ensureFreshQuote()
   freshTimer = setInterval(() => booking.ensureFreshQuote(), QUOTE_CHECK_MS)
 })
@@ -216,20 +242,22 @@ function chooseClass(code: string): void {
 /**
  * A minivan or minibus for a taxi party of up to four is rarely intended:
  * the passenger confirms it, or switches to the default (cheapest) class and
- * reviews the new price before ordering.
+ * reviews the new price before ordering. Both prices are what the passenger
+ * would pay, the coupon or bonus taken off, like the button.
  */
 async function confirmLargeVehicle(): Promise<boolean> {
   const o = booking.selectedOption
   if (!o || !oversizedForParty(booking.category, booking.passengerCount, o)) return true
   const base = defaultOption(booking.quote)
   const smaller = base && base.vehicle_class !== o.vehicle_class && base.seats_max < LARGE_CLASS_SEATS ? base : null
+  const price = booking.payable ?? booking.payableAt(o.fare.recommended)
   const choice = await showActionSheet({
     title: t('confirm.large_title', { vehicle: optionName(o) }),
     message: t('confirm.large_text', { n: booking.passengerCount, seats: o.seats_max }),
     actions: [
-      { id: 'large', label: t('confirm.large_confirm', { vehicle: optionName(o), price: formatMoney(booking.fare ?? o.fare.recommended, lang.value) }) },
+      { id: 'large', label: t('confirm.large_confirm', { vehicle: optionName(o), price: formatMoney(price, lang.value) }) },
       ...(smaller
-        ? [{ id: 'switch', label: t('confirm.large_switch', { vehicle: optionName(smaller), price: formatMoney(smaller.fare.recommended, lang.value) }) }]
+        ? [{ id: 'switch', label: t('confirm.large_switch', { vehicle: optionName(smaller), price: formatMoney(booking.payableAt(smaller.fare.recommended), lang.value) }) }]
         : []),
     ],
   })
@@ -265,6 +293,12 @@ async function submit(): Promise<void> {
     case 'requoted':
       haptics.notification('warning')
       return
+    case 'promotion_changed':
+      // The new price waits for the passenger: the notice says so, nothing is re-sent.
+      haptics.notification('warning')
+      await nextTick()
+      promoNotice.value?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+      return
     case 'invalid':
       haptics.notification('error')
       await focusFirstError()
@@ -293,6 +327,10 @@ async function submit(): Promise<void> {
       <p v-if="booking.reconfirm" class="confirm-notice" role="status">
         <Info :size="18" :stroke-width="2" aria-hidden="true" />
         <span>{{ t('confirm.requoted') }}</span>
+      </p>
+      <p v-if="booking.promotionChanged" ref="promoNotice" class="confirm-notice" role="status">
+        <Info :size="18" :stroke-width="2" aria-hidden="true" />
+        <span>{{ t('promo.changed') }}</span>
       </p>
 
       <!-- Vehicle class: load first, then one row per class that can carry it -->
@@ -353,6 +391,29 @@ async function submit(): Promise<void> {
           <span class="confirm-fact__value">{{ t(`payment_method.${booking.paymentMethod}`) }}</span>
           <ChevronRight :size="18" :stroke-width="2" class="confirm-fact__chevron" aria-hidden="true" />
         </button>
+        <!-- Promotion: the bonus switch, then (taxi) trip fare − discount = what the passenger pays -->
+        <div v-if="promo?.kind === 'bonus'" class="confirm-fact">
+          <span class="confirm-fact__text">
+            <span>{{ t('promo.use_bonus') }}</span>
+            <span class="confirm-fact__note jt-tabular">{{ t('promo.bonus_available', { amount: bonusAvailable }) }}</span>
+          </span>
+          <JSwitch v-model="booking.useBonus" :label="t('promo.use_bonus')" />
+        </div>
+        <template v-if="!delivery && applied && booking.fare !== null && booking.payable !== null">
+          <div class="confirm-fact">
+            <span>{{ t('promo.trip_fare') }}</span>
+            <span class="confirm-fact__value jt-tabular">{{ formatMoney(booking.fare, lang) }}</span>
+          </div>
+          <div class="confirm-fact">
+            <span>{{ appliedLabel }}</span>
+            <span class="confirm-fact__value jt-tabular">{{ formatMoney(-applied.discount, lang) }}</span>
+          </div>
+          <div class="confirm-fact is-total">
+            <span>{{ t('promo.you_pay') }}</span>
+            <span class="jt-tabular">{{ formatMoney(booking.payable, lang) }}</span>
+          </div>
+        </template>
+        <p v-if="!delivery && couponHint" class="confirm-fact is-note">{{ couponHint }}</p>
       </section>
 
       <!-- Fare: parcel and other only; a taxi costs the chosen class's price -->
@@ -363,6 +424,18 @@ async function submit(): Promise<void> {
         <p v-if="option" class="confirm-fare__range jt-tabular">
           {{ t('confirm.fare_range', { min: formatMoney(option.fare.min, lang), max: formatMoney(option.fare.max, lang), step: formatMoney(option.fare.step, lang) }) }}
         </p>
+        <!-- A coupon on the chosen fare: what it takes off and what the passenger pays -->
+        <template v-if="applied && booking.payable !== null">
+          <div class="confirm-fare__line">
+            <span>{{ appliedLabel }}</span>
+            <span class="confirm-fare__value jt-tabular">{{ formatMoney(-applied.discount, lang) }}</span>
+          </div>
+          <div class="confirm-fare__line is-total">
+            <span>{{ t('promo.you_pay') }}</span>
+            <span class="jt-tabular">{{ formatMoney(booking.payable, lang) }}</span>
+          </div>
+        </template>
+        <p v-if="couponHint" class="confirm-fare__range">{{ couponHint }}</p>
       </section>
 
       <!-- Category-specific details -->
@@ -483,6 +556,29 @@ async function submit(): Promise<void> {
   background: var(--jt-color-fill-tertiary);
 }
 
+/* What the passenger pays after a coupon or bonus. */
+.confirm-fact.is-total {
+  font: var(--jt-font-headline);
+}
+
+/* A title with a caption under it (the bonus switch). */
+.confirm-fact__text {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+}
+
+.confirm-fact__note,
+.confirm-fact.is-note {
+  font: var(--jt-font-footnote);
+  color: var(--jt-color-label-secondary);
+}
+
+.confirm-fact.is-note {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
 .confirm-fare {
   display: flex;
   flex-direction: column;
@@ -541,6 +637,25 @@ async function submit(): Promise<void> {
   font: var(--jt-font-footnote);
   color: var(--jt-color-label-secondary);
   text-align: center;
+}
+
+/* A coupon on a delivery's fare: the discount, then what the passenger pays. */
+.confirm-fare__line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jt-space-3);
+  padding-top: var(--jt-space-2);
+  border-top: var(--jt-hairline) solid var(--jt-color-separator);
+  font: var(--jt-font-body);
+}
+
+.confirm-fare__line.is-total {
+  font: var(--jt-font-headline);
+}
+
+.confirm-fare__value {
+  color: var(--jt-color-label-secondary);
 }
 
 .confirm-head {

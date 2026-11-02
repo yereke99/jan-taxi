@@ -1,7 +1,9 @@
 <!--
   Order detail from "My orders": a static map of the route, the stops, the
-  trip facts (the place first: the settlement of pickup A), the driver,
-  rating / dispute actions and the status timeline.
+  trip facts (the place first: the settlement of pickup A; with a coupon or
+  bonus the fare, the discount and what the passenger paid, or pays while the
+  order runs; a cancelled order shows its fare and says the coupon or bonus
+  came back), the driver, rating / dispute actions and the status timeline.
 -->
 <script setup lang="ts">
 import type { Map as MapLibreMap } from 'maplibre-gl'
@@ -20,9 +22,11 @@ import { JBadge, JButton, JEmptyState, JSkeleton } from '../components/ui'
 import VehicleClassIcon from '../components/VehicleClassIcon.vue'
 import { useDriverPhoto } from '../composables/useDriverPhoto'
 import { useLiveOrder } from '../composables/useLiveOrder'
+import { usePromoText } from '../composables/usePromoText'
 import { useVehicleText } from '../composables/useVehicleText'
 import { cancelInfo, orderLocality, orderMarkers } from '../domain/orderView'
 import { placesOfStops } from '../domain/places'
+import { hasPromo, payable } from '../domain/promotions'
 import { useErrorText } from '../i18n/core'
 import { MapView, useRouteLayer, useStopMarkers } from '../maps'
 import { ROUTE } from '../router/names'
@@ -44,6 +48,7 @@ const session = useSessionStore()
 const booking = useBookingStore()
 const orders = useOrdersStore()
 const vehicleText = useVehicleText()
+const promoText = usePromoText()
 
 const orderId = computed(() => String(route.params.id ?? '').toLowerCase())
 const live = useLiveOrder(orderId)
@@ -62,6 +67,8 @@ const classIcon = computed<VehicleIcon>(() => VEHICLE_ICONS.find((i) => i === or
 const loadLine = computed(() => (order.value ? vehicleText.loadText(order.value) : ''))
 /** Settlement of pickup A ("Алматы"), or the locality line seen while booking; never coordinates. */
 const locality = computed(() => (order.value ? orderLocality(order.value, orders.pickupSubtitle(order.value.id)) : null))
+/** A cancelled order gave its coupon or bonus back. */
+const promoReturned = computed(() => (order.value ? promoText.returned(order.value) : ''))
 
 // --- Static route map ------------------------------------------------------------
 
@@ -159,7 +166,21 @@ function onDisputeSent(o: Order): void {
           <span class="detail-fact__label">{{ order.category === 'taxi' ? t('confirm.passengers') : t('confirm.cargo_size') }}</span>
           <span class="detail-fact__value jt-tabular">{{ order.cargo_size ? vehicleText.cargoText(order.cargo_size, order.cargo_volume_l) : order.passenger_count }}</span>
         </div>
-        <div class="detail-fact">
+        <template v-if="hasPromo(order)">
+          <div class="detail-fact">
+            <span class="detail-fact__label">{{ t('promo.trip_fare') }}</span>
+            <span class="detail-fact__value jt-tabular">{{ formatMoney(order.fare, lang) }}</span>
+          </div>
+          <div class="detail-fact">
+            <span class="detail-fact__label">{{ promoText.kindLabel(order.promotion?.kind) }}</span>
+            <span class="detail-fact__value jt-tabular">{{ formatMoney(-order.promo_discount, lang) }}</span>
+          </div>
+          <div class="detail-fact is-total">
+            <span class="detail-fact__label">{{ promoText.payLabel(order.status) }}</span>
+            <span class="detail-fact__value jt-tabular">{{ formatMoney(payable(order), lang) }}</span>
+          </div>
+        </template>
+        <div v-else class="detail-fact">
           <span class="detail-fact__label">{{ t('detail.fare') }}</span>
           <span class="detail-fact__value jt-tabular">{{ formatMoney(order.fare, lang) }}</span>
         </div>
@@ -194,6 +215,7 @@ function onDisputeSent(o: Order): void {
         <p v-if="cancel.reasonKey" :class="{ 'is-secondary': cancel.byKey }">{{ t(cancel.reasonKey) }}</p>
         <p v-if="cancel.labelKey" class="is-secondary">{{ t('order.reason_text', { reason: t(cancel.labelKey) }) }}</p>
         <p v-if="cancel.text" class="is-secondary">{{ cancel.labelKey ? cancel.text : t('order.reason_text', { reason: cancel.text }) }}</p>
+        <p v-if="promoReturned" class="is-secondary">{{ promoReturned }}</p>
       </section>
 
       <section v-if="order.driver" class="detail-card">
@@ -305,6 +327,15 @@ function onDisputeSent(o: Order): void {
   min-width: 0;
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+/* What the passenger pays after a coupon or bonus. */
+.detail-fact.is-total {
+  font: var(--jt-font-headline);
+}
+
+.detail-fact.is-total .detail-fact__label {
+  color: var(--jt-color-label);
 }
 
 .detail-fact__service {

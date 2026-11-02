@@ -2,7 +2,10 @@
 // place search (it keeps A's point on the map, also when the pin moves), the
 // place search's manual entry and recent places, the confirmation sheet's
 // route summary and fare section, which only deliveries have (a taxi goes at
-// the chosen class's price shown on its row and on the button).
+// the chosen class's price shown on its row and on the button), and its
+// promotion rows: trip fare, coupon or bonus, what the passenger pays (a
+// delivery's under its fare picker, the large-vehicle sheet's prices too).
+// Then the live order sheet's price with a coupon: running, cancelled, done.
 
 import { flushPromises, mount } from '@vue/test-utils'
 import type { Map as MapLibreMap } from 'maplibre-gl'
@@ -11,10 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, nextTick, reactive, ref, shallowRef, type Component } from 'vue'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { reverseGeocode } from '../../api/geo'
-import { listOrders } from '../../api/orders'
-import { parseOrderSummary, parseQuote } from '../../api/parse'
+import { createOrder, listOrders } from '../../api/orders'
+import { parseOrder, parseOrderSummary, parsePromotions, parseQuote } from '../../api/parse'
+import { getPromotions } from '../../api/promotions'
 import { previewRoute } from '../../api/routes'
-import type { GeoReverse, OrderSummary, RouteQuote } from '../../api/types'
+import type { GeoReverse, Order, OrderSummary, RouteQuote } from '../../api/types'
+import { activeActionSheet } from '../../components/ui/actionSheet'
 import type { PlaceValue } from '../../domain/route'
 import { i18n } from '../../i18n'
 import { ROUTE } from '../../router/names'
@@ -29,10 +34,20 @@ import type { LatLon } from '../../utils/geo'
 import type { Category } from '../../utils/status'
 import ConfirmSheet from './ConfirmSheet.vue'
 import HomeSheet from './HomeSheet.vue'
+import OrderSheet from './OrderSheet.vue'
 import PickOnMapSheet from './PickOnMapSheet.vue'
 import PlaceSearchSheet from './PlaceSearchSheet.vue'
 import RouteEditorSheet from './RouteEditorSheet.vue'
 
+/** The order the live order sheet shows (instead of GET /orders/:id with its realtime sync). */
+const shown = vi.hoisted(() => ({ order: null as Order | null }))
+
+vi.mock('../../composables/useLiveOrder', async () => {
+  const { ref, shallowRef } = await import('vue')
+  return {
+    useLiveOrder: () => ({ order: shallowRef(shown.order), loading: ref(false), error: shallowRef(null), refresh: () => undefined, accept: () => undefined }),
+  }
+})
 vi.mock('../../api/routes', () => ({ previewRoute: vi.fn() }))
 vi.mock('../../api/geo', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/geo')>()),
@@ -42,7 +57,9 @@ vi.mock('../../api/geo', async (importOriginal) => ({
 vi.mock('../../api/orders', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/orders')>()),
   listOrders: vi.fn(),
+  createOrder: vi.fn(),
 }))
+vi.mock('../../api/promotions', () => ({ getPromotions: vi.fn() }))
 vi.mock('../../services/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/config')>()),
   fetchPublicConfig: vi.fn(),
@@ -139,10 +156,15 @@ async function mountAt(component: Component, path: string, stage: MapStage = fak
 
 beforeEach(() => {
   setActivePinia(createPinia())
-  preview.mockReset()
-  reverse.mockReset()
+  // A lookup no test asked for (a debounce left by an earlier test's store)
+  // waits forever instead of failing on an undefined answer.
+  preview.mockReset().mockImplementation(() => new Promise<never>(() => {}))
+  reverse.mockReset().mockImplementation(() => new Promise<never>(() => {}))
   vi.mocked(listOrders).mockResolvedValue({ items: [], next_cursor: null })
   vi.mocked(fetchPublicConfig).mockReset()
+  vi.mocked(createOrder).mockReset()
+  // An API without promotions unless a test gives the passenger some.
+  vi.mocked(getPromotions).mockReset().mockRejectedValue(new ApiError(404, 'not_found', 'no route'))
   const orders = useOrdersStore()
   orders.historyLoaded = true
   const session = useSessionStore()
@@ -216,6 +238,7 @@ describe('place search: pickup A in the passenger’s own words', () => {
   })
 
   it('keeps manual stops after A behind the administrator switch, without coordinates', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     const booking = useBookingStore()
     booking.setStopPlace(0, PIN)
     useSessionStore().config.orders = { manual_destination_enabled: false, manual_destination_pricing: 'disabled' }
@@ -232,6 +255,7 @@ describe('place search: pickup A in the passenger’s own words', () => {
     await w.findAll('.search-actions--manual button').find((b) => b.text() === i18n.global.t('manual.save'))!.trigger('click')
     expect(booking.stops[1]!.place).toEqual(MANUAL_B)
     expect(booking.stops[0]!.place).toEqual(PIN)
+    w.unmount()
   })
 })
 
@@ -245,11 +269,11 @@ function fareRange(lo: number, hi: number, step: number): number[] {
 let quoteSeq = 0
 
 /** A one-class (sedan) quote as the API sends it; a manual route has no recommendation. */
-function sedanQuote(category: Category, manual: boolean): RouteQuote {
+function sedanQuote(category: Category, manual: boolean, price = 700): RouteQuote {
   const quoteId = `00000000-0000-4000-8000-0000000003${String(++quoteSeq).padStart(2, '0')}`
   const fare = manual
     ? { recommended: null, min: 400, max: 1500, step: 50, options: fareRange(400, 1500, 50) }
-    : { recommended: 700, min: 700, max: 1500, step: 50, options: fareRange(700, 1500, 50) }
+    : { recommended: price, min: price, max: price + 800, step: 50, options: fareRange(price, price + 800, 50) }
   const expires = new Date(Date.now() + 10 * 60_000).toISOString()
   return parseQuote({
     quote_id: quoteId,
@@ -276,11 +300,12 @@ async function readyBooking(
   category: Category,
   destination: PlaceValue,
   pickup: PlaceValue = { ...PIN, address: TYPED, typed: true },
+  price = 700,
 ): Promise<ReturnType<typeof useBookingStore>> {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   const booking = useBookingStore()
   booking.setCategory(category)
-  preview.mockResolvedValue(sedanQuote(category, destination.source === 'manual'))
+  preview.mockResolvedValue(sedanQuote(category, destination.source === 'manual', price))
   booking.setStopPlace(0, pickup)
   booking.setStopPlace(1, destination)
   await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
@@ -345,6 +370,269 @@ describe('confirmation: fare section', () => {
     await readyBooking('other', STATION)
     const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
     expect(w.find('.confirm-fare [role="spinbutton"]').exists()).toBe(true)
+    w.unmount()
+  })
+})
+
+/** GET /promotions: a 400 ₸ coupon (from `minFare`, valid 72 h; taxi unless `categories`) and/or a bonus balance. */
+function promotionsAnswer(opts: { coupon?: boolean; minFare?: number; bonus?: number; categories?: string[] } = {}) {
+  const now = Date.now()
+  return parsePromotions({
+    server_time: new Date(now).toISOString(),
+    redemptions_enabled: true,
+    coupons:
+      opts.coupon === false
+        ? []
+        : [
+            {
+              id: 'c1',
+              title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' },
+              amount: 400,
+              min_order_fare: opts.minFare ?? 400,
+              categories: opts.categories ?? ['taxi'],
+              status: 'issued',
+              issued_at: new Date(now - 3_600_000).toISOString(),
+              expires_at: new Date(now + 72 * 3_600_000).toISOString(),
+            },
+          ],
+    bonus: { balance: opts.bonus ?? 0, reserved: 0, available: opts.bonus ?? 0 },
+    bonus_categories: ['taxi'],
+    referral: { state: 'unavailable' },
+    marketing_subscribed: true,
+  })
+}
+
+/** Each row of the order facts as [title, value] texts. */
+function factRows(w: ReturnType<typeof mount>): string[][] {
+  return w.findAll('.confirm-fact').map((f) => f.findAll(':scope > span').map((s) => plain(s.text())))
+}
+
+describe('confirmation: promotion (§23.6)', () => {
+  it('lists the trip fare, the coupon and what the passenger pays; the button names that price, the class row its own', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer())
+    await readyBooking('taxi', STATION, PIN, 1500)
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    const rows = factRows(w)
+    expect(rows).toContainEqual(['Сапар құны', '1 500 ₸'])
+    expect(rows).toContainEqual(['Купон', '−400 ₸'])
+    expect(rows).toContainEqual(['Төлейсіз', '1 100 ₸'])
+    expect(w.find('.confirm-fact.is-total').exists()).toBe(true)
+    expect(w.find('[role="switch"]').exists()).toBe(false)
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 1 100 ₸')
+    expect(plain(w.find('.vclass__row.is-selected').text())).toContain('1 500 ₸')
+    w.unmount()
+  })
+
+  it('offers the bonus behind a switch that is on; off, the button goes back to the class price', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer({ coupon: false, bonus: 300 }))
+    const booking = await readyBooking('taxi', STATION, PIN)
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    const toggle = w.find('[role="switch"]')
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    expect(toggle.attributes('aria-label')).toBe('Бонусты қолдану')
+    expect(factRows(w)).toContainEqual(['Бонус', '−300 ₸'])
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 400 ₸')
+
+    await toggle.trigger('click')
+    expect(booking.useBonus).toBe(false)
+    expect(w.find('.confirm-fact.is-total').exists()).toBe(false)
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 700 ₸')
+    w.unmount()
+  })
+
+  it('says from which fare a coupon applies when this one is too cheap', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer({ minFare: 1000 }))
+    await readyBooking('taxi', STATION, PIN)
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    expect(plain(w.find('.confirm-fact.is-note').text())).toBe('400 ₸ купоны құны 1 000 ₸ және одан жоғары тапсырыстарға қолданылады')
+    expect(w.find('.confirm-fact.is-total').exists()).toBe(false)
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 700 ₸')
+    w.unmount()
+  })
+
+  it('shows no promotion rows when the API has no promotions', async () => {
+    await readyBooking('taxi', STATION, PIN, 1500)
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    expect(factRows(w).flat()).not.toContain('Сапар құны')
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 1 500 ₸')
+    w.unmount()
+  })
+
+  it('asks to check the new price after 409 promotion_changed and sends nothing by itself', async () => {
+    vi.mocked(getPromotions).mockResolvedValueOnce(promotionsAnswer())
+    await readyBooking('taxi', STATION, PIN, 1500)
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 1 100 ₸')
+
+    vi.mocked(createOrder).mockRejectedValueOnce(
+      new ApiError(409, 'promotion_changed', 'the promotion changed; review the price', {}, { reason: 'no_coupon', discount: 0 }),
+    )
+    vi.mocked(getPromotions).mockResolvedValueOnce(promotionsAnswer({ coupon: false }))
+    await w.find('.confirm-submit').trigger('click')
+    await flushPromises()
+    expect(w.find('.confirm-notice').text()).toBe('Акция жағдайы өзгерді. Бағаны тексеріп, қайта растаңыз.')
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 1 500 ₸')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(createOrder).toHaveBeenCalledTimes(1)
+    w.unmount()
+  })
+
+  it('names what the passenger would pay in the large-vehicle sheet: both classes with the coupon', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer())
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const booking = useBookingStore()
+    preview.mockResolvedValue(sedanAndMinivan())
+    booking.setStopPlace(0, PIN)
+    booking.setStopPlace(1, STATION)
+    await vi.advanceTimersByTimeAsync(PREVIEW_DEBOUNCE_MS)
+    booking.setVehicleClass('minivan')
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Минивэн · 600 ₸')
+
+    await w.find('.confirm-submit').trigger('click')
+    await flushPromises()
+    const sheet = activeActionSheet.value
+    // Minivan 1 000 − 400 and sedan 700 − 400: the prices the confirmation shows after either choice.
+    expect(sheet?.actions.map((a) => plain(a.label))).toEqual(['Иә, Минивэн · 600 ₸', 'Седан таңдау · 300 ₸'])
+    sheet!.resolve(null)
+    await flushPromises()
+    expect(createOrder).not.toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it('shows a coupon that covers deliveries under the fare picker, with what the passenger pays', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer({ categories: ['taxi', 'parcel'] }))
+    const booking = await readyBooking('parcel', STATION, PIN)
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    const lines = () => w.findAll('.confirm-fare .confirm-fare__line').map((l) => l.findAll(':scope > span').map((s) => plain(s.text())))
+    expect(lines()).toEqual([
+      ['Купон', '−400 ₸'],
+      ['Төлейсіз', '300 ₸'],
+    ])
+    expect(factRows(w).flat()).not.toContain('Сапар құны')
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 300 ₸')
+
+    booking.fare = 800
+    await nextTick()
+    expect(lines()).toEqual([
+      ['Купон', '−400 ₸'],
+      ['Төлейсіз', '400 ₸'],
+    ])
+    w.unmount()
+  })
+
+  it('shows no promotion for a delivery the taxi coupon and the bonus do not cover', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer({ bonus: 300 }))
+    await readyBooking('parcel', STATION, PIN)
+    const { w } = await mountAt(ConfirmSheet, '/ride/confirm')
+    expect(w.find('.confirm-fare').exists()).toBe(true)
+    expect(w.find('.confirm-fare__line').exists()).toBe(false)
+    expect(w.find('[role="switch"]').exists()).toBe(false)
+    expect(plain(w.find('.confirm-submit').text())).toBe('Тапсырыс беру · Седан · 700 ₸')
+    w.unmount()
+  })
+})
+
+/** A taxi quote with a sedan for 4 (700 ₸) and a minivan for 8 (1 000 ₸). */
+function sedanAndMinivan(): RouteQuote {
+  const expires = new Date(Date.now() + 10 * 60_000).toISOString()
+  const option = (code: string, name: string, seats: number, price: number) => ({
+    vehicle_class: code,
+    name: { kk: name, ru: name, en: name },
+    icon: code,
+    seats_max: seats,
+    cargo_volume_l: 400,
+    quote_id: `00000000-0000-4000-8000-0000000004${String(++quoteSeq).padStart(2, '0')}`,
+    expires_at: expires,
+    fare: { recommended: price, min: price, max: price + 500, step: 50, options: fareRange(price, price + 500, 50) },
+    commission_bps: 1000,
+    eta_s: null,
+  })
+  const options = [option('sedan', 'Седан', 4, 700), option('minivan', 'Минивэн', 8, 1000)]
+  return parseQuote({
+    quote_id: options[0]!.quote_id,
+    expires_at: expires,
+    category: 'taxi',
+    vehicle_class: 'sedan',
+    passenger_count: 1,
+    cargo_size: null,
+    stops: [],
+    distance_m: 3200,
+    duration_s: 540,
+    legs: [],
+    geometry: null,
+    bbox: null,
+    fare: options[0]!.fare,
+    commission_bps: 1000,
+    payment_methods: ['cash', 'bank_transfer'],
+    options,
+  })
+}
+
+const ORDER_ID = '7d3c9a52-4f1e-4b8a-9c61-0e5b2f8a1d34'
+const COUPON_PROMOTION = { kind: 'coupon', title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' }, discount: 400, gross_fare: 1500, cash_due: 1100, compensation: null, settled_at: null }
+
+/** A 1 500 ₸ taxi order with a 400 ₸ coupon, as GET /orders/:id returns it. */
+function couponOrder(over: Record<string, unknown> = {}): Order {
+  return parseOrder({
+    id: ORDER_ID,
+    number: 1024,
+    status: 'searching',
+    category: 'taxi',
+    vehicle_class: 'sedan',
+    vehicle_class_name: { kk: 'Седан', ru: 'Седан', en: 'Sedan' },
+    passenger_count: 1,
+    fare: 1500,
+    promo_discount: 400,
+    cash_due: 1100,
+    promotion: { ...COUPON_PROMOTION, status: 'reserved' },
+    payment_method: 'cash',
+    distance_m: 3200,
+    duration_s: 540,
+    stops: [
+      { id: 's1', seq: 0, kind: 'pickup', lat: PIN.lat, lon: PIN.lon, address: PIN.address },
+      { id: 's2', seq: 1, kind: 'destination', lat: STATION.lat, lon: STATION.lon, address: STATION.address },
+    ],
+    route: {},
+    events: [],
+    can_cancel: true,
+    version: 1,
+    created_at: new Date().toISOString(),
+    ...over,
+  })
+}
+
+describe('live order: promotion (§23.6)', () => {
+  it('shows what the passenger pays while a driver is searched for, the fare and the coupon under it', async () => {
+    shown.order = couponOrder()
+    const { w } = await mountAt(OrderSheet, `/order/${ORDER_ID}`)
+    const price = w.findAll('.trip-list__row').at(-1)!
+    expect(plain(price.text())).toContain('1 100 ₸ · Қолма-қол')
+    expect(plain(price.find('.trip-promo').text())).toBe('1 500 ₸ · Купон −400 ₸')
+    w.unmount()
+  })
+
+  it('shows a completed order at what the passenger paid, the fare and the coupon under it', async () => {
+    shown.order = couponOrder({ status: 'completed', can_cancel: false, completed_at: new Date().toISOString(), promotion: { ...COUPON_PROMOTION, status: 'settled', compensation: 400 } })
+    const { w } = await mountAt(OrderSheet, `/order/${ORDER_ID}`)
+    const fare = w.find('.trip-card__fare')
+    expect(plain(fare.text())).toContain('1 100 ₸ · Қолма-қол')
+    expect(plain(fare.find('.trip-promo').text())).toBe('1 500 ₸ · Купон −400 ₸')
+    w.unmount()
+  })
+
+  it('shows a cancelled order at its fare, without the discount, and says the coupon came back', async () => {
+    shown.order = couponOrder({
+      status: 'cancelled',
+      can_cancel: false,
+      cancelled_by: 'passenger',
+      cancelled_at: new Date().toISOString(),
+      promotion: { ...COUPON_PROMOTION, status: 'released' },
+    })
+    const { w } = await mountAt(OrderSheet, `/order/${ORDER_ID}`)
+    expect(plain(w.find('.trip-card__fare').text())).toBe('1 500 ₸ · Қолма-қол')
+    expect(w.find('.trip-promo').exists()).toBe(false)
+    expect(w.find('.trip-cancel').text()).toContain('Купон қайтарылды: мерзімі біткенше оны қайта пайдалана аласыз.')
     w.unmount()
   })
 })
