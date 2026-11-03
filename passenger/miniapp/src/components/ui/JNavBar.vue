@@ -8,7 +8,7 @@
   child of the scrolling page container.
 -->
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useSlots } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -19,29 +19,49 @@ const props = withDefaults(
   { large: true },
 )
 
+const slots = useSlots()
+const compactOverlaysTitle = computed(() => props.large && !slots.leading && !slots.trailing)
+const barEl = ref<HTMLElement | null>(null)
 const largeEl = ref<HTMLElement | null>(null)
 const compactVisible = ref(!props.large)
 let observer: IntersectionObserver | null = null
+let sizeObserver: ResizeObserver | null = null
 
-onMounted(() => {
+function observeLargeTitle(): void {
   if (!props.large || !largeEl.value || typeof IntersectionObserver === 'undefined') return
+  observer?.disconnect()
+  const barHeight = barEl.value?.getBoundingClientRect().height ?? 44
+  // Without in-page controls the compact row overlays the large title rather
+  // than reserving an empty 44px row below Telegram's own controls. Collapse
+  // only after the large title disappears behind that safe area.
+  const coveredTop = Math.max(0, barHeight - (compactOverlaysTitle.value ? 44 : 0))
   observer = new IntersectionObserver(
     ([entry]) => {
       if (entry) compactVisible.value = !entry.isIntersecting
     },
-    // The compact bar covers the top 44px plus the safe area; treat the large
-    // title as gone once it is fully under that bar.
-    { threshold: 0, rootMargin: '-56px 0px 0px 0px' },
+    { root: largeEl.value.closest('.jt-scroll'), threshold: 0, rootMargin: `-${coveredTop}px 0px 0px 0px` },
   )
   observer.observe(largeEl.value)
+}
+
+onMounted(() => {
+  observeLargeTitle()
+  if (props.large && barEl.value && typeof ResizeObserver !== 'undefined') {
+    // Fullscreen entry and rotation can change Telegram's safe area.
+    sizeObserver = new ResizeObserver(observeLargeTitle)
+    sizeObserver.observe(barEl.value)
+  }
 })
 
-onBeforeUnmount(() => observer?.disconnect())
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  sizeObserver?.disconnect()
+})
 </script>
 
 <template>
   <header class="jt-navbar">
-    <div class="jt-navbar__bar" :class="{ 'is-scrolled jt-glass': compactVisible }">
+    <div ref="barEl" class="jt-navbar__bar" :class="{ 'is-scrolled jt-glass': compactVisible, 'is-overlay': compactOverlaysTitle }">
       <div class="jt-navbar__side"><slot name="leading" /></div>
       <h1 class="jt-navbar__title" :class="{ 'is-visible': compactVisible }" :aria-hidden="large ? 'true' : undefined">
         {{ title }}
@@ -83,6 +103,14 @@ onBeforeUnmount(() => observer?.disconnect())
 
 .jt-navbar__bar:not(.is-scrolled) {
   background: transparent;
+}
+
+.jt-navbar__bar.is-overlay {
+  margin-bottom: -44px;
+}
+
+.jt-navbar__bar.is-overlay:not(.is-scrolled) {
+  pointer-events: none;
 }
 
 /* Glass bar: no floating shadow, a hairline separator instead (iOS). */

@@ -10,13 +10,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, type Component } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { parseBonusPage, parsePromotions, parseReferral } from '../api/parse'
+import { parseMe } from '../api/me'
 import { getPromotions, getReferral, listBonusHistory, setMarketingSubscription } from '../api/promotions'
 import { toast } from '../components/ui'
 import { i18n } from '../i18n'
 import { ROUTE } from '../router/names'
 import { ApiError } from '../services/http'
 import { usePromotionsStore } from '../stores/promotions'
-import { openTelegram } from '../telegram'
+import { useSessionStore } from '../stores/session'
+import { getTelegramPhotoUrl, openTelegram } from '../telegram'
 import { copyText } from '../utils/clipboard'
 import BonusPage from './BonusPage.vue'
 import CouponsPage from './CouponsPage.vue'
@@ -36,6 +38,7 @@ vi.mock('../utils/clipboard', () => ({ copyText: vi.fn() }))
 vi.mock('../telegram', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../telegram')>()),
   openTelegram: vi.fn(() => true),
+  getTelegramPhotoUrl: vi.fn(() => null),
 }))
 
 /** Money and dates use no-break spaces. */
@@ -110,6 +113,7 @@ beforeEach(() => {
   vi.mocked(setMarketingSubscription).mockReset()
   vi.mocked(copyText).mockReset()
   vi.mocked(openTelegram).mockClear()
+  vi.mocked(getTelegramPhotoUrl).mockReset().mockReturnValue(null)
 })
 
 afterEach(() => {
@@ -413,6 +417,37 @@ describe('bonus balance', () => {
 
 describe('profile', () => {
   const rowTitles = (w: ReturnType<typeof mount>) => w.findAll('.jt-row__title').map((t) => t.text())
+
+  it('shows the passenger’s Telegram photo automatically and falls back if it cannot load', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer())
+    const session = useSessionStore()
+    session.me = parseMe({ id: 'u1', telegram_user_id: 424242, first_name: 'Әлия', username: 'aliya' })
+    const photo = 'https://t.me/i/userpic/320/portrait.jpg'
+    vi.mocked(getTelegramPhotoUrl).mockReturnValue(photo)
+    const w = await mountPage(ProfilePage, '/profile')
+    expect(getTelegramPhotoUrl).toHaveBeenCalledWith(424242)
+    expect(w.find('.profile-card__avatar img').attributes('src')).toBe(photo)
+    expect(w.find('.profile-card__name').text()).toBe('Әлия')
+    await w.find('.profile-card__avatar img').trigger('error')
+    expect(w.find('.profile-card__avatar img').exists()).toBe(false)
+    expect(w.find('.profile-card__avatar').text()).toBe('Ә')
+
+    // A refreshed account/photo must not inherit the previous image's error.
+    vi.mocked(getTelegramPhotoUrl).mockReturnValue('https://t.me/i/userpic/320/next.jpg')
+    session.me = parseMe({ id: 'u2', telegram_user_id: 424243, first_name: 'Ерлан' })
+    await nextTick()
+    expect(w.find('.profile-card__avatar img').attributes('src')).toBe('https://t.me/i/userpic/320/next.jpg')
+    w.unmount()
+  })
+
+  it('keeps the initial when Telegram does not provide a profile photo', async () => {
+    vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer())
+    useSessionStore().me = parseMe({ id: 'u1', telegram_user_id: 424242, first_name: 'Әлия' })
+    const w = await mountPage(ProfilePage, '/profile')
+    expect(w.find('.profile-card__avatar img').exists()).toBe(false)
+    expect(w.find('.profile-card__avatar').text()).toBe('Ә')
+    w.unmount()
+  })
 
   it('lists the coupon, the bonus balance and the invitation, and saves the marketing messages switch', async () => {
     vi.mocked(getPromotions).mockResolvedValue(promotionsAnswer())

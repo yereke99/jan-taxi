@@ -360,11 +360,12 @@ export const ru: DriverMessages = {
       vehicle: 'Автомобиль',
     },
     personal: {
-      text: 'Загрузите фото профиля и укажите имя и фамилию как в удостоверении личности. Клиент видит только имя и первую букву фамилии.',
+      text: 'Выберите фото профиля и укажите имя и фамилию как в удостоверении личности. Клиент видит только имя и первую букву фамилии.',
       avatar: 'Фото профиля',
       avatar_hint: 'Фото при хорошем освещении, на котором хорошо видно лицо.',
       take_photo: 'Камера',
       choose_photo: 'Галерея',
+      use_telegram_photo: 'Использовать фото из Telegram',
       first_name: 'Имя',
       last_name: 'Фамилия',
       patronymic: 'Отчество',
@@ -425,6 +426,9 @@ export const ru: DriverMessages = {
     },
     upload: {
       uploading: 'Загрузка… {percent}%',
+      telegram_importing: 'Сохраняем фото…',
+      telegram_photo_unavailable: 'Фото Telegram недоступно. Выберите фото из галереи или сделайте снимок.',
+      telegram_photo_failed: 'Не удалось получить фото из Telegram. Повторите или выберите другое фото.',
       preparing: 'Подготовка…',
       failed: 'Не удалось загрузить',
       retry: 'Повторить',

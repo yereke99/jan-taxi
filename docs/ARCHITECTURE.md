@@ -583,7 +583,8 @@ Customer assignment «ТЕХНИКАЛЫҚ ТАПСЫРМА» (30.10.2026) and t
 pages, no document scans, no manual approval.
 
 * Driver Mini App, `/register?step=…` (the Telegram BackButton goes from page 2 back to page 1):
-  1. `personal` — profile photo (camera or gallery, JPEG/PNG/WebP, downscaled on the device), Аты,
+  1. `personal` — profile photo (current Telegram avatar when available, camera or gallery;
+     JPEG/PNG/WebP uploads are downscaled on the device), Аты,
      Тегі, optional Әкесінің аты under the surname, ЖСН (digits only, numeric keyboard, live
      check-digit validation) and the phone shared through Telegram (above). «Келесі» opens page 2
      once everything required on page 1 is valid.
@@ -636,6 +637,12 @@ pages, no document scans, no manual approval.
   the current one, the old file stays as history). ID scans and vehicle photos are no longer
   accepted (§11.1); the ones uploaded before 31.10.2026 stay stored and appear read-only in the
   driver's registration and the admin panel, with the access rules below.
+* A driver may instead import the current Telegram photo from signed driver `init_data`
+  (`POST /driver/registration/telegram-avatar`). The launch and bearer must identify the same
+  Telegram user. Only HTTPS `t.me/i/userpic/` URLs are fetched; redirects and non-public IPs are
+  refused, the timeout is 10 s and the upload size cap applies. Missing/SVG photos are refused
+  with `telegram_photo_unavailable`; network failures use `telegram_photo_failed`. Camera and
+  gallery remain available. Imports use the same JPEG processing, ownership and avatar locks.
 * Kaspi receipt PDFs (§6.1): `%PDF-` magic, ≤ 5 MiB, encrypted or active-content files refused,
   stored byte for byte (the evidence, mode 0600), served only to finance admins
   (`/admin/topups/{id}/receipt`, `/admin/files/{id}`) as `application/pdf` inline.
@@ -854,6 +861,7 @@ driver has one), `A:<perm>` admin session with permission, `S` bot service secre
 | GET | /driver/registration | D | drivers | draft/current data (names, patronymic, own IIN unmasked, avatar, vehicle and class), status, `corrections[]`, `missing_fields`, `can_submit`, `phone_verified`, consent; ID photos and vehicle photos uploaded before 31.10.2026 read-only (§11.1) |
 | PUT | /driver/registration | D | drivers | `{first_name?, last_name?, patronymic?, iin?, vehicle?:{make?, model?, color?, plate?, vehicle_class?, seats?, cargo_volume_l?}, location?}`: a key not sent keeps its value (the legacy `identity` object is still accepted); the first call creates the profile (code assigned, vehicle preset to `sedan`); `409 iin_taken` / `plate_taken`, `422 fields.iin = invalid\|checksum` |
 | POST | /driver/registration/files | D | drivers | multipart `kind=avatar` + `file` (the only registration upload, ≤ 5 MiB) |
+| POST | /driver/registration/telegram-avatar | D | drivers | signed driver `init_data`, same Telegram user as bearer; HTTPS `t.me/i/userpic/` photo imported without redirects (10 s, ≤ 5 MiB), same private JPEG processing and avatar locks as upload |
 | POST | /driver/registration/check | D | drivers | `{plate?}` advisory availability |
 | POST | /driver/register | D | moderation | automatic checks, then approval in the same transaction → `approved` (§11.1); `409 iin_taken\|phone_taken\|plate_taken`, `422 registration_incomplete` (`details.missing_fields`), `phone_not_verified`, `validation_failed` (`pd_consent*`) |
 | GET | /driver/files/{id} | D | drivers | own files only |

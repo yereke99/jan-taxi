@@ -318,6 +318,16 @@ export const useRegistrationStore = defineStore('registration', () => {
     return ref
   }
 
+  async function useTelegramAvatar(initData: string, signal: AbortSignal): Promise<FileRef> {
+    await ensureProfile()
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+    const file = await api.useTelegramAvatar(initData, signal)
+    // The returned private file is authoritative even if the follow-up read fails.
+    if (registration.value) registration.value = { ...registration.value, avatar: file }
+    await refresh()
+    return file
+  }
+
   // --- Phone verification through the driver bot (§11) ---------------------
 
   function stopPhonePolling(): void {
@@ -462,6 +472,7 @@ export const useRegistrationStore = defineStore('registration', () => {
     chooseClass,
     prefillNames,
     upload,
+    useTelegramAvatar,
     requestPhone,
     onPhoneVerified,
     setConsent,

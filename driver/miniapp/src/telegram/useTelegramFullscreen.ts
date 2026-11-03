@@ -21,6 +21,7 @@
 import { init, initData, isTMA, miniApp, retrieveLaunchParams, swipeBehavior, themeParams, viewport } from '@tma.js/sdk'
 import { reactive, readonly } from 'vue'
 import { errorMessage, errorName, safeBool, safeCall } from './safe'
+import { installScrollBoundaryGuard } from './scrollBoundary'
 
 export interface Insets {
   top: number
@@ -257,6 +258,7 @@ export function createTelegramFullscreen(win: Window = window): TelegramFullscre
   }
 
   function attachDomListeners(): void {
+    cleanups.push(installScrollBoundaryGuard(win.document))
     const onResize: EventListener = () => sync()
     listen(win, 'resize', onResize, { passive: true })
     listen(win.visualViewport, 'resize', onResize, { passive: true })

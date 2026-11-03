@@ -366,6 +366,7 @@ export const kk = {
       avatar_hint: 'Бетіңіз анық көрінетін, жарық жерде түскен сурет.',
       take_photo: 'Камера',
       choose_photo: 'Галерея',
+      use_telegram_photo: 'Telegram суретін пайдалану',
       first_name: 'Аты',
       last_name: 'Тегі',
       patronymic: 'Әкесінің аты',
@@ -426,6 +427,9 @@ export const kk = {
     },
     upload: {
       uploading: 'Жүктелуде… {percent}%',
+      telegram_importing: 'Сурет сақталуда…',
+      telegram_photo_unavailable: 'Telegram суреті қолжетімсіз. Галереядан таңдаңыз немесе суретке түсіңіз.',
+      telegram_photo_failed: 'Telegram суретін алу мүмкін болмады. Қайталаңыз немесе басқа сурет таңдаңыз.',
       preparing: 'Дайындалуда…',
       failed: 'Жүктеу мүмкін болмады',
       retry: 'Қайталау',

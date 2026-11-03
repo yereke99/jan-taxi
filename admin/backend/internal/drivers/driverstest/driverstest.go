@@ -77,7 +77,7 @@ func New(t testing.TB) *Env {
 	root := chi.NewRouter()
 	root.Mount("/api/v1", api)
 
-	dh := drivers.NewHandler(pool, store, drivers.Options{DefaultCity: "EMB", MaxUploadBytes: 10 << 20})
+	dh := drivers.NewHandler(pool, store, drivers.Options{DefaultCity: "EMB", MaxUploadBytes: 10 << 20, TelegramAuth: svc})
 	dh.MountDriver(driverR)
 	dh.MountPassenger(passengerR)
 	dh.MountAdmin(adminR)

@@ -1260,6 +1260,52 @@ paths:
               example: {error: {code: unsupported_media_type, message: expected multipart/form-data}}
         '422': {$ref: '#/components/responses/UnprocessableUpload'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+  /driver/registration/telegram-avatar:
+    post:
+      operationId: importDriverTelegramAvatar
+      tags: [driver-registration]
+      summary: Use the current Telegram profile photo
+      description: |
+        Imports `user.photo_url` from the signed driver Mini App `init_data`; no caller-supplied
+        URL is accepted. The launch must be valid for the driver bot and identify the same
+        Telegram user as the bearer token (`403 forbidden` otherwise). Only HTTPS Telegram
+        userpics at `t.me/i/userpic/` are downloaded, without redirects, with a 10-second timeout
+        and the same 5 MiB / `MAX_UPLOAD_BYTES` cap as uploads. Missing, SVG or unsupported photo
+        URLs return `422 telegram_photo_unavailable`; download failures return
+        `502 telegram_photo_failed`. The image is decoded and saved as a private JPEG through
+        the same pipeline as `/driver/registration/files`, replacing the previous avatar.
+        Requires an existing editable profile, with the same registration and avatar field locks
+        as an uploaded photo. `fields.init_data = required` when the launch is omitted.
+      x-jantaxi-app: [driver]
+      security: [{appToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TelegramAuthRequest'}
+      responses:
+        '201':
+          description: Stored private profile photo.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FileRef'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/DriverForbidden'}
+        '409': {$ref: '#/components/responses/RegistrationConflict'}
+        '413': {$ref: '#/components/responses/FileTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422':
+          description: '`telegram_photo_unavailable`, `validation_failed` or an unsupported/invalid image (same errors as uploads).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '502':
+          description: '`telegram_photo_failed`: Telegram did not return a downloadable photo; retry or use the camera/gallery.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /driver/registration/check:
     post:
       operationId: checkDriverRegistration
@@ -8663,8 +8709,10 @@ components:
         | `phone_not_verified` | 422 | A Telegram-verified phone is required. |
         | `registration_incomplete` | 422 | Required registration data missing; see `details.missing_fields`. |
         | `location_required` | 422 | Going online or accepting needs a fresh GPS fix; `details.reason` = `location_required` or `location_stale`. |
+        | `telegram_photo_unavailable` | 422 | Telegram did not supply a supported profile photo; choose camera or gallery. |
         | `too_many_requests` | 429 | Rate limited; see `Retry-After`. |
         | `internal` | 500 | Unexpected server error (logged with the request id). |
+        | `telegram_photo_failed` | 502 | Telegram photo download failed; retry or choose another photo. |
       enum:
         - bad_request
         - validation_failed
@@ -8701,6 +8749,8 @@ components:
         - approval_required
         - payload_too_large
         - unsupported_media_type
+        - telegram_photo_unavailable
+        - telegram_photo_failed
         - internal
       x-enumDescriptions:
         bad_request: Malformed JSON, unknown field, empty body or bad multipart.
@@ -8738,6 +8788,8 @@ components:
         approval_required: An administrator with marketing.approve must do this.
         payload_too_large: Request body too large.
         unsupported_media_type: Wrong Content-Type.
+        telegram_photo_unavailable: Telegram did not supply a supported profile photo.
+        telegram_photo_failed: Telegram photo download failed.
         internal: Unexpected server error.
     ErrorResponse:
       type: object

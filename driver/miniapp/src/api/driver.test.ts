@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setHttpTransport } from '../services/http'
-import { getRegistration, saveProfileIin } from './driver'
+import { getRegistration, saveProfileIin, useTelegramAvatar } from './driver'
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -71,5 +71,21 @@ describe('saveProfileIin', () => {
   it('reports a different stored IIN as a conflict', async () => {
     setHttpTransport(vi.fn(async () => json(409, { error: { code: 'conflict', message: 'x', details: { reason: 'iin_already_set' } } })))
     await expect(saveProfileIin('900101300017')).rejects.toMatchObject({ code: 'conflict', details: { reason: 'iin_already_set' } })
+  })
+})
+
+describe('useTelegramAvatar', () => {
+  afterEach(() => setHttpTransport(null))
+
+  it('sends signed launch data and returns the saved private avatar', async () => {
+    const file = { id: 'f1', kind: 'avatar', url: '/api/v1/driver/files/f1', width: 100, height: 100, created_at: '' }
+    const transport = vi.fn(async (_url: string, _init: RequestInit) => json(201, file))
+    setHttpTransport(transport as unknown as typeof fetch)
+    const result = await useTelegramAvatar('user=signed&hash=verified', new AbortController().signal)
+    const [url, init] = transport.mock.calls[0]!
+    expect(String(url)).toContain('/driver/registration/telegram-avatar')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({ init_data: 'user=signed&hash=verified' })
+    expect(result).toEqual(file)
   })
 })

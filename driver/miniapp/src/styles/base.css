@@ -21,9 +21,13 @@ body,
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  overscroll-behavior: none;
 }
 
 body {
+  /* Keep iOS from moving the document behind the app's own scroll views. */
+  position: fixed;
+  inset: 0;
   background: var(--jt-color-bg);
   color: var(--jt-color-label);
   font: var(--jt-font-body);
@@ -118,7 +122,7 @@ a {
 /* Scroll containers inside the app (the document itself never scrolls). */
 .jt-scroll {
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   -webkit-overflow-scrolling: touch;
 }
 

@@ -365,6 +365,7 @@ export const en: DriverMessages = {
       avatar_hint: 'A well-lit photo where your face is clearly visible.',
       take_photo: 'Camera',
       choose_photo: 'Gallery',
+      use_telegram_photo: 'Use Telegram photo',
       first_name: 'First name',
       last_name: 'Last name',
       patronymic: 'Patronymic',
@@ -425,6 +426,9 @@ export const en: DriverMessages = {
     },
     upload: {
       uploading: 'Uploading… {percent}%',
+      telegram_importing: 'Saving photo…',
+      telegram_photo_unavailable: 'Your Telegram photo is unavailable. Choose one from your gallery or take a photo.',
+      telegram_photo_failed: 'Could not get your Telegram photo. Try again or choose another photo.',
       preparing: 'Preparing…',
       failed: 'Upload failed',
       retry: 'Retry',

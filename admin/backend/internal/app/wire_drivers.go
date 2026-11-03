@@ -20,8 +20,9 @@ func (a *App) wireDrivers() error {
 	dh := drivers.NewHandler(a.Pool, a.Store, drivers.Options{
 		DefaultCity:    a.Cfg.DefaultCity,
 		MaxUploadBytes: a.Cfg.MaxUploadBytes,
+		TelegramAuth:   a.Auth,
 	})
-	// /api/v1/driver/{registration,registration/files,registration/check,files,profile,profile/iin,availability,location}
+	// /api/v1/driver/{registration,registration/files,registration/telegram-avatar,registration/check,files,profile,profile/iin,availability,location}
 	dh.MountDriver(a.Driver)
 	// /api/v1/orders/{id}/driver-photo
 	dh.MountPassenger(a.Passenger)

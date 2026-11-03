@@ -66,6 +66,11 @@ export function uploadRegistrationFile(
   return uploadWithProgress<FileRef>('/driver/registration/files', form, opts)
 }
 
+/** Copies the avatar from this signed Telegram launch into the private driver files. */
+export function useTelegramAvatar(initData: string, signal?: AbortSignal): Promise<FileRef> {
+  return http.post<FileRef>('/driver/registration/telegram-avatar', { init_data: initData }, { signal, timeoutMs: 20_000 })
+}
+
 /**
  * GET /driver/profile and PUT /driver/profile/iin: the vehicle's class fields
  * (§21) always present (null until chosen), the patronymic and the masked IIN.

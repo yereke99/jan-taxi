@@ -43,6 +43,7 @@ var endpointCatalogue = []string{
 	"GET /api/v1/driver/registration",
 	"PUT /api/v1/driver/registration",
 	"POST /api/v1/driver/registration/files",
+	"POST /api/v1/driver/registration/telegram-avatar",
 	"POST /api/v1/driver/registration/check",
 	"POST /api/v1/driver/register",
 	"GET /api/v1/driver/files/{}",

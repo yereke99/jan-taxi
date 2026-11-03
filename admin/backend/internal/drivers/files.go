@@ -74,12 +74,22 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	f, err := h.store.SaveImage(ctx, h.pool, p.UserID, storage.PurposeDriverAvatar, bytes.NewReader(data))
+	f, err := h.saveAvatar(ctx, p.UserID, d.ID, data)
 	if err != nil {
 		return err
 	}
+	return httpx.Created(w, f)
+}
+
+// saveAvatar uses the same private image processing and locked editability
+// checks for uploaded photos and imports from a signed Telegram launch.
+func (h *Handler) saveAvatar(ctx context.Context, userID, driverID uuid.UUID, data []byte) (FileRef, error) {
+	f, err := h.store.SaveImage(ctx, h.pool, userID, storage.PurposeDriverAvatar, bytes.NewReader(data))
+	if err != nil {
+		return FileRef{}, err
+	}
 	err = db.WithTx(ctx, h.pool, func(tx pgx.Tx) error {
-		locked, err := LockProfile(ctx, tx, d.ID)
+		locked, err := LockProfile(ctx, tx, driverID)
 		if err != nil {
 			return err
 		}
@@ -97,11 +107,11 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) error {
 		if delErr := h.store.SoftDelete(context.WithoutCancel(ctx), h.pool, f.ID); delErr != nil {
 			httpx.Logger(ctx).Warn("discard unlinked upload", slog.String("file_id", f.ID.String()), slog.Any("err", delErr))
 		}
-		return err
+		return FileRef{}, err
 	}
-	return httpx.Created(w, FileRef{
-		ID: f.ID, Kind: kind, URL: DriverFileURL + f.ID.String(), Mime: f.Mime, Width: f.Width, Height: f.Height, CreatedAt: f.CreatedAt.UTC(),
-	})
+	return FileRef{
+		ID: f.ID, Kind: KindAvatar, URL: DriverFileURL + f.ID.String(), Mime: f.Mime, Width: f.Width, Height: f.Height, CreatedAt: f.CreatedAt.UTC(),
+	}, nil
 }
 
 // checkAvatarEditable enforces editability: any draft, and changes_requested

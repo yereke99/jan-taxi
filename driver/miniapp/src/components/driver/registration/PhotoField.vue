@@ -1,19 +1,21 @@
 <!--
   The registration photo (the driver's portrait): preview of the current
-  server copy (or the photo just picked), camera / gallery pickers,
+  server copy (or the photo just picked), Telegram / camera / gallery choices,
   client-side downscale to a JPEG, upload progress and retry. Locked fields
   show the photo without the pickers.
 -->
 <script setup lang="ts">
 import { Camera, ImagePlus, Lock, RefreshCw } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FileRef, UploadKind } from '../../../api/types'
 import { AVATAR_MAX_BYTES, ImageError } from '../../../features/media/image'
 import { useUploadTask } from '../../../features/media/useUploadTask'
 import { useDriverErrorText } from '../../../composables/useDriverErrorText'
 import { useRegistrationStore } from '../../../stores/registration'
-import { haptics } from '../../../telegram'
+import { useSessionStore } from '../../../stores/session'
+import { isAbortError, isApiError } from '../../../services/http'
+import { getRawInitData, getTelegramPhotoUrl, haptics } from '../../../telegram'
 import { JSpinner } from '../../ui'
 import PrivateImage from '../PrivateImage.vue'
 
@@ -37,8 +39,13 @@ const emit = defineEmits<{ uploaded: [file: FileRef] }>()
 const { t } = useI18n()
 const errorText = useDriverErrorText()
 const registration = useRegistrationStore()
+const session = useSessionStore()
 const cameraInput = ref<HTMLInputElement | null>(null)
 const galleryInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+const importError = shallowRef<unknown>(null)
+let importController: AbortController | null = null
+const telegramPhoto = computed(() => (props.kind === 'avatar' ? getTelegramPhotoUrl(session.me?.telegram_user_id) : null))
 
 const task = useUploadTask<FileRef>(
   (blob, onProgress, signal) => registration.upload(props.kind, blob, onProgress, signal),
@@ -49,12 +56,21 @@ const task = useUploadTask<FileRef>(
   AVATAR_MAX_BYTES,
 )
 
-const busy = computed(() => task.state.value === 'preparing' || task.state.value === 'uploading')
+const busy = computed(() => importing.value || task.state.value === 'preparing' || task.state.value === 'uploading')
+const hasError = computed(() => importError.value !== null || task.state.value === 'error')
 const percent = computed(() => Math.round(task.progress.value * 100))
+const progressLabel = computed(() => {
+  if (importing.value) return t('registration.upload.telegram_importing')
+  if (task.state.value === 'preparing') return t('registration.upload.preparing')
+  return t('registration.upload.uploading', { percent: percent.value })
+})
 
 const errorMessage = computed(() => {
-  const err = task.error.value
+  const err = importError.value ?? task.error.value
   if (!err) return ''
+  if (isApiError(err) && (err.code === 'telegram_photo_unavailable' || err.code === 'telegram_photo_failed')) {
+    return t(`registration.upload.${err.code}`)
+  }
   if (err instanceof ImageError) return t(`registration.upload.${err.code}`)
   return errorText(err)
 })
@@ -69,12 +85,47 @@ function onFile(e: Event): void {
   const file = input.files?.[0]
   // Reset so picking the same file again still fires "change".
   input.value = ''
-  if (file) void task.run(file)
+  if (file && !props.locked && !busy.value) {
+    importError.value = null
+    void task.run(file)
+  }
 }
+
+async function useTelegramPhoto(): Promise<void> {
+  if (props.locked || busy.value || !telegramPhoto.value) return
+  const initData = getRawInitData()
+  if (!initData) return
+  task.reset()
+  importError.value = null
+  const controller = new AbortController()
+  importController = controller
+  importing.value = true
+  try {
+    const file = await registration.useTelegramAvatar(initData, controller.signal)
+    if (controller.signal.aborted) return
+    haptics.notification('success')
+    emit('uploaded', file)
+  } catch (err) {
+    if (!controller.signal.aborted && !isAbortError(err)) importError.value = err
+  } finally {
+    if (importController === controller) {
+      importController = null
+      importing.value = false
+    }
+  }
+}
+
+function retry(): void {
+  if (props.locked || busy.value) return
+  if (importError.value) void useTelegramPhoto()
+  else void task.retry()
+}
+
+onScopeDispose(() => importController?.abort())
 </script>
 
 <template>
-  <div class="photo" :class="{ 'is-round': round, 'is-locked': locked, 'has-error': task.state.value === 'error' }">
+  <div class="photo" :class="{ 'is-round': round, 'is-locked': locked, 'has-error': hasError }">
     <div class="photo__head">
       <span class="photo__label">{{ label }}</span>
       <Lock v-if="locked" :size="15" :stroke-width="2" class="photo__lock" :aria-label="t('registration.locked')" />
@@ -83,7 +134,7 @@ function onFile(e: Event): void {
     <div class="photo__frame">
       <PrivateImage :url="file?.url ?? null" :preview-url="task.previewUrl.value" :alt="label" :round="round">
         <template #empty>
-          <button type="button" class="photo__empty" :disabled="locked" @click="pick(cameraInput)">
+          <button type="button" class="photo__empty" :disabled="locked || busy" :aria-label="t('registration.personal.take_photo')" @click="pick(cameraInput)">
             <Camera :size="round ? 28 : 32" :stroke-width="1.6" aria-hidden="true" />
           </button>
         </template>
@@ -91,24 +142,28 @@ function onFile(e: Event): void {
       <div v-if="busy" class="photo__overlay" role="status" aria-live="polite">
         <JSpinner color="light" size="large" />
         <span class="photo__progress jt-tabular">
-          {{ task.state.value === 'preparing' ? t('registration.upload.preparing') : t('registration.upload.uploading', { percent }) }}
+          {{ progressLabel }}
         </span>
-        <span class="photo__bar" :style="{ transform: `scaleX(${task.progress.value})` }" />
+        <span v-if="!importing" class="photo__bar" :style="{ transform: `scaleX(${task.progress.value})` }" />
       </div>
     </div>
 
     <p v-if="hint && !locked" class="photo__hint">{{ hint }}</p>
     <p v-if="locked" class="photo__hint">{{ t('registration.locked') }}</p>
 
-    <div v-if="task.state.value === 'error'" class="photo__error" role="alert">
+    <div v-if="hasError" class="photo__error" role="alert">
       <span>{{ errorMessage || t('registration.upload.failed') }}</span>
-      <button type="button" class="photo__retry" @click="task.retry()">
+      <button v-if="!locked" type="button" class="photo__retry" :disabled="busy" @click="retry">
         <RefreshCw :size="16" :stroke-width="2.25" aria-hidden="true" />
         {{ t('registration.upload.retry') }}
       </button>
     </div>
 
     <div v-if="!locked" class="photo__actions">
+      <button v-if="telegramPhoto" type="button" class="photo__action photo__action--telegram" :disabled="busy" @click="useTelegramPhoto">
+        <img :src="telegramPhoto" class="photo__telegram-avatar" alt="" draggable="false" referrerpolicy="no-referrer" />
+        {{ t('registration.personal.use_telegram_photo') }}
+      </button>
       <button type="button" class="photo__action" :disabled="busy" @click="pick(cameraInput)">
         <Camera :size="18" :stroke-width="2" aria-hidden="true" />
         {{ t('registration.personal.take_photo') }}
@@ -119,8 +174,8 @@ function onFile(e: Event): void {
       </button>
     </div>
 
-    <input ref="cameraInput" class="jt-visually-hidden" type="file" accept="image/*" :capture="facing" tabindex="-1" @change="onFile" />
-    <input ref="galleryInput" class="jt-visually-hidden" type="file" accept="image/*" tabindex="-1" @change="onFile" />
+    <input ref="cameraInput" class="jt-visually-hidden" type="file" accept="image/*" :capture="facing" :disabled="locked || busy" tabindex="-1" @change="onFile" />
+    <input ref="galleryInput" class="jt-visually-hidden" type="file" accept="image/*" :disabled="locked || busy" tabindex="-1" @change="onFile" />
   </div>
 </template>
 
@@ -245,6 +300,18 @@ function onFile(e: Event): void {
 
 .photo__action:active {
   opacity: var(--jt-opacity-pressed);
+}
+
+.photo__action--telegram {
+  grid-column: 1 / -1;
+}
+
+.photo__telegram-avatar {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .photo__action:disabled {

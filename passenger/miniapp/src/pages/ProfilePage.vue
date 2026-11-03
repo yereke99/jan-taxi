@@ -7,7 +7,7 @@
 -->
 <script setup lang="ts">
 import { Car, Headset, Languages, ListOrdered, Megaphone, TicketPercent, UserPlus, Wallet } from '@lucide/vue'
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ScrollPage from '../components/ScrollPage.vue'
 import { JListGroup, JListRow, JSpinner, JSwitch, toast } from '../components/ui'
@@ -17,6 +17,7 @@ import { ROUTE } from '../router/names'
 import { usePhoneStore } from '../stores/phone'
 import { usePromotionsStore } from '../stores/promotions'
 import { useSessionStore } from '../stores/session'
+import { getTelegramPhotoUrl } from '../telegram'
 import { formatMoney } from '../utils/format'
 
 const { t } = useI18n()
@@ -34,6 +35,8 @@ async function sharePhone(): Promise<void> {
 const me = computed(() => session.me)
 const name = computed(() => [me.value?.first_name, me.value?.last_name].filter(Boolean).join(' '))
 const initial = computed(() => (me.value?.first_name ?? '').trim().charAt(0).toUpperCase())
+const photoUrl = computed(() => getTelegramPhotoUrl(me.value?.telegram_user_id))
+const failedPhoto = ref<string | null>(null)
 
 const promo = computed(() => promotions.data)
 /** The active coupon's value next to «Менің купоным». */
@@ -62,7 +65,10 @@ onMounted(() => void promotions.refresh())
 <template>
   <ScrollPage :title="t('menu.title')">
     <section v-if="me" class="profile-card">
-      <span class="profile-card__avatar" aria-hidden="true">{{ initial }}</span>
+      <span class="profile-card__avatar" aria-hidden="true">
+        <img v-if="photoUrl && failedPhoto !== photoUrl" :key="photoUrl" :src="photoUrl" alt="" referrerpolicy="no-referrer" @error="failedPhoto = photoUrl" />
+        <template v-else>{{ initial }}</template>
+      </span>
       <span class="profile-card__text">
         <span class="profile-card__name">{{ name }}</span>
         <span v-if="me.username" class="profile-card__meta">@{{ me.username }}</span>
@@ -138,9 +144,16 @@ onMounted(() => void promotions.refresh())
   width: 56px;
   height: 56px;
   border-radius: 50%;
+  overflow: hidden;
   background: var(--jt-color-primary);
   color: var(--jt-color-on-primary);
   font: var(--jt-font-title2);
+}
+
+.profile-card__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .profile-card__text {

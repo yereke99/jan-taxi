@@ -15,6 +15,7 @@ vi.mock('../api/driver', () => ({
   submitRegistration: vi.fn(),
   checkPlate: vi.fn(),
   uploadRegistrationFile: vi.fn(),
+  useTelegramAvatar: vi.fn(),
 }))
 vi.mock('../telegram', () => ({ requestContact: vi.fn(), getLocation: vi.fn() }))
 
@@ -327,6 +328,43 @@ describe('registration store', () => {
       await store.upload('avatar', new Blob(['x']), () => undefined, new AbortController().signal)
       expect(mocked.saveRegistration).toHaveBeenCalledTimes(1)
       expect(mocked.saveRegistration.mock.invocationCallOrder[0]!).toBeLessThan(mocked.uploadRegistrationFile.mock.invocationCallOrder[0]!)
+    })
+
+    it('creates the profile before importing Telegram and keeps the returned avatar if refresh fails', async () => {
+      const store = useRegistrationStore()
+      const file = { id: 'tg1', kind: 'avatar' as const, url: '/api/v1/driver/files/tg1', width: 100, height: 100, created_at: '' }
+      mocked.getRegistration.mockResolvedValueOnce(reg({ id: null, code: null })).mockRejectedValue(new Error('offline'))
+      mocked.saveRegistration.mockResolvedValue(reg())
+      mocked.useTelegramAvatar.mockResolvedValue(file)
+      tg.getLocation.mockRejectedValue(new Error('unavailable'))
+      await store.load()
+      const signal = new AbortController().signal
+      await store.useTelegramAvatar('signed-launch', signal)
+      expect(mocked.saveRegistration.mock.invocationCallOrder[0]!).toBeLessThan(mocked.useTelegramAvatar.mock.invocationCallOrder[0]!)
+      expect(mocked.useTelegramAvatar).toHaveBeenCalledWith('signed-launch', signal)
+      expect(store.registration?.avatar).toEqual(file)
+    })
+
+    it('keeps the existing avatar when Telegram cannot be imported', async () => {
+      const store = useRegistrationStore()
+      const file = { id: 'old', kind: 'avatar' as const, url: '/api/v1/driver/files/old', width: 100, height: 100, created_at: '' }
+      mocked.getRegistration.mockResolvedValue(reg({ avatar: file }))
+      mocked.useTelegramAvatar.mockRejectedValue(new ApiError(502, 'telegram_photo_failed', 'failed'))
+      await store.load()
+      await expect(store.useTelegramAvatar('signed-launch', new AbortController().signal)).rejects.toMatchObject({ code: 'telegram_photo_failed' })
+      expect(store.registration?.avatar).toEqual(file)
+    })
+
+    it('does not start a Telegram import after it was cancelled while creating the profile', async () => {
+      const store = useRegistrationStore()
+      mocked.getRegistration.mockResolvedValue(reg({ id: null, code: null }))
+      mocked.saveRegistration.mockResolvedValue(reg())
+      tg.getLocation.mockRejectedValue(new Error('unavailable'))
+      await store.load()
+      const controller = new AbortController()
+      controller.abort()
+      await expect(store.useTelegramAvatar('signed-launch', controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+      expect(mocked.useTelegramAvatar).not.toHaveBeenCalled()
     })
   })
 

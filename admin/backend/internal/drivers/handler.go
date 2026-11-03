@@ -18,6 +18,8 @@ type Options struct {
 	// MaxUploadBytes limits one uploaded image (defaults to
 	// storage.DefaultMaxBytes); profile photos are capped by MaxAvatarBytes too.
 	MaxUploadBytes int64
+	// TelegramAuth validates the signed launch used to import a Telegram avatar.
+	TelegramAuth *auth.Service
 }
 
 // Location reports are limited to one per 2 seconds per driver (small burst
@@ -29,10 +31,11 @@ const (
 
 // Handler serves the driver, passenger and admin endpoints of this package.
 type Handler struct {
-	pool            *pgxpool.Pool
-	store           *storage.Store
-	opt             Options
-	locationLimiter *httpx.RateLimiter
+	pool                *pgxpool.Pool
+	store               *storage.Store
+	opt                 Options
+	locationLimiter     *httpx.RateLimiter
+	telegramPhotoClient *http.Client
 }
 
 // NewHandler builds the handler.
@@ -40,7 +43,11 @@ func NewHandler(pool *pgxpool.Pool, store *storage.Store, opt Options) *Handler 
 	if opt.MaxUploadBytes <= 0 {
 		opt.MaxUploadBytes = storage.DefaultMaxBytes
 	}
-	return &Handler{pool: pool, store: store, opt: opt, locationLimiter: httpx.NewRateLimiter(locationPerMinute, locationBurst)}
+	return &Handler{
+		pool: pool, store: store, opt: opt,
+		locationLimiter:     httpx.NewRateLimiter(locationPerMinute, locationBurst),
+		telegramPhotoClient: newTelegramPhotoClient(),
+	}
 }
 
 // MountDriver mounts the driver Mini App routes (router with the driver app
@@ -49,6 +56,7 @@ func (h *Handler) MountDriver(r chi.Router) {
 	r.Get("/driver/registration", httpx.H(h.getRegistration))
 	r.Put("/driver/registration", httpx.H(h.putRegistration))
 	r.Post("/driver/registration/files", httpx.H(h.uploadFile))
+	r.Post("/driver/registration/telegram-avatar", httpx.H(h.importTelegramAvatar))
 	r.Post("/driver/registration/check", httpx.H(h.checkRegistration))
 	r.Get("/driver/files/{id}", httpx.H(h.getOwnFile))
 	r.Get("/driver/profile", httpx.H(h.getProfile))
