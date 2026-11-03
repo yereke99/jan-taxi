@@ -45,7 +45,7 @@ func TestGetters(t *testing.T) {
 	insertCity(t, pool, "ALA", almaty, true)
 	insertCity(t, pool, "OFF", almaty, false)
 	active, err := ListActive(ctx, pool)
-	if err != nil || len(active) != 3 || active[0].Code != "ALA" || active[1].Code != "EMB" || active[2].Code != "KAZ" {
+	if err != nil || len(active) != 4 || active[0].Code != "ALA" || active[1].Code != "EMB" || active[2].Code != "KAZ" || active[3].Code != "ZHL" {
 		t.Fatalf("ListActive = %v %v", active, err)
 	}
 	kaz, err := GetByCode(ctx, pool, DefaultRegionCode)
@@ -72,6 +72,10 @@ func TestResolve(t *testing.T) {
 	}{
 		{"embi centre", embi, "EMB"},
 		{"inside embi zone, nearer another centre", near, "EMB"},
+		{"zhalagash centre", geo.Point{Lat: 45.0808963, Lon: 64.6809179}, "ZHL"},
+		{"inside zhalagash western neighbourhood", geo.Point{Lat: 45.08, Lon: 64.66}, "ZHL"},
+		{"outside zhalagash boundary", geo.Point{Lat: 45.12, Lon: 64.6809179}, DefaultRegionCode},
+		{"neighbouring aksu stays outside zhalagash", geo.Point{Lat: 45.051296, Lon: 64.699036}, DefaultRegionCode},
 		{"almaty (no city zone)", almaty, DefaultRegionCode},
 		{"far west, no city zone", geo.Point{Lat: 47.10, Lon: 51.92}, DefaultRegionCode},
 		{"astana", geo.Point{Lat: 51.1694, Lon: 71.4491}, DefaultRegionCode},
@@ -189,7 +193,7 @@ func TestDefault(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE cities SET is_active = false WHERE code = 'EMB'`); err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := Default(ctx, pool, "EMB"); c.Code != "ALA" {
+	if c, _ := Default(ctx, pool, "EMB"); c.Code != "ZHL" {
 		t.Errorf("fallback = %s", c.Code)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE cities SET is_active = false`); err != nil {

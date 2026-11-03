@@ -95,3 +95,23 @@ func TestRegistrationCityFromLocation(t *testing.T) {
 		t.Fatal("invalid location created a profile")
 	}
 }
+
+func TestRegistrationZhalagashSeed(t *testing.T) {
+	env := driverstest.New(t)
+	loc := map[string]any{"lat": 45.0808963, "lon": 64.6809179}
+	driver := env.DriverClient()
+	if code, city := registerAt(t, driver, loc); code != "ZHL001" || city != "ZHL" {
+		t.Fatalf("zhalagash driver: %s in %s", code, city)
+	}
+	// The settlement boundary includes the western residential neighbourhood.
+	if code, city := registerAt(t, env.DriverClient(), map[string]any{"lat": 45.08, "lon": 64.66}); code != "ZHL002" || city != "ZHL" {
+		t.Fatalf("western zhalagash driver: %s in %s", code, city)
+	}
+	// The neighbouring village Aksu retains the nationwide tariff region.
+	if code, city := registerAt(t, env.DriverClient(), map[string]any{"lat": 45.051296, "lon": 64.699036}); code != "KAZ001" || city != "KAZ" {
+		t.Fatalf("aksu driver: %s in %s", code, city)
+	}
+	if code, city := registerAt(t, driver, almatyPoint); code != "ZHL001" || city != "ZHL" {
+		t.Fatalf("zhalagash driver moved: %s in %s", code, city)
+	}
+}

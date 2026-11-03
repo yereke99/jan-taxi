@@ -1304,6 +1304,15 @@ offers) where they conflict.
 - Tariff region and locality: see §3 (KAZ default region, `orders.locality`, driver code prefix).
 
 ### 22.9 Village commissions (owner, 2026-11-01)
+- **Жалағаш launch defaults (owner, 2026-11-04):** migration `00017` adds the `ZHL` tariff region,
+  ordinary sedan taxi from **400 KZT** (ceiling 1500, step 50), and an active **5%** village
+  commission. Its service zone and commission share the mapped settlement footprint from
+  [OpenStreetMap way 295767919](https://www.openstreetmap.org/way/295767919), centred on
+  [place node 2264861871](https://www.openstreetmap.org/node/2264861871). This operational polygon
+  excludes neighbouring Ақсу; it is not a cadastral boundary. Other categories/classes retain
+  nationwide fallback tariffs. These are editable database defaults: admins publish tariff versions
+  for `ZHL` in Tariffs and edit its commission/boundary in Villages and commission using the existing
+  controls. Startup never resets their edits; existing orders keep their fare and commission.
 - Each rural village can have its own driver commission, a **percentage of the fare** (e.g. 5 %, 7 %,
   10 %), set by an administrator (`config.manage`) in «Сёла и комиссия» (`/admin/commission-areas`,
   table `commission_areas`). Passenger prices are unchanged (tariffs per region, §3); drivers never

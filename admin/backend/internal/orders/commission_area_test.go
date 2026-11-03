@@ -6,6 +6,11 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
+	"github.com/yereke99/jantaxi/admin/backend/internal/dispatch"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
+	"github.com/yereke99/jantaxi/admin/backend/internal/pricing"
 )
 
 // villageArea stores a circle village commission around lat/lon.
@@ -108,5 +113,63 @@ func TestVillageCommission(t *testing.T) {
 	view.decode(t, &admin)
 	if admin.CommissionArea != nil {
 		t.Fatalf("general commission shows a village: %+v", admin.CommissionArea)
+	}
+}
+
+// The migrated launch defaults price a Zhalagash taxi from 400 ₸ and charge
+// 5% to a nearby driver, including one registered in another city. The order
+// retains its commission if an administrator later changes the village.
+func TestZhalagashDefaultCommission(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	pickup := geo.Point{Lat: 45.0808963, Lon: 64.6809179}
+	city, err := cities.Resolve(ctx, e.pool, pickup)
+	if err != nil || city.Code != "ZHL" {
+		t.Fatalf("Zhalagash tariff region: %+v, %v", city, err)
+	}
+	e.cityID = city.ID
+	stops := []pricing.QuoteStop{
+		{Lat: pickup.Lat, Lon: pickup.Lon, Address: "Жалағаш орталығы"},
+		{Lat: pickup.Lat + 0.005, Lon: pickup.Lon, Address: "Жалағаштағы мекенжай"},
+	}
+	// An existing driver may work here without re-registering in Zhalagash.
+	drv := e.driverAt("EMB", 1000, pickup.Lat, pickup.Lon)
+	o, _, _ := e.order(stops, 400)
+	c := e.orderCommission(o.ID)
+	if c.Mode != "percent" || c.Bps != 500 || c.Amount != 20 || c.AreaID == nil || c.AreaName == nil || *c.AreaName != "Жалағаш" {
+		t.Fatalf("seeded commission: %+v", c)
+	}
+	if e.count(`SELECT count(*) FROM order_offers WHERE order_id = $1 AND driver_id = $2 AND status = 'sent'`, o.ID, drv.DriverID) != 1 {
+		t.Fatal("Zhalagash order not offered to nearby driver registered in Embi")
+	}
+	var available dispatch.Available
+	r := e.do(drv.c, http.MethodGet, "/driver/orders", nil)
+	e.expect(r, http.StatusOK, "")
+	r.decode(t, &available)
+	if !available.Eligibility.Eligible || len(available.Items) != 1 || available.Items[0].ID != o.ID || available.Items[0].Fare != 400 || available.Items[0].CommissionAmount != 20 {
+		t.Fatalf("seeded available order: %+v", available)
+	}
+
+	// Changes apply to subsequent orders, including a different fare, while
+	// this order keeps the original amount until it has been completed.
+	if _, err := e.pool.Exec(ctx, `UPDATE commission_areas SET commission_bps = 700, name = 'Жалағаш жаңартылған' WHERE id = $1`, *c.AreaID); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"accept", "start", "complete"} {
+		e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/"+action, o.ID), nil), http.StatusOK, "")
+		if balance, reserved := e.wallet(drv.DriverID); balance != 980 || reserved != 0 {
+			t.Fatalf("wallet after %s: %d/%d, want 980/0", action, balance, reserved)
+		}
+	}
+	e.expect(e.do(drv.c, http.MethodPost, path("/driver/orders/%s/complete", o.ID), nil), http.StatusConflict, "invalid_transition")
+	if got := e.count(`SELECT count(*) FROM wallet_ledger WHERE order_id = $1 AND entry_type = 'commission_charge' AND balance_delta = -20`, o.ID); got != 1 {
+		t.Fatalf("20 ₸ commission charges = %d, want 1", got)
+	}
+	if snapshot := e.orderCommission(o.ID); snapshot.Bps != 500 || snapshot.Amount != 20 || snapshot.AreaName == nil || *snapshot.AreaName != "Жалағаш" {
+		t.Fatalf("commission snapshot changed: %+v", snapshot)
+	}
+	next, _, _ := e.order(stops, 800)
+	if updated := e.orderCommission(next.ID); updated.Bps != 700 || updated.Amount != 56 || updated.AreaName == nil || *updated.AreaName != "Жалағаш жаңартылған" {
+		t.Fatalf("updated village commission: %+v", updated)
 	}
 }

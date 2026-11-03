@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/geo"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
 )
@@ -98,6 +100,27 @@ func TestAdminCommissionAreas(t *testing.T) {
 	pool := testutil.NewDB(t)
 	c := newAdminClient(t, pool, auth.RoleSuperAdmin, fakeGeocoder{})
 	ctx := context.Background()
+	status, initial := c.do(http.MethodGet, "/commission-areas", "")
+	seeded, _ := initial["items"].([]any)
+	if status != http.StatusOK {
+		t.Fatalf("list defaults: %d %v", status, initial)
+	}
+	foundZhalagash := false
+	for _, item := range seeded {
+		area := item.(map[string]any)
+		if area["name"] == "Жалағаш" {
+			foundZhalagash = true
+			center, _ := area["center"].(map[string]any)
+			boundary, _ := area["boundary"].(map[string]any)
+			if area["commission_bps"] != 500.0 || area["shape"] != "polygon" || area["radius_m"] != nil || area["is_active"] != true ||
+				center["lat"] != 45.0808963 || center["lon"] != 64.6809179 || boundary["type"] != "MultiPolygon" {
+				t.Fatalf("Zhalagash defaults: %v", area)
+			}
+		}
+	}
+	if !foundZhalagash {
+		t.Fatal("migrated Zhalagash missing from admin list")
+	}
 
 	status, a1 := c.do(http.MethodPost, "/commission-areas", village1)
 	if status != http.StatusCreated || a1["name"] != "Ауыл-1" || a1["commission_bps"] != 500.0 || a1["shape"] != "circle" ||
@@ -190,7 +213,7 @@ func TestAdminCommissionAreas(t *testing.T) {
 
 	status, list := c.do(http.MethodGet, "/commission-areas", "")
 	items, _ := list["items"].([]any)
-	if status != http.StatusOK || len(items) != 3 || items[0].(map[string]any)["name"] != "Ауыл-1" {
+	if status != http.StatusOK || len(items) != len(seeded)+3 || items[0].(map[string]any)["name"] != "Ауыл-1" {
 		t.Fatalf("list: %d %v", status, list)
 	}
 
@@ -202,6 +225,62 @@ func TestAdminCommissionAreas(t *testing.T) {
 	}
 	if auditCount(t, pool, "commission_area.delete") != 1 {
 		t.Fatal("delete not audited")
+	}
+}
+
+func TestAdminZhalagashDefaultsEditable(t *testing.T) {
+	pool := testutil.NewDB(t)
+	c := newAdminClient(t, pool, auth.RoleSuperAdmin, fakeGeocoder{})
+	ctx := context.Background()
+	const id = "7a1a0000-0017-4000-8000-000000000003"
+	load := func() map[string]any {
+		t.Helper()
+		status, body := c.do(http.MethodGet, "/commission-areas", "")
+		if status != http.StatusOK {
+			t.Fatalf("list commission areas: %d %v", status, body)
+		}
+		items, _ := body["items"].([]any)
+		for _, item := range items {
+			a, _ := item.(map[string]any)
+			if a["id"] == id {
+				return a
+			}
+		}
+		t.Fatal("seeded Zhalagash missing from admin list")
+		return nil
+	}
+	before := load()
+	if before["commission_bps"] != 500.0 || before["name"] != "Жалағаш" || before["shape"] != "polygon" {
+		t.Fatalf("initial Zhalagash defaults: %v", before)
+	}
+	assertEdited := func(a map[string]any) {
+		t.Helper()
+		if a["commission_bps"] != 600.0 {
+			t.Fatalf("edited commission: %v", a)
+		}
+		for _, field := range []string{"id", "name", "shape", "center", "radius_m", "boundary", "is_active", "created_at"} {
+			if !reflect.DeepEqual(a[field], before[field]) {
+				t.Errorf("changing commission also changed %s: %v, want %v", field, a[field], before[field])
+			}
+		}
+	}
+	status, updated := c.do(http.MethodPatch, "/commission-areas/"+id, `{"commission_bps":600}`)
+	if status != http.StatusOK {
+		t.Fatalf("edit seeded commission: %d %v", status, updated)
+	}
+	assertEdited(updated)
+	assertEdited(load())
+	if auditCount(t, pool, "commission_area.update") != 1 {
+		t.Fatal("editing the seeded commission was not audited")
+	}
+	// A routine migration run must preserve the administrator's new value.
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate after admin edit: %v", err)
+	}
+	assertEdited(load())
+	ref, _, err := Resolve(ctx, pool, geo.Point{Lat: 45.0808963, Lon: 64.6809179})
+	if err != nil || ref == nil || ref.ID.String() != id || ref.CommissionBps != 600 {
+		t.Fatalf("resolve edited commission: %+v %v", ref, err)
 	}
 }
 

@@ -59,7 +59,7 @@ func TestBuildDashboard(t *testing.T) {
 	if want := (Performance{AvgAcceptTimeS: intp(135), AvgTripDurationS: intp(1300), CompletionRateBps: intp(3333)}); !reflect.DeepEqual(d.Performance, want) {
 		t.Errorf("performance = %v/%v/%v", *d.Performance.AvgAcceptTimeS, *d.Performance.AvgTripDurationS, *d.Performance.CompletionRateBps)
 	}
-	if d.Notifications != (NotificationCounts{Pending: 1, Dead: 1}) || d.Cities != (CityCounts{Total: 2, Active: 2}) { // EMB and the nationwide KAZ
+	if d.Notifications != (NotificationCounts{Pending: 1, Dead: 1}) || d.Cities != (CityCounts{Total: 3, Active: 3}) { // EMB, KAZ and ZHL
 		t.Errorf("notifications = %+v, cities = %+v", d.Notifications, d.Cities)
 	}
 	if d.Today.OrdersCreated != 1 || d.Today.OrdersCompleted != 0 || d.Today.CommissionNet != 0 || d.Today.TopUpsConfirmedCount != 0 {
@@ -90,7 +90,7 @@ func TestBuildDashboard(t *testing.T) {
 	}
 	empty, err := BuildDashboard(ctx, f.pool, p, &other, f.now)
 	if err != nil || empty.Orders.Created != 0 || empty.Revenue.CommissionCharged != 0 || empty.Drivers.Total != 0 ||
-		empty.TopUps.ConfirmedCount != 0 || empty.Cities.Total != 3 || empty.Performance.CompletionRateBps != nil {
+		empty.TopUps.ConfirmedCount != 0 || empty.Cities.Total != 4 || empty.Performance.CompletionRateBps != nil {
 		t.Fatalf("empty city: %+v, %v", empty, err)
 	}
 

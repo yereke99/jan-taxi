@@ -145,7 +145,7 @@ func TestAdminCities(t *testing.T) {
 	}
 
 	code, list := c.do(http.MethodGet, "/cities?page_size=1", "")
-	if code != http.StatusOK || list["total"] != float64(3) || len(list["items"].([]any)) != 1 {
+	if code != http.StatusOK || list["total"] != float64(4) || len(list["items"].([]any)) != 1 {
 		t.Fatalf("list: %d %v", code, list)
 	}
 }

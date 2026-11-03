@@ -141,8 +141,16 @@ func TestPublicConfigDriverAndAdmin(t *testing.T) {
 	if _, ok := cfg["fare"]; ok {
 		t.Error("driver config has fare")
 	}
-	if c := cfg["commission"].(map[string]any); c["mode"] != "fixed" || c["fixed_amount"] != float64(50) || c["by_area"] != false {
+	if c := cfg["commission"].(map[string]any); c["mode"] != "fixed" || c["fixed_amount"] != float64(50) || c["by_area"] != true {
 		t.Errorf("commission = %v", c)
+	}
+	// The migrated Zhalagash village enables geographic commission even
+	// while the general policy remains fixed. Inactive villages do not.
+	if _, err := pool.Exec(ctx, `UPDATE commission_areas SET is_active = false`); err != nil {
+		t.Fatal(err)
+	}
+	if _, cfg := getConfig(t, NewPublicConfig(pool, testOptions), "?app=driver"); cfg["commission"].(map[string]any)["by_area"] != false {
+		t.Errorf("by_area without active villages = %v", cfg["commission"])
 	}
 	// With an active village commission the app must not treat the general
 	// fixed amount as every order's (§22.9).

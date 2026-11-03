@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/yereke99/jantaxi/admin/backend/internal/auth"
+	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
 )
 
@@ -87,9 +89,9 @@ func TestTariffVersioning(t *testing.T) {
 	if items := list["items"].([]any); code != http.StatusOK || len(items) != 4 {
 		t.Fatalf("full list: %d %v", code, list)
 	}
-	// Across cities the nationwide region (KAZ, migration 00009) has its own copy.
+	// Across cities the nationwide region and Zhalagash have their own tariffs.
 	code, list = c.do(http.MethodGet, "/tariffs?category=taxi&include_inactive=1&vehicle_class=sedan", "")
-	if items := list["items"].([]any); code != http.StatusOK || len(items) != 3 {
+	if items := list["items"].([]any); code != http.StatusOK || len(items) != 4 {
 		t.Fatalf("taxi versions of every city: %d %v", code, list)
 	}
 	code, list = c.do(http.MethodGet, "/tariffs?city_id="+cityID.String()+"&category=taxi&include_inactive=1&vehicle_class=sedan", "")
@@ -119,6 +121,64 @@ func TestTariffVersioning(t *testing.T) {
 	code, v3 := c.do(http.MethodPost, "/tariffs", fmt.Sprintf(`{"city_id":%q,"category":"taxi","min_fare":500,"max_fare":1500,"fare_step":50}`, cityID))
 	if code != http.StatusCreated || v3["version"] != float64(3) || v3["commission_bps"] != float64(1000) || v3["base_fare"] != float64(0) {
 		t.Fatalf("v3: %d %v", code, v3)
+	}
+}
+
+// Launch defaults remain editable through the ordinary admin API. Publishing a
+// new initial fare changes only Zhalagash's sedan taxi, and another application
+// startup must preserve the administrator's choice and the old tariff history.
+func TestZhalagashDefaultTariffRemainsEditable(t *testing.T) {
+	pool := testutil.NewDB(t)
+	ctx := context.Background()
+	c, _ := newAdminClient(t, pool, auth.RoleSuperAdmin)
+	cityID := testutil.CityID(t, pool, "ZHL")
+	initial, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi, "sedan")
+	if err != nil || initial.Version != 1 || initial.MinFare != 400 || initial.BaseFare != 400 {
+		t.Fatalf("Zhalagash default tariff: %+v, %v", initial, err)
+	}
+	// Capture the other regions, including every nationwide fallback class.
+	otherRegions := make(map[uuid.UUID][]Tariff)
+	for _, code := range []string{"EMB", "KAZ"} {
+		id := testutil.CityID(t, pool, code)
+		before, err := ListTariffs(ctx, pool, TariffFilter{CityID: &id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		otherRegions[id] = before
+	}
+	code, published := c.do(http.MethodPost, "/tariffs", fmt.Sprintf(
+		`{"city_id":%q,"category":"taxi","vehicle_class":"sedan","min_fare":450,"max_fare":1500,"fare_step":50,"base_fare":450,"commission_bps":500}`, cityID))
+	if code != http.StatusCreated || published["version"] != float64(2) {
+		t.Fatalf("publish Zhalagash fare: %d %v", code, published)
+	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("startup migrations after admin edit: %v", err)
+	}
+	active, err := ActiveTariff(ctx, pool, cityID, CategoryTaxi, "sedan")
+	if err != nil || active.ID.String() != published["id"] || active.Version != 2 || active.MinFare != 450 || active.BaseFare != 450 || active.CommissionBps != 500 {
+		t.Fatalf("active Zhalagash tariff after restart: %+v, %v", active, err)
+	}
+	if fare := Compute(active, 1000, 120, 2); fare.Recommended != 450 || fare.Min != 450 {
+		t.Fatalf("new initial fare: %+v", fare)
+	}
+	old, err := GetTariff(ctx, pool, initial.ID)
+	initial.IsActive = false
+	if err != nil || !reflect.DeepEqual(old, initial) {
+		t.Fatalf("original 400 tenge tariff changed: %+v, %v", old, err)
+	}
+	for id, before := range otherRegions {
+		after, err := ListTariffs(ctx, pool, TariffFilter{CityID: &id})
+		if err != nil || !reflect.DeepEqual(after, before) {
+			t.Fatalf("unrelated region or fallback tariffs changed: %s, %v", id, err)
+		}
+		ordinary, err := ActiveTariff(ctx, pool, id, CategoryTaxi, "sedan")
+		if err != nil || ordinary.MinFare != 500 || ordinary.BaseFare != 500 {
+			t.Fatalf("unrelated sedan initial fare: %+v, %v", ordinary, err)
+		}
+	}
+	local, err := ListTariffs(ctx, pool, TariffFilter{CityID: &cityID})
+	if err != nil || len(local) != 1 || local[0].ID != active.ID {
+		t.Fatalf("publishing sedan created other local class/category overrides: %+v, %v", local, err)
 	}
 }
 
