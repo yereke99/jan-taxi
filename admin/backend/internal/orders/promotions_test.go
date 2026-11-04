@@ -460,6 +460,152 @@ func TestReferralOncePerReferrer(t *testing.T) {
 	e.reconcile()
 }
 
+// TestReferralImmediateAccess: an approver can open invitations without a
+// first-ride coupon; changing access preserves the custom reward and its cap.
+func TestReferralImmediateAccess(t *testing.T) {
+	e := newPromoEnv(t)
+	ctx := context.Background()
+	admin := chi.NewRouter()
+	e.mk.MountAdmin(admin.With(testAdmin))
+	router := chi.NewRouter()
+	router.Mount("/marketing-admin", admin)
+	router.Mount("/", e.handler)
+	e.handler = router
+
+	var campaignID uuid.UUID
+	var version int
+	if err := e.pool.QueryRow(ctx, `SELECT id, current_version FROM marketing_campaigns WHERE key = 'referral_300_once'`).
+		Scan(&campaignID, &version); err != nil {
+		t.Fatal(err)
+	}
+	campaignPath := "/marketing-admin/marketing/campaigns/" + campaignID.String()
+	transition := func(action string) {
+		t.Helper()
+		e.expect(e.do(e.operator(), http.MethodPost, campaignPath+"/transition", map[string]any{
+			"action": action, "reason": "Referral access regression", "confirm": true, "expected_version": version,
+		}), http.StatusOK, "")
+	}
+	setAccess := func(unlock string) {
+		t.Helper()
+		r := e.do(e.operator(), http.MethodPost, campaignPath+"/versions", map[string]any{
+			"rules": map[string]any{"reward_amount": 200, "categories": []string{"taxi"},
+				"attribution_window_minutes": 60, "unlock": unlock, "min_ride_seconds": 60},
+			"change_note": "Configure invitation access",
+		})
+		e.expect(r, http.StatusOK, "")
+		var c marketing.Campaign
+		r.decode(t, &c)
+		version = c.Version
+	}
+	referral := func(pc caller) marketing.ReferralView {
+		t.Helper()
+		r := e.do(pc, http.MethodGet, "/promotions/referral", nil)
+		e.expect(r, http.StatusOK, "")
+		var ref marketing.ReferralView
+		r.decode(t, &ref)
+		return ref
+	}
+
+	// Reproduce the reported screen: the campaign is active with a custom
+	// 200 ₸ reward, but its stored coupon rule still locks this passenger.
+	setAccess("coupon_redeemed")
+	transition("activate")
+	aID, ac := e.passenger()
+	if ref := referral(ac); ref.State != "locked" || ref.LockReason != "coupon_not_redeemed" || ref.RewardAmount != 200 || ref.Link != "" {
+		t.Fatalf("coupon access before the fix: %+v", ref)
+	}
+	setAccess("immediate")
+	previewResponse := e.do(e.operator(), http.MethodGet, campaignPath+"/preview", nil)
+	e.expect(previewResponse, http.StatusOK, "")
+	var preview marketing.CampaignPreview
+	previewResponse.decode(t, &preview)
+	if preview.PerPerson != 200 {
+		t.Fatalf("immediate preview reward: %+v", preview)
+	}
+	for _, warning := range preview.Warnings {
+		if warning == "legacy_passengers_locked" || warning == "coupon_campaign_not_active" {
+			t.Fatalf("immediate preview still requires coupons: %+v", preview.Warnings)
+		}
+	}
+	ref := referral(ac)
+	if ref.State != "unlocked" || len(ref.Code) != 8 || ref.Link != "https://t.me/JanTaxiBot?start=ref_"+ref.Code ||
+		ref.AppLink != "https://t.me/JanTaxiBot?startapp=ref_"+ref.Code || ref.RewardAmount != 200 {
+		t.Fatalf("immediate referral view: %+v", ref)
+	}
+	if p := e.promotions(ac); p.Referral.State != "unlocked" || p.Referral.RewardAmount != 200 || len(p.Coupons) != 0 {
+		t.Fatalf("immediate promotions: %+v", p)
+	}
+	if n := e.count(`SELECT count(*) FROM orders WHERE passenger_id = $1`, aID); n != 0 {
+		t.Fatalf("inviter unexpectedly needed a ride: %d", n)
+	}
+	if n := e.count(`SELECT count(*) FROM marketing_campaign_versions WHERE campaign_id = $1 AND rules->>'unlock' = 'coupon_redeemed'`, campaignID); n == 0 {
+		t.Fatal("changing access lost the earlier version")
+	}
+
+	// Campaign and emergency switches still control whether the link is shown.
+	transition("pause")
+	if paused := referral(ac); paused.State != "unavailable" || paused.Code != "" || paused.Link != "" {
+		t.Fatalf("paused referral: %+v", paused)
+	}
+	friendID, fc := e.passenger()
+	if res, err := e.mk.CaptureReferral(ctx, friendID, "ref_"+ref.Code, "bot_start"); err != nil || res.Attributed || res.Reason != "campaign_inactive" {
+		t.Fatalf("paused capture: %+v %v", res, err)
+	}
+	transition("resume")
+	if resumed := referral(ac); resumed.Code != ref.Code || resumed.Link != ref.Link {
+		t.Fatalf("resume changed the invitation: %+v", resumed)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE app_settings SET value = 'false'::jsonb WHERE key = 'marketing.awards_enabled'`); err != nil {
+		t.Fatal(err)
+	}
+	if paused := referral(ac); paused.State != "locked" || paused.LockReason != "paused" || paused.Link != "" {
+		t.Fatalf("awards disabled: %+v", paused)
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE app_settings SET value = 'true'::jsonb WHERE key = 'marketing.awards_enabled'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both attribution and payout use the new rule: no coupon or ride is
+	// required from the inviter, and a second friend earns no second reward.
+	drv := e.driver(5000, true)
+	for i := range 2 {
+		if i > 0 {
+			friendID, fc = e.passenger()
+		}
+		if res, err := e.mk.CaptureReferral(ctx, friendID, "ref_"+ref.Code, "bot_start"); err != nil || !res.Attributed {
+			t.Fatalf("friend %d capture: %+v %v", i, res, err)
+		}
+		if i == 0 {
+			if b, err := marketing.GetBonus(ctx, e.pool, aID); err != nil || b.Balance != 0 {
+				t.Fatalf("reward before the friend's first ride: %+v %v", b, err)
+			}
+		}
+		e.ride(drv, friendID, fc, 800, nil)
+		e.process()
+	}
+	e.process()
+	if b, err := marketing.GetBonus(ctx, e.pool, aID); err != nil || b.Balance != 200 || b.Available != 200 {
+		t.Fatalf("custom referral reward: %+v %v", b, err)
+	}
+	if n := e.count(`SELECT count(*) FROM marketing_grants WHERE user_id = $1 AND reason = 'referral_reward'`, aID); n != 1 {
+		t.Fatalf("referral rewards = %d", n)
+	}
+	if e.outbox("promo_referral_reward", aID) != 1 {
+		t.Fatal("reward notification missing or duplicated")
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE referral_codes SET disabled_at = now() WHERE user_id = $1`, aID); err != nil {
+		t.Fatal(err)
+	}
+	if disabled := referral(ac); disabled.State != "locked" || disabled.LockReason != "disabled" || disabled.Code != "" || disabled.Link != "" {
+		t.Fatalf("disabled referral code: %+v", disabled)
+	}
+	friendID, _ = e.passenger()
+	if res, err := e.mk.CaptureReferral(ctx, friendID, "ref_"+ref.Code, "bot_start"); err != nil || res.Attributed || res.Reason != "unknown_code" {
+		t.Fatalf("disabled code capture: %+v %v", res, err)
+	}
+	e.reconcile()
+}
+
 // TestReferralRaceRewardsOnce: two friends' first rides processed at the same
 // time still reward the inviter once.
 func TestReferralRaceRewardsOnce(t *testing.T) {

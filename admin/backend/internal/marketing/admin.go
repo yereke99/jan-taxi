@@ -490,7 +490,7 @@ func (s *Service) adminPreviewCampaign(w http.ResponseWriter, r *http.Request) e
 		p.PerPerson = rules.RewardAmount
 		err = q.QueryRow(ctx, `SELECT count(*) FROM users u WHERE NOT u.is_blocked AND u.passenger_bot_started_at IS NOT NULL`).
 			Scan(&p.Audience)
-		if rules.Unlock != UnlockFirstRideCompleted {
+		if rules.Unlock == UnlockCouponRedeemed || rules.Unlock == UnlockCouponRedeemedOrExpired {
 			p.Warnings = append(p.Warnings, "legacy_passengers_locked")
 			if cc, cerr := latestCampaign(ctx, q, TemplateFirstRideCoupon); cerr != nil {
 				err = cerr

@@ -11041,8 +11041,8 @@ components:
         attribution_window_minutes: {type: integer, minimum: 5, maximum: 10080, example: 60}
         unlock:
           type: string
-          description: '`coupon_redeemed` (default: after the first-ride coupon was used), `coupon_redeemed_or_expired`, `first_ride_completed`.'
-          enum: [coupon_redeemed, coupon_redeemed_or_expired, first_ride_completed]
+          description: '`immediate` (any passenger while the campaign is active and awards are enabled), `coupon_redeemed` (after the first-ride coupon was used; legacy launch policy), `coupon_redeemed_or_expired`, `first_ride_completed`.'
+          enum: [immediate, coupon_redeemed, coupon_redeemed_or_expired, first_ride_completed]
         min_ride_seconds: {type: integer, minimum: 0, maximum: 3600, example: 60}
     MarketingCreditRules:
       type: object

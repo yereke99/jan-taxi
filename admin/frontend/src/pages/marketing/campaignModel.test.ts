@@ -3,7 +3,7 @@
 // actions), the launch switch and the words for a refused activation.
 
 import { afterEach, describe, expect, it } from 'vitest'
-import type { Campaign } from '../../api/marketing'
+import { UNLOCK_POLICIES, type Campaign, type ReferralRules } from '../../api/marketing'
 import { formatMoney } from '../../utils/format'
 import { i18n } from '../../i18n'
 import { ROLE_PERMISSIONS, type Permission, type Role } from '../../permissions'
@@ -17,6 +17,7 @@ import {
   isVersionConflict,
   launchSwitch,
   rulesSummary,
+  rulesToForm,
   transitionBody,
   transitionErrorText,
   validateCampaignForm,
@@ -52,10 +53,21 @@ describe('rulesSummary', () => {
     )
     expect(rulesSummary('referral_first_ride', { ...rules, min_ride_seconds: 0 }, words('en'))).not.toContain('review')
   })
+
+  it.each([
+    ['kk', 'акция қосылғаннан бастап шақыра алады', 'Акция қосылған бойда'],
+    ['ru', 'приглашать можно сразу после включения акции', 'Сразу после включения акции'],
+    ['en', 'invites unlock as soon as the campaign is active', 'As soon as the campaign is active'],
+  ] as const)('explains immediate invitations in %s', (locale, summary, label) => {
+    const rules: ReferralRules = { reward_amount: 200, categories: ['taxi'], attribution_window_minutes: 60, unlock: 'immediate', min_ride_seconds: 60 }
+    const w = words(locale)
+    expect(rulesSummary('referral_first_ride', rules, w)).toContain(summary)
+    expect(w.t('marketing.unlock_immediate')).toBe(label)
+  })
 })
 
 describe('rules form', () => {
-  it('starts with the launch campaigns’ values and sends only the template’s fields', () => {
+  it('defaults new referrals to immediate invitations and sends only the template’s fields', () => {
     const r = formToRules('first_ride_coupon', emptyRulesForm())
     expect(r.errors).toEqual({})
     expect(r.rules).toEqual(couponRules)
@@ -63,10 +75,28 @@ describe('rules form', () => {
       reward_amount: 300,
       categories: ['taxi'],
       attribution_window_minutes: 60,
-      unlock: 'coupon_redeemed',
+      unlock: 'immediate',
       min_ride_seconds: 60,
     })
     expect(formToRules('broadcast_only', emptyRulesForm()).rules).toEqual({})
+  })
+
+  it('creates a referral with immediate access without a coupon prerequisite', () => {
+    const f = emptyCampaignForm('referral_first_ride')
+    f.title = { kk: 'Досыңды шақыр', ru: 'Пригласи друга', en: 'Invite a friend' }
+    const result = validateCampaignForm(f, 'create')
+    expect(result.errors).toEqual({})
+    expect(result.payload).toMatchObject({ template: 'referral_first_ride', rules: { unlock: 'immediate' } })
+  })
+
+  it.each(UNLOCK_POLICIES)('preserves the saved %s policy when editing referral rules', (unlock) => {
+    const stored: ReferralRules = { reward_amount: 200, categories: ['taxi'], attribution_window_minutes: 60, unlock, min_ride_seconds: 60 }
+    const f = emptyCampaignForm('referral_first_ride')
+    f.title = { kk: 'Досыңды шақыр', ru: 'Пригласи друга', en: 'Invite a friend' }
+    f.rules = rulesToForm('referral_first_ride', stored)
+    const result = validateCampaignForm(f, 'version')
+    expect(result.errors).toEqual({})
+    expect(result.payload?.rules).toEqual(stored)
   })
 
   it('applies the API ranges under the rules.<field> paths', () => {

@@ -246,8 +246,14 @@ carry `component=marketing` or `component=broadcast_worker`.
   changes its per-credit cap (a new version). To stop manual credits, set its
   budget to 0.
 - Read the campaign preview before activating (audience, maximum cost, warnings).
-  Activate «Алғашқы сапар» before or together with «Досыңды шақыр»: by default a
-  passenger may invite only after redeeming the first-ride coupon.
+  Activation does not change the campaign's invitation access rule. If
+  «Досыңды шақыр» is active but the passenger sees a coupon lock, open its rules
+  and save a new version with invitation access «Сразу после включения акции»
+  (`unlock: immediate`). Preserve the reward, budget and other rules. This
+  opens personal links without requiring the inviter to ride or use a coupon;
+  rewards still require the invited friend's first qualifying completed ride.
+  Existing campaigns keep their saved access policy. With `coupon_redeemed`,
+  activate «Алғашқы сапар» before or together with «Досыңды шақыр».
 - Pause stops new awards; coupons already issued stay usable until they expire,
   and rides completed during the pause never earn later. Freeze redemptions stops
   the campaign's coupons on new orders; orders that already reserved one complete

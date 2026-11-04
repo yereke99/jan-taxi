@@ -62,7 +62,7 @@ type BroadcastOnlyRules struct{}
 
 var categories = []string{"taxi", "parcel", "other"}
 
-var unlockPolicies = []string{UnlockCouponRedeemed, UnlockCouponRedeemedOrExpired, UnlockFirstRideCompleted}
+var unlockPolicies = []string{UnlockImmediate, UnlockCouponRedeemed, UnlockCouponRedeemedOrExpired, UnlockFirstRideCompleted}
 
 // ParseRules decodes and validates raw rules for template. Unknown fields are
 // refused, so a rule the server does not implement can never be stored.

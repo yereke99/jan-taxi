@@ -78,6 +78,7 @@ const (
 
 // Referral unlock policies (ReferralRules.Unlock).
 const (
+	UnlockImmediate               = "immediate"
 	UnlockCouponRedeemed          = "coupon_redeemed"
 	UnlockCouponRedeemedOrExpired = "coupon_redeemed_or_expired"
 	UnlockFirstRideCompleted      = "first_ride_completed"

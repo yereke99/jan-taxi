@@ -35,6 +35,7 @@ func TestParseRules(t *testing.T) {
 		{marketing.TemplateFirstRideCoupon, `{"amount":0,"validity_hours":72,"min_order_fare":400,"categories":["taxi"]}`, "rules.amount"},
 		{marketing.TemplateFirstRideCoupon, `{"amount":400,"validity_hours":72,"min_order_fare":400,"categories":["bus"]}`, "rules.categories"},
 		{marketing.TemplateReferral, `{"reward_amount":300,"categories":["taxi"],"attribution_window_minutes":60,"unlock":"coupon_redeemed","min_ride_seconds":60}`, ""},
+		{marketing.TemplateReferral, `{"reward_amount":200,"categories":["taxi"],"attribution_window_minutes":60,"unlock":"immediate","min_ride_seconds":60}`, ""},
 		{marketing.TemplateReferral, `{"reward_amount":300,"categories":["taxi"],"attribution_window_minutes":60,"unlock":"always","min_ride_seconds":60}`, "rules.unlock"},
 		{marketing.TemplateDriverMilestone, `{"amount":1000,"rides":10,"categories":["taxi"]}`, ""},
 		{marketing.TemplatePassengerCredit, `{"amount":200}`, "rules.segment_id"},

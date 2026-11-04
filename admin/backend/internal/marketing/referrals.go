@@ -88,11 +88,13 @@ func referralCode(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (string, err
 }
 
 // referralUnlocked reports whether the passenger may invite friends under
-// policy: by default only after the first-ride coupon was redeemed (the
-// customer's rule: the two promotions never run at the same time).
+// policy. The caller selects the active campaign; the other policies retain
+// their ride/coupon gates. The passenger view also checks the awards switch.
 func referralUnlocked(ctx context.Context, q db.Querier, userID uuid.UUID, policy string) (bool, error) {
 	var sql string
 	switch policy {
+	case UnlockImmediate:
+		return true, nil
 	case UnlockFirstRideCompleted:
 		sql = `SELECT EXISTS (SELECT 1 FROM orders WHERE passenger_id = $1 AND status = 'completed')`
 	case UnlockCouponRedeemedOrExpired:

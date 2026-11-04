@@ -1405,7 +1405,7 @@ reasons are `fields["rules.<name>"]`.
 | Template | Rules | Effect |
 |---|---|---|
 | `first_ride_coupon` | `amount` 1..100 000, `validity_hours` 1..720, `min_order_fare` ≥ `amount` (`below_amount`), `categories` ⊆ `taxi, parcel, other` | §23.4 |
-| `referral_first_ride` | `reward_amount` 1..100 000, `categories`, `attribution_window_minutes` 5..10 080, `unlock` `coupon_redeemed \| coupon_redeemed_or_expired \| first_ride_completed`, `min_ride_seconds` 0..3600 | §23.5 |
+| `referral_first_ride` | `reward_amount` 1..100 000, `categories`, `attribution_window_minutes` 5..10 080, `unlock` `immediate \| coupon_redeemed \| coupon_redeemed_or_expired \| first_ride_completed`, `min_ride_seconds` 0..3600 | §23.5 |
 | `passenger_credit` | `amount` 1..100 000, `segment_id` (a live passenger segment) | when an approver schedules the campaign (or activates it, if nothing was frozen before), every reachable passenger of the segment is frozen as a pending grant of `amount`; job `marketing_grants` credits them to the bonus balance while the campaign is active (`promo_bonus_granted`); the rules are locked once the campaign leaves draft |
 | `driver_milestone_bonus` | `amount` 1..100 000, `rides` 1..1000, `categories`; the version needs `starts_at` and `ends_at` (`window_required`) | a driver whose completed orders in the categories inside the window reach `rides` gets `amount` on the wallet once (`bonus_credit`, key `bonus:<grant_id>`, message `driver_bonus_granted`); drivers read its title and description, which may not name the commission (`fields.title.<lang>` / `description.<lang>` = `mentions_commission`, §22.2) |
 | `manual_grant` | `max_amount` 1..1 000 000 | system bucket of manual bonus credits (§23.8): cannot be created or duplicated through the API, has no lifecycle (it stays a draft and cannot be archived), and only `marketing.approve` changes its `max_amount` |
@@ -1541,9 +1541,11 @@ issued ──operator void (marketing.approve, reason) | its qualifying ride can
   `lock_reason` (`coupon_not_redeemed` under the default policy, `coupon_not_used` under
   `coupon_redeemed_or_expired`, `first_ride_required`, `paused` while awards are switched off,
   `disabled` when the passenger's code was disabled), or `unlocked`. Unlock policies
-  (`rules.unlock`; changing it is a new version): `coupon_redeemed` (default, the assignment
-  literally: only after the first-ride coupon was used), `coupon_redeemed_or_expired`,
-  `first_ride_completed`.
+  (`rules.unlock`; changing it is a new version): `immediate` (personal links available
+  without a prior ride or coupon while the campaign is active and awards are enabled),
+  `coupon_redeemed` (legacy seed: only after the first-ride coupon was used),
+  `coupon_redeemed_or_expired`, `first_ride_completed`. New admin forms default to
+  `immediate`; saved campaigns retain their policy until an approver changes it.
 * Code: created on the first `GET /promotions/referral` while unlocked — 8 random characters
   (crypto) from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no 0/O, 1/I), unique, with no Telegram id or
   phone in it. Links `https://t.me/<passenger bot>?start=ref_<CODE>` (`link`, the bot) and

@@ -5,6 +5,7 @@
 // the on/off switch of the launch campaigns.
 
 import type { LocalizedText } from '../../api/common'
+import { UNLOCK_POLICIES } from '../../api/marketing'
 import type {
   Campaign,
   CampaignAction,
@@ -244,7 +245,7 @@ export const RULE_LIMITS = {
   maxAmount: [1, 1_000_000],
 } as const
 
-/** Defaults of a new campaign: the launch campaigns' values. */
+/** Defaults of a new campaign; referrals open as soon as the campaign is active. */
 export function emptyRulesForm(): RulesForm {
   return {
     amount: '400',
@@ -253,7 +254,7 @@ export function emptyRulesForm(): RulesForm {
     categories: ['taxi'],
     reward_amount: '300',
     attribution_window_minutes: '60',
-    unlock: 'coupon_redeemed',
+    unlock: 'immediate',
     min_ride_seconds: '60',
     segment_id: '',
     rides: '10',
@@ -277,7 +278,7 @@ export function rulesToForm(template: CampaignTemplate, rules: CampaignRules | n
         reward_amount: str(r.reward_amount, f.reward_amount),
         categories: cats(r.categories),
         attribution_window_minutes: str(r.attribution_window_minutes, f.attribution_window_minutes),
-        unlock: (['coupon_redeemed', 'coupon_redeemed_or_expired', 'first_ride_completed'] as const).find((u) => u === r.unlock) ?? f.unlock,
+        unlock: UNLOCK_POLICIES.find((u) => u === r.unlock) ?? f.unlock,
         min_ride_seconds: str(r.min_ride_seconds, f.min_ride_seconds),
       }
     case 'passenger_credit':

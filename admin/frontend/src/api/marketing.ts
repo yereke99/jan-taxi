@@ -41,7 +41,7 @@ export const CREATABLE_TEMPLATES: readonly CampaignTemplate[] = [
 ]
 
 /** When a passenger may invite friends (ReferralRules.unlock). */
-export const UNLOCK_POLICIES = ['coupon_redeemed', 'coupon_redeemed_or_expired', 'first_ride_completed'] as const
+export const UNLOCK_POLICIES = ['immediate', 'coupon_redeemed', 'coupon_redeemed_or_expired', 'first_ride_completed'] as const
 export type UnlockPolicy = (typeof UNLOCK_POLICIES)[number]
 
 /** first_ride_coupon: one coupon after the first completed ride, for a later order of at least min_order_fare. */
