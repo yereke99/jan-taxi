@@ -37,6 +37,10 @@
   --jt-color-green-tint: rgba(52, 199, 89, 0.15);
   --jt-color-red-tint: rgba(255, 59, 48, 0.12);
   --jt-color-blue-tint: rgba(0, 122, 255, 0.12);
+  --jt-color-gift-bg: #fff3d4;
+  --jt-color-gift-accent: #ffd477;
+  --jt-color-gift-ink: #6c4000;
+  --jt-shadow-gift: 0 5px 20px rgba(83, 51, 0, 0.14), 0 1px 3px rgba(0, 0, 0, 0.06);
   --jt-color-overlay: rgba(0, 0, 0, 0.4);
   --jt-color-toast-bg: rgba(0, 0, 0, 0.88);
 

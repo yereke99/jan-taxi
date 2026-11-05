@@ -24,6 +24,7 @@ import BonusPage from './BonusPage.vue'
 import CouponsPage from './CouponsPage.vue'
 import InvitePage from './InvitePage.vue'
 import ProfilePage from './ProfilePage.vue'
+import PassengerPromoGift from '../components/PassengerPromoGift.vue'
 
 vi.mock('../api/promotions', () => ({
   getPromotions: vi.fn(),
@@ -74,7 +75,7 @@ function promotionsAnswer(over: Record<string, unknown> = {}, couponExpiresInMs 
 
 const Blank = { template: '<div />' }
 
-async function mountPage(component: Component, path: string) {
+async function mountPage(component: Component, path: string, inlineModal = false) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -92,7 +93,7 @@ async function mountPage(component: Component, path: string) {
   })
   await router.push(path)
   await router.isReady()
-  const w = mount(component, { global: { plugins: [i18n, router] } })
+  const w = mount(component, { global: { plugins: [i18n, router], stubs: inlineModal ? { Teleport: true } : {} } })
   await settle()
   return w
 }
@@ -369,10 +370,70 @@ describe('invite a friend', () => {
     w.unmount()
   })
 
+  it.each([
+    ['kk', 'Бонус әкімшінің тексеруінде', 'Есепке алынбады'],
+    ['ru', 'Бонус на проверке у администратора', 'Не засчитан'],
+    ['en', 'Bonus awaiting administrator review', 'Not counted'],
+  ] as const)('shows an administrator review separately from a rejection in %s', async (locale, reviewText, rejectedText) => {
+    vi.mocked(getReferral).mockResolvedValue(referral({
+      earned: 0,
+      friends: [
+        { name: 'Ахан К.', status: 'not_counted', under_review: true, attributed_at: '2026-11-02T09:00:00Z' },
+        { name: 'Арман Б.', status: 'not_counted', attributed_at: '2026-11-02T09:00:00Z' },
+      ],
+    }))
+    const previousLocale = i18n.global.locale.value
+    i18n.global.locale.value = locale
+    try {
+      const w = await mountPage(InvitePage, '/invite')
+      const friends = w.findAll('.jt-row').filter((r) => r.find('.jt-row__subtitle').exists())
+      expect(friends[0]!.find('.jt-row__subtitle').text()).toContain(reviewText)
+      expect(friends[0]!.text()).not.toContain(rejectedText)
+      expect(friends[1]!.find('.jt-row__subtitle').text()).toContain(rejectedText)
+      w.unmount()
+    } finally {
+      i18n.global.locale.value = previousLocale
+    }
+  })
+
   it('says the campaign is not running when the state is unavailable', async () => {
     vi.mocked(getReferral).mockResolvedValue(referral({ state: 'unavailable', code: undefined, friends: [] }))
     const w = await mountPage(InvitePage, '/invite')
     expect(w.find('.jt-empty__title').text()).toBe('Акция қазір өтпейді')
+    w.unmount()
+  })
+})
+
+describe('map gift invitation', () => {
+  const LINK = 'https://t.me/jantaxi_bot?start=ref_AB2C3D4E'
+  it('opens the invitation and shares or copies the existing personal link', async () => {
+    usePromotionsStore().data = promotionsAnswer({ referral: { state: 'unlocked', reward_amount: 200, rewarded: false } })
+    vi.mocked(getReferral).mockResolvedValue(parseReferral({ state: 'unlocked', reward_amount: 200, code: 'AB2C3D4E', link: LINK, earned: 0, friends: [] }))
+    vi.mocked(copyText).mockResolvedValue(true)
+    const w = await mountPage(PassengerPromoGift, '/', true)
+    expect(plain(w.find('.jt-promo-gift__value').text())).toBe('+200 ₸')
+    await w.find('.jt-promo-gift').trigger('click')
+    await settle()
+    expect(w.find('[role="dialog"]').exists()).toBe(true)
+    expect(w.find('.gift-panel__code').text()).toBe('AB2C3D4E')
+    await w.find('.gift-copy').trigger('click')
+    await settle()
+    expect(copyText).toHaveBeenCalledWith(LINK)
+    await w.find('.gift-share').trigger('click')
+    expect(openTelegram).toHaveBeenCalledWith(expect.stringContaining(`url=${encodeURIComponent(LINK)}`))
+    w.unmount()
+  })
+
+  it('keeps sharing disabled when the referral could not be loaded', async () => {
+    usePromotionsStore().data = promotionsAnswer()
+    vi.mocked(getReferral).mockRejectedValue(new Error('offline'))
+    const w = await mountPage(PassengerPromoGift, '/', true)
+    await w.find('.jt-promo-gift').trigger('click')
+    await settle()
+    expect(w.find('.gift-panel__error').exists()).toBe(true)
+    expect(w.find('.gift-share').attributes('disabled')).toBeDefined()
+    expect(w.find('.gift-copy').attributes('disabled')).toBeDefined()
+    expect(openTelegram).not.toHaveBeenCalled()
     w.unmount()
   })
 })

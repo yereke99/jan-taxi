@@ -1412,7 +1412,7 @@ reasons are `fields["rules.<name>"]`.
 | `broadcast_only` | `{}` | copy only: shown as a banner in `GET /promotions` while active |
 
 * Create (`marketing.edit`): `{template, key?, title, description?, rules, starts_at?, ends_at?,
-  budget_limit?, priority?, exclusivity_group?, change_note?}` → a draft with version 1. Without a
+  city_ids?, budget_limit?, priority?, exclusivity_group?, change_note?}` → a draft with version 1. Without a
   key the server makes `<template>_<6 hex>`; a taken key is `fields.key = taken`. The title is
   required in kk, ru and en (≤ 80 code points each), the description is optional (all three or
   none, ≤ 600). A budget sent by an admin without `marketing.approve` is ignored. `duplicate` copies
@@ -1423,6 +1423,14 @@ reasons are `fields["rules.<name>"]`.
   scheduled, active and paused ones, and the system campaigns whatever their status (`is_system`:
   the launch promotions' rules, and the `manual_adjustments` bucket whose `max_amount` is finance's
   per-credit limit), need `marketing.approve`; an archived campaign never changes.
+* `city_ids` belongs to the immutable version: empty means all regions; up to 50 distinct city
+  ids from the existing catalog, excluding the country tariff fallback `KAZ`. The admin selector
+  reads active cities from `GET /admin/marketing/regions` (`marketing.view`). Regional offers
+  and launch messages use the latest app city, order pickup city or driver location, falling
+  back to a driver's registration city. Unknown locations do not qualify. Earnings check the
+  physical pickup against active service-zone polygons (`jt_marketing_region`), independently
+  of the order's tariff city and dispatch radius. Driver progress counts only matching pickups;
+  passenger-credit targeting is frozen with its audience and cannot change after draft.
 * Status machine (`POST …/transition {action, reason?, confirm, scheduled_at?, expected_version}`;
   any other move is `409 invalid_transition {from, action}`):
 
@@ -1603,8 +1611,11 @@ rewarded ──qualifying ride cancelled by a dispute──▶ rewarded, reason 
 
 * The inviter's `GET /promotions/referral`: state, title and description, code and links while
   unlocked, `earned` (credited rewards), `rewarded`, and up to 50 friends as first name + last
-  initial with `attributed | rewarded | capped | not_counted` (`review` and `rejected` read
-  `not_counted`).
+  initial with `attributed | rewarded | capped | not_counted`. For compatibility with older Mini
+  Apps, `review` and `rejected` retain `not_counted`; only a pending `review` also has
+  `under_review: true`. The passenger sees “awaiting administrator review”, not a rejection.
+  Review, rejection and cap decisions publish `promotions.updated` to the inviter after commit,
+  as do rewards, so an open invitation screen re-fetches the decision.
 
 **Passenger bonus balance.** What the platform owes a passenger as a discount on later rides:
 separate from driver wallets, never withdrawable, without expiry. `passenger_bonus_accounts
@@ -1902,6 +1913,25 @@ or by a super admin in Settings (§19, group Marketing). Other API replicas see 
   referral captured or rewarded; bonus credited, spent or adjusted. Like every event it is a hint:
   the app re-reads `GET /promotions` (§9).
 * Start parameters (§18): `coupons`, `bonus`, `invite`; `ref_<CODE>` is the referral link.
+* The passenger map's small gift opens an invitation popup with the existing share/copy links
+  when invitation access is unlocked and the once-only reward is still available. Otherwise
+  it links to an available bonus, coupon or offer. A driver gift appears only for an active,
+  applicable milestone that has not paid out; `GET /driver/promotions` supplies the server's
+  goal, completed count and reward state. The driver start parameter `promotions` opens that
+  progress screen. Both gifts respect the existing safe areas; fullscreen control is unchanged.
+* `POST /promotions/presence` and `POST /driver/promotions/presence` accept `{active, position?}`.
+  Foreground apps send a heartbeat every 45 seconds and inactive state when hidden. An optional
+  position already available to the app resolves a city; only that city is retained in
+  `marketing_app_presence`, not coordinates. Entries expire from announcement suppression after
+  90 seconds and are cleaned after seven days.
+* Activating a new referral, first-ride coupon or driver milestone campaign queues one automatic
+  launch announcement through the existing broadcast worker, using the activation's approver.
+  At delivery it checks current campaign eligibility, city, marketing switches, prior reward,
+  opt-out and foreground presence. Its button uses a Telegram direct Mini App link with
+  `mode=fullscreen`; missing bot configuration falls back to the existing Web App button.
+  Manual broadcast buttons keep their existing behavior. A unique
+  campaign index prevents another announcement on resume or rule edits; already-active
+  campaigns receive no retroactive announcement when migration 00018 is installed.
 * Driver: the available-order card, the order and trip screens and the history carry `cash_due` (what
   to collect) and `promo_discount` (what Jan Taxi credits after the ride); the commission stays
   hidden (§22.2).
@@ -1921,6 +1951,7 @@ or by a super admin in Settings (§19, group Marketing). Other API replicas see 
 | `marketing_campaign_schedule` | 30 s | activates due scheduled campaigns (one that cannot be activated returns to draft and drops its frozen `passenger_credit` grants); ends active or paused campaigns whose version `ends_at` passed and skips their pending grants |
 | `marketing_grants` | 5 s | credits pending `passenger_credit` grants of active campaigns, 100 per run (nothing while awards are off) |
 | `marketing_reconcile` | 1 h | reconciliation; an error in the log when it is not OK |
+| `marketing_presence_cleanup` | 1 h | removes app presence older than seven days |
 | worker `broadcast_worker` | continuous, 1 s when idle | broadcasts (§23.7); only with `NOTIFICATION_WORKER_ENABLED`, one replica at a time |
 
 ### 23.13 Invariants, lock order and security

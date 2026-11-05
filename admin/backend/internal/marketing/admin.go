@@ -40,6 +40,7 @@ func (s *Service) MountAdmin(r chi.Router) {
 	view.Get("/marketing/segments", httpx.H(s.adminListSegments))
 	view.Post("/marketing/segments/preview", httpx.H(s.adminPreviewSegment))
 	view.Get("/marketing/broadcasts", httpx.H(s.adminListBroadcasts))
+	view.Get("/marketing/regions", httpx.H(s.adminCampaignRegions))
 	view.Get("/marketing/broadcasts/{id}", httpx.H(s.adminGetBroadcast))
 	view.Get("/marketing/broadcasts/{id}/recipients", httpx.H(s.adminListRecipients))
 	view.Get("/marketing/reconciliation", httpx.H(s.adminReconciliation))
@@ -235,7 +236,7 @@ func (s *Service) adminDuplicateCampaign(w http.ResponseWriter, r *http.Request)
 		}
 		tpl := c.Template
 		in := campaignInput{Template: &tpl, Title: &c.Title, Description: &c.Description, Rules: c.Rules,
-			StartsAt: c.StartsAt, EndsAt: c.EndsAt, Priority: &c.Priority, ExclusivityGroup: c.ExclusivityGroup}
+			StartsAt: c.StartsAt, EndsAt: c.EndsAt, Priority: &c.Priority, ExclusivityGroup: c.ExclusivityGroup, CityIDs: &c.CityIDs}
 		if newID, err = createCampaign(r.Context(), tx, in, admin.AdminID); err != nil {
 			return err
 		}
@@ -476,7 +477,8 @@ func (s *Service) adminPreviewCampaign(w http.ResponseWriter, r *http.Request) e
 		err = q.QueryRow(ctx, `
 			SELECT count(*) FROM users u
 			WHERE NOT u.is_blocked AND (u.passenger_bot_started_at IS NOT NULL OR EXISTS (SELECT 1 FROM orders o WHERE o.passenger_id = u.id))
-			  AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.passenger_id = u.id AND o.completed_at IS NOT NULL)`).Scan(&p.Audience)
+			  AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.passenger_id = u.id AND o.completed_at IS NOT NULL)
+			  AND (COALESCE(cardinality($1::uuid[]),0)=0 OR jt_marketing_city(u.id,'passenger')=ANY($1))`, c.CityIDs).Scan(&p.Audience)
 		var lowTariffs int
 		if err == nil {
 			err = q.QueryRow(ctx, `SELECT count(*) FROM tariffs WHERE is_active AND category = ANY($1) AND min_fare < $2`,
@@ -488,7 +490,8 @@ func (s *Service) adminPreviewCampaign(w http.ResponseWriter, r *http.Request) e
 	case TemplateReferral:
 		rules, _ := mustRules[ReferralRules](c.Rules)
 		p.PerPerson = rules.RewardAmount
-		err = q.QueryRow(ctx, `SELECT count(*) FROM users u WHERE NOT u.is_blocked AND u.passenger_bot_started_at IS NOT NULL`).
+		err = q.QueryRow(ctx, `SELECT count(*) FROM users u WHERE NOT u.is_blocked AND u.passenger_bot_started_at IS NOT NULL
+		 AND (COALESCE(cardinality($1::uuid[]),0)=0 OR jt_marketing_city(u.id,'passenger')=ANY($1))`, c.CityIDs).
 			Scan(&p.Audience)
 		if rules.Unlock == UnlockCouponRedeemed || rules.Unlock == UnlockCouponRedeemedOrExpired {
 			p.Warnings = append(p.Warnings, "legacy_passengers_locked")
@@ -503,14 +506,19 @@ func (s *Service) adminPreviewCampaign(w http.ResponseWriter, r *http.Request) e
 		p.PerPerson = rules.Amount
 		if seg, serr := loadSegment(ctx, q, rules.SegmentID); serr == nil {
 			fields := map[string]string{}
-			if cnt, cerr := countAudience(ctx, q, AudiencePassengers, parseFilters(seg.Audience, seg.Filters, fields)); cerr == nil {
-				p.Audience = cnt.Reachable
+			var args []any
+			from, suppressed := audienceQuery(AudiencePassengers, parseFilters(seg.Audience, seg.Filters, fields), &args)
+			if len(c.CityIDs) > 0 {
+				args = append(args, c.CityIDs)
+				from += " AND jt_marketing_city(u.id,'passenger')=ANY($" + itoa(len(args)) + "::uuid[])"
 			}
+			err = q.QueryRow(ctx, `SELECT count(*)`+from+` AND NOT `+suppressed, args...).Scan(&p.Audience)
 		}
 	case TemplateDriverMilestone:
 		rules, _ := mustRules[MilestoneRules](c.Rules)
 		p.PerPerson = rules.Amount
-		err = q.QueryRow(ctx, `SELECT count(*) FROM driver_profiles WHERE status = 'approved'`).Scan(&p.Audience)
+		err = q.QueryRow(ctx, `SELECT count(*) FROM driver_profiles WHERE status = 'approved'
+		 AND (COALESCE(cardinality($1::uuid[]),0)=0 OR jt_marketing_city(user_id,'driver')=ANY($1))`, c.CityIDs).Scan(&p.Audience)
 	}
 	if err != nil {
 		return err
@@ -909,6 +917,9 @@ func (s *Service) adminReviewReferral(w http.ResponseWriter, r *http.Request) er
 				WHERE id = $1`, id, admin.AdminID, reason)
 			outcome = "rejected"
 			if err != nil {
+				return err
+			}
+			if err := publishPromotions(ctx, tx, referrerID); err != nil {
 				return err
 			}
 		} else {

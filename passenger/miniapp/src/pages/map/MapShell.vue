@@ -11,6 +11,7 @@
 <script setup lang="ts">
 import { ChevronLeft, Crosshair, Menu, Navigation, TriangleAlert } from '@lucide/vue'
 import type { Map as MapLibreMap } from 'maplibre-gl'
+import PassengerPromoGift from '../../components/PassengerPromoGift.vue'
 import { computed, provide, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -76,6 +77,7 @@ const topStyle = computed(() => ({
   top: `${stage.safe.value.top + 8}px`,
   left: `${stage.safe.value.left + 16}px`,
 }))
+const giftStyle = computed(() => ({ top: `${stage.safe.value.top + 8}px`, left: `${stage.safe.value.left + 80}px` }))
 const bottomStyle = computed(() => ({
   bottom: `${stage.sheetHeight.value + CONTROLS_GAP_PX}px`,
   right: `${stage.safe.value.right + 16}px`,
@@ -229,6 +231,8 @@ async function adjustPickup(): Promise<void> {
       </Transition>
     </div>
 
+    <PassengerPromoGift v-if="stage.controls.menu" class="shell__gift" :style="giftStyle" />
+
     <RouterView v-slot="{ Component, route: child }">
       <Transition name="jt-sheet-swap" mode="out-in">
         <div :key="String(child.name)" class="shell__screen">
@@ -245,6 +249,8 @@ async function adjustPickup(): Promise<void> {
   inset: 0;
   overflow: hidden;
 }
+
+.shell__gift { position: fixed; z-index: var(--jt-z-floating); }
 
 .shell__top,
 .shell__side {

@@ -2,8 +2,10 @@ package orders_test
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/yereke99/jantaxi/admin/backend/internal/marketing"
 	"github.com/yereke99/jantaxi/admin/backend/internal/orders"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/testutil"
+	"github.com/yereke99/jantaxi/admin/backend/internal/realtime"
 )
 
 // Promotions end to end (ARCHITECTURE §23): the customer's two launch
@@ -32,6 +35,7 @@ func newPromoEnv(t *testing.T) *promoEnv {
 	mk := marketing.New(e.pool, marketing.Options{PassengerBotUsername: "JanTaxiBot", Log: slog.New(slog.DiscardHandler)})
 	r := chi.NewRouter()
 	mk.MountPassenger(r.With(e.auth.RequireApp(auth.AppPassenger)))
+	mk.MountDriver(r.With(e.auth.RequireApp(auth.AppDriver), e.auth.LoadDriverProfile(true)))
 	r.Mount("/", e.handler)
 	e.handler = r
 	return &promoEnv{env: e, mk: mk}
@@ -604,6 +608,151 @@ func TestReferralImmediateAccess(t *testing.T) {
 		t.Fatalf("disabled code capture: %+v %v", res, err)
 	}
 	e.reconcile()
+}
+
+// Short first rides wait for an administrator; exactly 60 seconds qualifies.
+// A missing invitee phone must not leave the award event stuck on a NULL scan.
+func TestReferralDurationAndReview(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		duration time.Duration
+		decision string
+	}{
+		{"below_minimum_approved", 60*time.Second - time.Millisecond, "approve"},
+		{"at_minimum", 60 * time.Second, ""},
+		{"above_minimum", 61 * time.Second, ""},
+		{"short_ride_rejected", 2 * time.Second, "reject"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPromoEnv(t)
+			ctx := context.Background()
+			if _, err := e.pool.Exec(ctx, `
+				INSERT INTO marketing_campaign_versions (campaign_id, version, title, rules)
+				SELECT id, 2, '{"kk":"Досыңды шақыр"}',
+				       '{"reward_amount":200,"categories":["taxi"],"attribution_window_minutes":60,"unlock":"immediate","min_ride_seconds":60}'
+				FROM marketing_campaigns WHERE key = 'referral_300_once';
+				UPDATE marketing_campaigns SET current_version = 2 WHERE key = 'referral_300_once'`); err != nil {
+				t.Fatal(err)
+			}
+			e.activate("referral_300_once")
+			admin := chi.NewRouter()
+			e.mk.MountAdmin(admin.With(testAdmin))
+			router := chi.NewRouter()
+			router.Mount("/marketing-admin", admin)
+			router.Mount("/", e.handler)
+			e.handler = router
+
+			referrerID, referrer := e.passenger()
+			if _, err := e.pool.Exec(ctx, `UPDATE users SET phone_e164 = '+77000000001' WHERE id = $1`, referrerID); err != nil {
+				t.Fatal(err)
+			}
+			view := func() marketing.ReferralView {
+				t.Helper()
+				r := e.do(referrer, http.MethodGet, "/promotions/referral", nil)
+				e.expect(r, http.StatusOK, "")
+				var v marketing.ReferralView
+				r.decode(t, &v)
+				return v
+			}
+			code := view().Code
+			inviteeID, invitee := e.passenger()
+			if res, err := e.mk.CaptureReferral(ctx, inviteeID, "ref_"+code, "bot_start"); err != nil || !res.Attributed {
+				t.Fatalf("capture: %+v %v", res, err)
+			}
+			driver := e.driver(5000, true)
+			order := e.ride(driver, inviteeID, invitee, 800, nil)
+			if _, err := e.pool.Exec(ctx, `UPDATE orders SET started_at = completed_at - $2::bigint * interval '1 microsecond' WHERE id = $1`,
+				order.ID, tc.duration.Microseconds()); err != nil {
+				t.Fatal(err)
+			}
+
+			listener, err := e.pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Release()
+			if _, err := listener.Exec(ctx, "LISTEN "+realtime.Channel); err != nil {
+				t.Fatal(err)
+			}
+			expectUpdate := func() {
+				t.Helper()
+				waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				for {
+					n, err := listener.Conn().WaitForNotification(waitCtx)
+					if err != nil {
+						t.Fatalf("referrer did not receive a promotion update: %v", err)
+					}
+					var ev struct {
+						Type   string   `json:"type"`
+						Scopes []string `json:"scopes"`
+					}
+					if err := json.Unmarshal([]byte(n.Payload), &ev); err != nil {
+						t.Fatal(err)
+					}
+					if ev.Type == marketing.EventPromotionsUpdated && slices.Contains(ev.Scopes, realtime.UserScope(referrerID)) {
+						return
+					}
+				}
+			}
+
+			e.process()
+			expectUpdate()
+			var attributionID uuid.UUID
+			var status string
+			if err := e.pool.QueryRow(ctx, `SELECT id, status FROM referral_attributions WHERE invitee_user_id = $1`, inviteeID).
+				Scan(&attributionID, &status); err != nil {
+				t.Fatal(err)
+			}
+			if n := e.count(`SELECT count(*) FROM marketing_events WHERE status = 'done'`); n != 1 {
+				t.Fatalf("processed awards = %d", n)
+			}
+			if tc.decision != "" {
+				v := view()
+				if status != marketing.ReferralReview || v.Earned != 0 || len(v.Friends) != 1 ||
+					v.Friends[0].Status != "not_counted" || !v.Friends[0].UnderReview {
+					t.Fatalf("pending review: status %s, view %+v", status, v)
+				}
+				queue := e.do(e.operator(), http.MethodGet, "/marketing-admin/marketing/referrals?status=review", nil)
+				e.expect(queue, http.StatusOK, "")
+				var pending struct {
+					Total int `json:"total"`
+					Items []struct {
+						ID     uuid.UUID `json:"id"`
+						Reason string    `json:"reason"`
+					} `json:"items"`
+				}
+				queue.decode(t, &pending)
+				if pending.Total != 1 || len(pending.Items) != 1 || pending.Items[0].ID != attributionID || pending.Items[0].Reason != "short_ride" {
+					t.Fatalf("administrator review queue: %+v", pending)
+				}
+				reviewPath := path("/marketing-admin/marketing/referrals/%s/review", attributionID)
+				body := map[string]any{"decision": tc.decision, "reason": "Checked the customer's test ride"}
+				e.expect(e.do(e.operator(), http.MethodPost, reviewPath, body), http.StatusOK, "")
+				expectUpdate()
+				e.expect(e.do(e.operator(), http.MethodPost, reviewPath, body), http.StatusConflict, "invalid_transition")
+				if n := e.count(`SELECT count(*) FROM admin_audit_logs WHERE action = $1`, "marketing.referral."+tc.decision); n != 1 {
+					t.Fatalf("review audit entries = %d", n)
+				}
+			} else if status != marketing.ReferralRewarded {
+				t.Fatalf("qualifying ride was not rewarded: %s", status)
+			}
+			e.process() // replay cannot pay a second time
+			wantStatus, wantEarned := marketing.ReferralRewarded, int64(200)
+			if tc.decision == "reject" {
+				wantStatus, wantEarned = "not_counted", 0
+			}
+			v := view()
+			if v.Earned != wantEarned || len(v.Friends) != 1 || v.Friends[0].Status != wantStatus || v.Friends[0].UnderReview {
+				t.Fatalf("decided referral: %+v", v)
+			}
+			balance, err := marketing.GetBonus(ctx, e.pool, referrerID)
+			if err != nil || balance.Available != wantEarned {
+				t.Fatalf("bonus: %+v %v", balance, err)
+			}
+			e.reconcile()
+		})
+	}
 }
 
 // TestReferralRaceRewardsOnce: two friends' first rides processed at the same

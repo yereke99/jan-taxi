@@ -127,6 +127,7 @@ info:
     | driver | `order_<uuid>` | order detail (`GET /driver/orders/{id}`) |
     | driver | `trip` | active trip (`GET /driver/orders/active`) |
     | driver | `wallet` / `topup` / `topup_<uuid>` | wallet / new top-up / top-up detail |
+    | driver | `promotions` | active milestone bonuses and progress (`GET /driver/promotions`) |
     | driver | `profile` / `support` | profile / support |
 
     ## Realtime
@@ -1054,6 +1055,33 @@ paths:
         '401': {$ref: '#/components/responses/AppUnauthorized'}
         '403': {$ref: '#/components/responses/AppForbidden'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+  /promotions/presence:
+    post:
+      operationId: setPassengerPromotionPresence
+      tags: [promotions]
+      summary: Report the passenger app's foreground state
+      description: |
+        A foreground heartbeat suppresses the campaign's automatic launch announcement for
+        90 seconds. The app refreshes it every 45 seconds and reports `active: false` when hidden.
+        An optional already-available position resolves a campaign city; only the resolved city
+        is retained here, not the coordinates. Unknown or outside locations do not qualify for
+        city-restricted offers. `fields`: `active = required`, `position = invalid`.
+      x-jantaxi-app: [passenger]
+      security: [{appToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PromotionPresenceInput'}
+      responses:
+        '204': {description: Presence recorded.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/AppForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
   /promotions/bonus/history:
     get:
       operationId: listMyBonusHistory
@@ -1091,8 +1119,9 @@ paths:
         (`link`) and `?startapp=ref_<CODE>` (`app_link`); without a configured bot username only
         the code is returned. A disabled code reads `locked` with `lock_reason: disabled`.
         `earned` is the sum of credited referral rewards; `friends` (up to 50, newest first) show
-        only a first name and a last-name initial; `review` and `rejected` attributions read
-        `not_counted`. One reward per referrer however many friends; the invitee gets nothing from
+        only a first name and a last-name initial; `review` and `rejected` attributions retain
+        `not_counted` for older clients, with `under_review: true` only while awaiting an
+        administrator's decision. One reward per referrer however many friends; the invitee gets nothing from
         this campaign.
       x-jantaxi-app: [passenger]
       security: [{appToken: []}]
@@ -1128,6 +1157,60 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MarketingSubscription'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/AppForbidden'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /driver/promotions:
+    get:
+      operationId: getDriverPromotions
+      tags: [driver]
+      summary: Active driver milestone bonuses and progress
+      description: |
+        Approved drivers receive active, currently applicable milestone campaigns with the
+        server's completed-trip count and payout state. Only trips in the configured categories,
+        campaign window and, when restricted, physical pickup cities count. Returns no offers
+        while marketing awards are disabled. `403 driver_not_approved` for other driver states.
+      x-jantaxi-app: [driver]
+      security: [{appToken: []}]
+      responses:
+        '200':
+          description: Applicable offers, including a credited offer's rewarded state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [offers]
+                properties:
+                  offers:
+                    type: array
+                    items: {$ref: '#/components/schemas/DriverPromotionOffer'}
+        '401': {$ref: '#/components/responses/AppUnauthorized'}
+        '403': {$ref: '#/components/responses/AppForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /driver/promotions/presence:
+    post:
+      operationId: setDriverPromotionPresence
+      tags: [driver]
+      summary: Report the driver app's foreground state
+      description: |
+        The driver equivalent of `POST /promotions/presence`: a foreground heartbeat suppresses
+        the campaign launch message for 90 seconds; an optional already-available position
+        resolves the city for regional offers. Only the resolved city is stored here.
+        `fields`: `active = required`, `position = invalid`.
+      x-jantaxi-app: [driver]
+      security: [{appToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PromotionPresenceInput'}
+      responses:
+        '204': {description: Presence recorded.}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/AppUnauthorized'}
         '403': {$ref: '#/components/responses/AppForbidden'}
@@ -4538,6 +4621,36 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MarketingOverview'}
+        '401': {$ref: '#/components/responses/AdminUnauthorized'}
+        '403': {$ref: '#/components/responses/AdminForbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /admin/marketing/regions:
+    get:
+      operationId: adminListCampaignRegions
+      tags: [admin-marketing]
+      summary: Cities and settlements available for campaign targeting
+      description: |
+        Active entries from the existing city catalog, sorted by Russian name. The country-wide
+        tariff fallback `KAZ` is excluded. An empty campaign `city_ids` means all regions.
+      x-jantaxi-permission: marketing.view
+      security: [{adminSession: []}]
+      responses:
+        '200':
+          description: Selectable campaign cities.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name]
+                      properties:
+                        id: {type: string, format: uuid}
+                        name: {$ref: '#/components/schemas/LocalizedText'}
         '401': {$ref: '#/components/responses/AdminUnauthorized'}
         '403': {$ref: '#/components/responses/AdminForbidden'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
@@ -11102,10 +11215,43 @@ components:
           type: object
           additionalProperties: {type: integer, minimum: 0}
           example: {credited: 4}
+    PromotionPresenceInput:
+      type: object
+      additionalProperties: false
+      required: [active]
+      properties:
+        active: {type: boolean, description: The corresponding Mini App is currently in the foreground.}
+        position: {$ref: '#/components/schemas/LatLon'}
+    DriverPromotionOffer:
+      type: object
+      required: [id, title, description, amount, rides, completed, categories, ends_at, rewarded]
+      properties:
+        id: {type: string, format: uuid, description: Campaign id.}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        description: {$ref: '#/components/schemas/LocalizedText'}
+        amount: {type: integer, format: int64, minimum: 1, description: Milestone bonus in KZT.}
+        rides: {type: integer, minimum: 1, description: Required completed trips.}
+        completed: {type: integer, minimum: 0, description: Completed trips matching the current campaign window and targeting.}
+        categories:
+          type: array
+          items: {$ref: '#/components/schemas/OrderCategory'}
+        ends_at: {type: [string, 'null'], format: date-time}
+        rewarded: {type: boolean, description: This campaign already credited the driver's wallet.}
+    MarketingCampaignCities:
+      type: array
+      maxItems: 50
+      uniqueItems: true
+      description: |
+        Existing catalog city ids; empty means all regions. `KAZ`, unknown ids and duplicates
+        are refused (`fields.city_ids = invalid`; more than 50 = `too_many`). Offers and launch
+        announcements use the latest known city; trip rewards check the physical pickup city,
+        independently of tariff fallback or dispatch radius. Unknown locations do not qualify
+        for a restricted campaign. A passenger-credit campaign's cities are locked after draft.
+      items: {type: string, format: uuid}
     MarketingCampaign:
       type: object
       description: A campaign with its current version (ARCHITECTURE §23.2).
-      required: [id, key, template, status, is_system, version, version_id, title, description, rules, starts_at, ends_at, budget_limit, redemptions_frozen, priority, exclusivity_group, scheduled_at, active_since, activated_at, paused_at, ended_at, archived_at, created_by, approved_by, created_at, updated_at]
+      required: [id, key, template, status, is_system, version, version_id, title, description, rules, city_ids, starts_at, ends_at, budget_limit, redemptions_frozen, priority, exclusivity_group, scheduled_at, active_since, activated_at, paused_at, ended_at, archived_at, created_by, approved_by, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         key: {type: string, pattern: '^[a-z0-9_]{3,40}$', example: first_ride_coupon_400}
@@ -11117,6 +11263,7 @@ components:
         title: {$ref: '#/components/schemas/LocalizedText'}
         description: {$ref: '#/components/schemas/LocalizedText'}
         rules: {$ref: '#/components/schemas/MarketingRules'}
+        city_ids: {$ref: '#/components/schemas/MarketingCampaignCities'}
         starts_at: {type: [string, 'null'], format: date-time, description: Start of the current version's validity window.}
         ends_at: {type: [string, 'null'], format: date-time, description: End of the window; the schedule job ends the campaign once it passes.}
         budget_limit: {type: [integer, 'null'], format: int64, minimum: 0, description: 'KZT the campaign may commit and spend; `null` = no cap.', example: 100000}
@@ -11136,14 +11283,15 @@ components:
         usage: {$ref: '#/components/schemas/MarketingUsage'}
     MarketingCampaignVersion:
       type: object
-      description: One immutable version of a campaign's copy, rules and window.
-      required: [id, version, title, description, rules, starts_at, ends_at, change_note, created_by, created_at]
+      description: One immutable version of a campaign's copy, rules, cities and window.
+      required: [id, version, title, description, rules, city_ids, starts_at, ends_at, change_note, created_by, created_at]
       properties:
         id: {type: string, format: uuid}
         version: {type: integer, minimum: 1}
         title: {$ref: '#/components/schemas/LocalizedText'}
         description: {$ref: '#/components/schemas/LocalizedText'}
         rules: {$ref: '#/components/schemas/MarketingRules'}
+        city_ids: {$ref: '#/components/schemas/MarketingCampaignCities'}
         starts_at: {type: [string, 'null'], format: date-time}
         ends_at: {type: [string, 'null'], format: date-time}
         change_note: {type: [string, 'null'], maxLength: 300}
@@ -11182,7 +11330,8 @@ components:
       additionalProperties: false
       description: |
         Create: `template`, `title` and the template's `rules` are required. New version: every
-        field is optional (the current value is kept); `template` and `key` must not change;
+        field is optional (the current value is kept); `city_ids: []` clears regional targeting;
+        `template` and `key` must not change;
         `budget_limit`, `priority` and `exclusivity_group` are refused there.
       properties:
         template: {$ref: '#/components/schemas/MarketingTemplate'}
@@ -11194,6 +11343,7 @@ components:
           description: Up to 600 code points in each language; all three or none.
           allOf: [{$ref: '#/components/schemas/MarketingTextInput'}]
         rules: {$ref: '#/components/schemas/MarketingRules'}
+        city_ids: {$ref: '#/components/schemas/MarketingCampaignCities'}
         starts_at: {type: [string, 'null'], format: date-time}
         ends_at: {type: [string, 'null'], format: date-time, description: After `starts_at`; both are required for `driver_milestone_bonus`.}
         budget_limit: {type: [integer, 'null'], format: int64, minimum: 0, maximum: 1000000000, description: Create only; ignored without `marketing.approve`.}
@@ -11572,10 +11722,11 @@ components:
     MarketingBroadcast:
       type: object
       description: A marketing message to one bot's audience (ARCHITECTURE §23.7).
-      required: [id, campaign_id, title, audience, segment_id, filters, content, button, status, scheduled_at, started_at, completed_at, cancelled_at, recipient_count, created_by, approved_by, approval_note, version, created_at, updated_at, stats]
+      required: [id, campaign_id, is_automatic, title, audience, segment_id, filters, content, button, status, scheduled_at, started_at, completed_at, cancelled_at, recipient_count, created_by, approved_by, approval_note, version, created_at, updated_at, stats]
       properties:
         id: {type: string, format: uuid}
         campaign_id: {type: [string, 'null'], format: uuid}
+        is_automatic: {type: boolean, readOnly: true, description: One launch announcement created automatically with campaign activation.}
         title: {type: string, minLength: 1, maxLength: 120}
         audience: {$ref: '#/components/schemas/MarketingAudience'}
         segment_id: {type: [string, 'null'], format: uuid}
@@ -11882,6 +12033,7 @@ components:
       properties:
         name: {type: string, description: First name and last-name initial., example: Сәуле Т.}
         status: {type: string, enum: [attributed, rewarded, capped, not_counted]}
+        under_review: {type: boolean, description: 'True while an administrator must decide the bonus; status remains not_counted for older clients. Absent after a decision.'}
         attributed_at: {type: string, format: date-time}
     ReferralView:
       allOf:

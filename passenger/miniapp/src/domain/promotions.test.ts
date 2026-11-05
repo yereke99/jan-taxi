@@ -7,6 +7,7 @@ import {
   couponBelowMinimum,
   couponStatus,
   hasPromo,
+  homeGift,
   inviteOutOfReach,
   nextCouponExpiry,
   payable,
@@ -48,6 +49,20 @@ function promos(over: Partial<Promotions> = {}): Promotions {
 }
 
 const withBonus = (available: number, over: Partial<Promotions> = {}) => promos({ bonus: { balance: available, reserved: 0, available }, ...over })
+
+describe('map gift', () => {
+  it('prioritises an available invitation with the server reward', () => {
+    expect(homeGift(promos({ referral: { state: 'unlocked', lock_reason: null, reward_amount: 200, rewarded: false } }), NOW)).toEqual({ kind: 'invite', amount: 200 })
+  })
+  it('shows earned balance instead of promising the referral reward again', () => {
+    expect(homeGift(withBonus(200, { referral: { state: 'unlocked', lock_reason: null, reward_amount: 200, rewarded: true } }), NOW)).toEqual({ kind: 'bonus', amount: 200 })
+  })
+  it('hides without an eligible promotion, including expired coupons', () => {
+    expect(homeGift(null, NOW)).toBeNull()
+    expect(homeGift(promos({ coupons: [coupon({ expires_at: iso(-1) })] }), NOW)).toBeNull()
+    expect(homeGift(promos({ coupons: [], referral: { state: 'locked', lock_reason: 'paused', reward_amount: 200, rewarded: false } }), NOW)).toBeNull()
+  })
+})
 
 describe('choosePromotion (§23.6)', () => {
   it('applies the issued coupon to a taxi order at or above its minimum fare', () => {

@@ -110,6 +110,7 @@ export interface CampaignUsage {
 
 /** A campaign with its current version (openapi MarketingCampaign). */
 export interface Campaign {
+  city_ids?: string[]
   id: string
   key: string
   template: CampaignTemplate
@@ -144,6 +145,7 @@ export interface Campaign {
 
 /** One immutable rules/copy version; coupons and grants keep the version that created them. */
 export interface CampaignVersion {
+  city_ids?: string[]
   id: string
   version: number
   title: LocalizedText
@@ -183,6 +185,7 @@ export interface CampaignPreview {
 
 /** Create body; a new version takes title, description, rules, starts_at, ends_at and change_note only. */
 export interface CampaignInput {
+  city_ids?: string[]
   template?: CampaignTemplate
   key?: string
   title?: LocalizedText
@@ -315,6 +318,7 @@ export const REFERRAL_REASONS = [
   'referrer_drove',
   'referrer_blocked',
   'category_not_eligible',
+  'region_not_eligible',
   'qualifying_ride_cancelled',
 ] as const
 
@@ -662,6 +666,9 @@ export const marketingApi = {
 }
 
 export const campaignsApi = {
+  regions(signal?: AbortSignal): Promise<{ items: { id: string; name: LocalizedText }[] }> {
+    return api.get('/admin/marketing/regions', { signal })
+  },
   list(f: CampaignFilters, page: number, pageSize: number, signal?: AbortSignal): Promise<Page<Campaign>> {
     return api.get('/admin/marketing/campaigns', {
       query: { status: opt(f.status), template: opt(f.template), q: opt(f.q?.trim()), page, page_size: pageSize },

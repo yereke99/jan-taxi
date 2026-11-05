@@ -9,6 +9,17 @@
 import type { CouponStatus, OrderPromoAmounts, PromoCoupon, PromotionKind, Promotions, ReferralSummary } from '../api/types'
 import type { Category } from '../utils/status'
 
+/** Never advertise a referral reward the passenger has already received. */
+export function homeGift(p: Promotions | null, now: number): { kind: 'invite' | 'coupons' | 'bonus'; amount: number } | null {
+  if (!p) return null
+  if (p.referral.state === 'unlocked' && !p.referral.rewarded && p.referral.reward_amount > 0) return { kind: 'invite', amount: p.referral.reward_amount }
+  if (p.redemptions_enabled && p.bonus.available > 0) return { kind: 'bonus', amount: p.bonus.available }
+  const coupon = activeCoupon(p, now)
+  if (coupon) return { kind: 'coupons', amount: coupon.amount }
+  if (p.offers[0]) return { kind: 'coupons', amount: p.offers[0].amount }
+  return p.banners.length ? { kind: 'coupons', amount: 0 } : null
+}
+
 /** The promotion an order can use: a coupon applies by itself, the bonus balance is the passenger's choice. */
 export interface PromotionOffer {
   kind: PromotionKind

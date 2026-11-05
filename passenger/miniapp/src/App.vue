@@ -7,7 +7,10 @@ import { JActionSheetHost, JButton, JEmptyState, JStatusBanner, JToast } from '.
 import { useErrorText } from './i18n/core'
 import { useRealtimeStatus } from './services/realtime'
 import { useSessionStore } from './stores/session'
+import { useLocationStore } from './stores/location'
+import { usePromotionsStore } from './stores/promotions'
 import { useOnlineStatus } from './utils/network'
+import { usePromotionPresence } from './telegram/usePromotionPresence'
 
 /** Brief reconnects are normal (network handover); only show longer ones. */
 const RECONNECT_BANNER_DELAY_MS = 2000
@@ -16,6 +19,9 @@ const { t } = useI18n()
 const errorText = useErrorText()
 const router = useRouter()
 const session = useSessionStore()
+const location = useLocationStore()
+const promotions = usePromotionsStore()
+usePromotionPresence(() => session.isReady, '/promotions/presence', () => location.current, () => void promotions.refresh())
 const online = useOnlineStatus()
 const realtimeStatus = useRealtimeStatus()
 

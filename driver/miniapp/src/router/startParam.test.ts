@@ -10,6 +10,7 @@ describe('parseStartParam (driver)', () => {
     [null, { kind: 'home' }],
     ['', { kind: 'home' }],
     ['home', { kind: 'home' }],
+    ['promotions', { kind: 'promotions' }],
     ['register', { kind: 'register' }],
     ['orders', { kind: 'orders' }],
     ['trip', { kind: 'trip' }],
@@ -40,6 +41,7 @@ describe('intentLocation', () => {
   const router = { hasRoute: (name: string | symbol) => (Object.values(ROUTE) as string[]).includes(String(name)) }
 
   it('maps intents to routes with params', () => {
+    expect(intentLocation({ kind: 'promotions' }, router)).toEqual({ name: ROUTE.promotions })
     expect(intentLocation({ kind: 'order', orderId: ID }, router)).toEqual({ name: ROUTE.order, params: { id: ID } })
     expect(intentLocation({ kind: 'topup_detail', topupId: ID }, router)).toEqual({ name: ROUTE.topupDetail, params: { id: ID } })
     expect(intentLocation({ kind: 'topup' }, router)).toEqual({ name: ROUTE.topup })

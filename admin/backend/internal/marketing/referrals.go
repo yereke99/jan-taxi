@@ -202,6 +202,13 @@ func captureReferral(ctx context.Context, tx pgx.Tx, inviteeID uuid.UUID, code, 
 		return CaptureResult{}, err
 	}
 	referrerID = &owner
+	eligible, err := campaignForUser(ctx, tx, c, owner, "passenger")
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	if !eligible {
+		return record(captureRejected, "referrer_region_not_eligible")
+	}
 	switch {
 	case owner == inviteeID:
 		return record(captureRejected, "self_referral")

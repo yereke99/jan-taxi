@@ -411,6 +411,14 @@ export const en: PassengerMessages = {
       adjustment_debit: 'Adjustment: debit',
     },
   },
+  gift: {
+    label: 'Gifts',
+    offers: 'Promotions',
+    invite_title: 'Invite a friend, earn a bonus',
+    invite_text: 'Your bonus is credited after your friend completes their first qualifying ride.',
+    unavailable: 'Invitations are unavailable right now. See the promotion terms.',
+    details: 'Terms and invited friends',
+  },
   invite: {
     title: 'Invite a friend',
     lead: 'Invite a friend to Jan Taxi. When they finish their first ride, {amount} goes to your bonus balance.',
@@ -431,6 +439,7 @@ export const en: PassengerMessages = {
     no_friends: 'Friends who join through your link appear here.',
     friend_status: {
       attributed: "Waiting for your friend's first ride",
+      review: 'Bonus awaiting administrator review',
       rewarded: 'Bonus credited',
       capped: 'Counted, bonus already received',
       not_counted: 'Not counted',

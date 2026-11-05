@@ -2,6 +2,7 @@
 
 export const ROUTE = {
   home: 'home',
+  promotions: 'promotions',
   register: 'register',
   status: 'status',
   orders: 'orders',

@@ -34,6 +34,10 @@ func snapshotCredits(ctx context.Context, tx pgx.Tx, c Campaign) error {
 	}
 	var args []any
 	from, suppressed := audienceQuery(AudiencePassengers, f, &args)
+	if len(c.CityIDs) > 0 {
+		args = append(args, c.CityIDs)
+		from += " AND jt_marketing_city(u.id,'passenger') = ANY($" + itoa(len(args)) + "::uuid[])"
+	}
 	var reachable int64
 	if err := tx.QueryRow(ctx, `SELECT count(*)`+from+` AND NOT `+suppressed, args...).Scan(&reachable); err != nil {
 		return fmt.Errorf("marketing: credit audience: %w", err)

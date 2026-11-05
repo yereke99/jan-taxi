@@ -24,6 +24,7 @@ func (s *Service) MountPassenger(r chi.Router) {
 	r.Get("/promotions", httpx.H(s.passengerPromotions))
 	r.Get("/promotions/bonus/history", httpx.H(s.passengerBonusHistory))
 	r.Get("/promotions/referral", httpx.H(s.passengerReferral))
+	r.Post("/promotions/presence", httpx.H(s.appPresence))
 	r.Put("/promotions/subscription", httpx.H(s.passengerSubscription))
 }
 
@@ -136,6 +137,13 @@ func (s *Service) promotionsFor(ctx context.Context, q db.Querier, userID uuid.U
 	}
 	v.Referral = ReferralSummary{State: "unavailable"}
 	for _, c := range live {
+		eligible, err := campaignForUser(ctx, q, c, userID, "passenger")
+		if err != nil {
+			return v, err
+		}
+		if !eligible {
+			continue
+		}
 		switch c.Template {
 		case TemplateFirstRideCoupon:
 			rules, ok := mustRules[CouponRules](c.Rules)
@@ -241,6 +249,7 @@ func (s *Service) passengerBonusHistory(w http.ResponseWriter, r *http.Request) 
 type ReferralFriend struct {
 	Name         string    `json:"name"`
 	Status       string    `json:"status"`
+	UnderReview  bool      `json:"under_review,omitempty"`
 	AttributedAt time.Time `json:"attributed_at"`
 }
 
@@ -306,7 +315,10 @@ func (s *Service) passengerReferral(w http.ResponseWriter, r *http.Request) erro
 			var first, last string
 			err := row.Scan(&first, &last, &f.Status, &f.AttributedAt)
 			f.Name = friendName(first, last)
-			if f.Status == ReferralRejected || f.Status == ReferralReview {
+			f.UnderReview = f.Status == ReferralReview
+			// Keep the status understood by older Mini Apps, which discard
+			// friends with an unknown status. New clients show the review flag.
+			if f.Status == ReferralRejected || f.UnderReview {
 				f.Status = "not_counted"
 			}
 			return f, err

@@ -73,7 +73,8 @@ const link = computed(() => view.value?.link ?? view.value?.app_link ?? null)
 
 function friendLine(f: ReferralFriend): string {
   const date = formatDate(f.attributed_at, lang.value)
-  return `${t(`invite.friend_status.${f.status}`)} · ${date}`
+  const status = f.under_review ? 'review' : f.status
+  return `${t(`invite.friend_status.${status}`)} · ${date}`
 }
 
 /** Telegram's share sheet with the invitation link and a short text. */

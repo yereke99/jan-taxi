@@ -114,6 +114,7 @@ type ride struct {
 	id          uuid.UUID
 	number      int64
 	passengerID uuid.UUID
+	cityID      uuid.UUID
 	driverID    *uuid.UUID
 	category    string
 	status      string
@@ -124,9 +125,10 @@ type ride struct {
 func loadRide(ctx context.Context, q db.Querier, orderID uuid.UUID) (ride, error) {
 	var r ride
 	err := q.QueryRow(ctx, `
-		SELECT id, number, passenger_id, driver_id, category, status, completed_at, started_at
+		SELECT id, number, passenger_id, driver_id, category, status, completed_at, started_at,
+		       COALESCE(jt_marketing_region(pickup_lat,pickup_lon),'00000000-0000-0000-0000-000000000000'::uuid)
 		FROM orders WHERE id = $1 FOR SHARE`, orderID).Scan(&r.id, &r.number, &r.passengerID, &r.driverID, &r.category,
-		&r.status, &r.completedAt, &r.startedAt)
+		&r.status, &r.completedAt, &r.startedAt, &r.cityID)
 	return r, err
 }
 
@@ -190,6 +192,9 @@ func (s *Service) rideCompleted(ctx context.Context, tx pgx.Tx, orderID uuid.UUI
 // passenger and campaign, only for the passenger's first completed order and
 // only when it is in the campaign's categories.
 func (s *Service) issueFirstRideCoupon(ctx context.Context, tx pgx.Tx, c Campaign, r ride, first bool) (string, error) {
+	if !campaignInCity(c, r.cityID) {
+		return "region_not_eligible", nil
+	}
 	rules, ok := mustRules[CouponRules](c.Rules)
 	if !ok {
 		return "bad_rules", nil
@@ -257,8 +262,11 @@ func (s *Service) rewardReferral(ctx context.Context, tx pgx.Tx, c Campaign, r r
 	if !first {
 		return "not_first_ride", nil
 	}
+	if !campaignInCity(c, r.cityID) {
+		return s.decideReferral(ctx, tx, c, attID, referrerID, r, ReferralRejected, "region_not_eligible")
+	}
 	if !slices.Contains(rules.Categories, r.category) {
-		return s.decideReferral(ctx, tx, c, attID, r, ReferralRejected, "category_not_eligible")
+		return s.decideReferral(ctx, tx, c, attID, referrerID, r, ReferralRejected, "category_not_eligible")
 	}
 	if reason, err := referralFraud(ctx, tx, referrerID, r, rules); err != nil {
 		return "", err
@@ -267,7 +275,7 @@ func (s *Service) rewardReferral(ctx context.Context, tx pgx.Tx, c Campaign, r r
 		if reason == "short_ride" {
 			decision = ReferralReview
 		}
-		return s.decideReferral(ctx, tx, c, attID, r, decision, reason)
+		return s.decideReferral(ctx, tx, c, attID, referrerID, r, decision, reason)
 	}
 	return s.payReferral(ctx, tx, c, attID, referrerID, r.id, rules.RewardAmount, uuid.Nil)
 }
@@ -278,7 +286,7 @@ func referralFraud(ctx context.Context, q db.Querier, referrerID uuid.UUID, r ri
 	var blocked, samePhone, referrerDrove bool
 	err := q.QueryRow(ctx, `
 		SELECT ru.is_blocked,
-		       ru.phone_e164 IS NOT NULL AND ru.phone_e164 = iu.phone_e164,
+		       COALESCE(ru.phone_e164 = iu.phone_e164, false),
 		       EXISTS (SELECT 1 FROM driver_profiles d WHERE d.id = $3 AND d.user_id = ru.id)
 		FROM users ru, users iu WHERE ru.id = $1 AND iu.id = $2`, referrerID, r.passengerID, r.driverID).
 		Scan(&blocked, &samePhone, &referrerDrove)
@@ -303,12 +311,15 @@ func referralFraud(ctx context.Context, q db.Querier, referrerID uuid.UUID, r ri
 // decideReferral records the outcome of a qualifying ride under campaign c,
 // which from then on owns the attribution (an approval pays from it and
 // applies its once-per-referrer cap).
-func (s *Service) decideReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID uuid.UUID, r ride, status, reason string) (string, error) {
+func (s *Service) decideReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID, referrerID uuid.UUID, r ride, status, reason string) (string, error) {
 	_, err := tx.Exec(ctx, `
 		UPDATE referral_attributions SET status = $2, reason = $3, qualifying_order_id = $4, qualified_at = now(),
 		       campaign_id = $5, version_id = $6
 		WHERE id = $1`, attID, status, reason, r.id, c.ID, c.VersionID)
-	return "referral_" + status + ":" + reason, err
+	if err != nil {
+		return "", err
+	}
+	return "referral_" + status + ":" + reason, publishPromotions(ctx, tx, referrerID)
 }
 
 // payReferral credits the referral reward (also used when an operator
@@ -327,7 +338,10 @@ func (s *Service) payReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID,
 			UPDATE referral_attributions SET status = 'capped', reason = 'already_rewarded', qualifying_order_id = $2,
 			       qualified_at = COALESCE(qualified_at, now()), campaign_id = $3, version_id = $4
 			WHERE id = $1`, attID, orderID, c.ID, c.VersionID)
-		return "referral_capped", err
+		if err != nil {
+			return "", err
+		}
+		return "referral_capped", publishPromotions(ctx, tx, referrerID)
 	}
 	allowed, err := budgetAllows(ctx, tx, c.ID, amount)
 	if err != nil {
@@ -338,7 +352,10 @@ func (s *Service) payReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID,
 			UPDATE referral_attributions SET status = 'review', reason = 'budget_exhausted', qualifying_order_id = $2,
 			       qualified_at = COALESCE(qualified_at, now()), campaign_id = $3, version_id = $4
 			WHERE id = $1`, attID, orderID, c.ID, c.VersionID)
-		return "referral_review:budget_exhausted", err
+		if err != nil {
+			return "", err
+		}
+		return "referral_review:budget_exhausted", publishPromotions(ctx, tx, referrerID)
 	}
 	var grantID uuid.UUID
 	err = tx.QueryRow(ctx, `
@@ -351,7 +368,10 @@ func (s *Service) payReferral(ctx context.Context, tx pgx.Tx, c Campaign, attID,
 			UPDATE referral_attributions SET status = 'capped', reason = 'already_rewarded', qualifying_order_id = $2,
 			       campaign_id = $3, version_id = $4
 			WHERE id = $1`, attID, orderID, c.ID, c.VersionID)
-		return "referral_capped", err
+		if err != nil {
+			return "", err
+		}
+		return "referral_capped", publishPromotions(ctx, tx, referrerID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("referral grant: %w", err)
@@ -398,6 +418,9 @@ func creditPassengerGrant(ctx context.Context, tx pgx.Tx, grantID, userID uuid.U
 // driverMilestone credits a driver once when the ride makes them reach the
 // campaign's number of completed rides inside its window.
 func (s *Service) driverMilestone(ctx context.Context, tx pgx.Tx, c Campaign, r ride) (string, error) {
+	if !campaignInCity(c, r.cityID) {
+		return "region_not_eligible", nil
+	}
 	rules, ok := mustRules[MilestoneRules](c.Rules)
 	if !ok || r.driverID == nil || c.StartsAt == nil || c.EndsAt == nil {
 		return "", nil
@@ -408,8 +431,9 @@ func (s *Service) driverMilestone(ctx context.Context, tx pgx.Tx, c Campaign, r 
 	var rides int
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FROM orders
-		WHERE driver_id = $1 AND status = 'completed' AND category = ANY($2) AND completed_at >= $3 AND completed_at < $4`,
-		*r.driverID, rules.Categories, *c.StartsAt, *c.EndsAt).Scan(&rides); err != nil {
+		WHERE driver_id = $1 AND status = 'completed' AND category = ANY($2) AND completed_at >= $3 AND completed_at < $4
+		  AND (COALESCE(cardinality($5::uuid[]),0)=0 OR jt_marketing_region(pickup_lat,pickup_lon)=ANY($5))`,
+		*r.driverID, rules.Categories, *c.StartsAt, *c.EndsAt, c.CityIDs).Scan(&rides); err != nil {
 		return "", err
 	}
 	if rides < rules.Rides {

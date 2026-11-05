@@ -52,6 +52,8 @@ var endpointCatalogue = []string{
 	"PUT /api/v1/driver/profile/iin",
 	"PATCH /api/v1/driver/availability",
 	"POST /api/v1/driver/location",
+	"GET /api/v1/driver/promotions",
+	"POST /api/v1/driver/promotions/presence",
 	"GET /api/v1/driver/orders",
 	"GET /api/v1/driver/orders/active",
 	"GET /api/v1/driver/orders/history",
@@ -149,8 +151,10 @@ var endpointCatalogue = []string{
 	"GET /api/v1/promotions",
 	"GET /api/v1/promotions/bonus/history",
 	"GET /api/v1/promotions/referral",
+	"POST /api/v1/promotions/presence",
 	"PUT /api/v1/promotions/subscription",
 	"GET /api/v1/admin/marketing/overview",
+	"GET /api/v1/admin/marketing/regions",
 	"GET /api/v1/admin/marketing/campaigns",
 	"POST /api/v1/admin/marketing/campaigns",
 	"GET /api/v1/admin/marketing/campaigns/{}",
@@ -348,6 +352,7 @@ func TestBackgroundJobsRegistered(t *testing.T) {
 		"marketing_campaign_schedule": 30 * time.Second,
 		"marketing_grants":            5 * time.Second,
 		"marketing_reconcile":         time.Hour,
+		"marketing_presence_cleanup":  time.Hour,
 	}
 	got := map[string]time.Duration{}
 	for _, j := range a.jobs {

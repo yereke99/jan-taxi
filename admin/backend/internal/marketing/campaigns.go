@@ -50,10 +50,12 @@ type Campaign struct {
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
 	Usage             *Usage             `json:"usage,omitempty"`
+	CityIDs           []uuid.UUID        `json:"city_ids"`
 }
 
 // Version is one immutable rules/copy version (openapi MarketingCampaignVersion).
 type Version struct {
+	CityIDs     []uuid.UUID        `json:"city_ids"`
 	ID          uuid.UUID          `json:"id"`
 	Version     int                `json:"version"`
 	Title       settings.Localized `json:"title"`
@@ -80,7 +82,7 @@ type Usage struct {
 const campaignColumns = `c.id, c.key, c.template, c.status, c.is_system, c.current_version, v.id, v.title, v.description,
 	v.rules, v.starts_at, v.ends_at, c.budget_limit, c.redemptions_frozen, c.priority, c.exclusivity_group,
 	c.scheduled_at, c.active_since, c.activated_at, c.paused_at, c.ended_at, c.archived_at, c.created_by,
-	c.approved_by, c.created_at, c.updated_at`
+	c.approved_by, c.created_at, c.updated_at, v.city_ids`
 
 const campaignFrom = ` FROM marketing_campaigns c
 	JOIN marketing_campaign_versions v ON v.campaign_id = c.id AND v.version = c.current_version`
@@ -91,7 +93,7 @@ func scanCampaign(row pgx.Row) (Campaign, error) {
 	err := row.Scan(&c.ID, &c.Key, &c.Template, &c.Status, &c.IsSystem, &c.Version, &c.VersionID, &title, &desc,
 		&c.Rules, &c.StartsAt, &c.EndsAt, &c.BudgetLimit, &c.RedemptionsFrozen, &c.Priority, &c.ExclusivityGroup,
 		&c.ScheduledAt, &c.ActiveSince, &c.ActivatedAt, &c.PausedAt, &c.EndedAt, &c.ArchivedAt, &c.CreatedBy,
-		&c.ApprovedBy, &c.CreatedAt, &c.UpdatedAt)
+		&c.ApprovedBy, &c.CreatedAt, &c.UpdatedAt, &c.CityIDs)
 	if err != nil {
 		return Campaign{}, err
 	}
@@ -232,6 +234,7 @@ func budgetAllows(ctx context.Context, tx pgx.Tx, campaignID uuid.UUID, amount i
 
 // campaignInput is the create / new-version body (openapi MarketingCampaignInput).
 type campaignInput struct {
+	CityIDs          *[]uuid.UUID        `json:"city_ids"`
 	Template         *string             `json:"template"`
 	Key              *string             `json:"key"`
 	Title            *settings.Localized `json:"title"`
@@ -345,6 +348,13 @@ func createCampaign(ctx context.Context, tx pgx.Tx, in campaignInput, adminID uu
 			return uuid.Nil, err
 		}
 	}
+	cityIDs := []uuid.UUID{}
+	if in.CityIDs != nil {
+		cityIDs = *in.CityIDs
+	}
+	if err := validateCampaignCities(ctx, tx, cityIDs, fields); err != nil {
+		return uuid.Nil, err
+	}
 	if len(fields) > 0 {
 		return uuid.Nil, httpx.Validation(fields)
 	}
@@ -361,7 +371,7 @@ func createCampaign(ctx context.Context, tx pgx.Tx, in campaignInput, adminID uu
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("marketing: insert campaign: %w", err)
 	}
-	if err := insertVersion(ctx, tx, id, 1, title, desc, rulesJSON, in.StartsAt, in.EndsAt, in.ChangeNote, adminID); err != nil {
+	if err := insertVersion(ctx, tx, id, 1, title, desc, rulesJSON, in.StartsAt, in.EndsAt, in.ChangeNote, adminID, cityIDs); err != nil {
 		return uuid.Nil, err
 	}
 	return id, nil
@@ -399,7 +409,10 @@ func checkSegment(ctx context.Context, q db.Querier, raw json.RawMessage, fields
 }
 
 func insertVersion(ctx context.Context, tx pgx.Tx, campaignID uuid.UUID, version int, title, desc settings.Localized,
-	rules json.RawMessage, starts, ends *time.Time, note *string, adminID uuid.UUID) error {
+	rules json.RawMessage, starts, ends *time.Time, note *string, adminID uuid.UUID, cityIDs []uuid.UUID) error {
+	if cityIDs == nil {
+		cityIDs = []uuid.UUID{}
+	}
 	t, _ := json.Marshal(title)
 	d, _ := json.Marshal(desc)
 	var n *string
@@ -410,9 +423,9 @@ func insertVersion(ctx context.Context, tx pgx.Tx, campaignID uuid.UUID, version
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO marketing_campaign_versions (campaign_id, version, title, description, rules, starts_at, ends_at,
-		                                         change_note, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		campaignID, version, t, d, []byte(rules), starts, ends, n, idPtr(adminID)); err != nil {
+		                                         change_note, created_by, city_ids)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		campaignID, version, t, d, []byte(rules), starts, ends, n, idPtr(adminID), cityIDs); err != nil {
 		return fmt.Errorf("marketing: insert version: %w", err)
 	}
 	return nil
@@ -465,11 +478,21 @@ func newVersion(ctx context.Context, tx pgx.Tx, c Campaign, in campaignInput, ad
 	if in.Key != nil && *in.Key != c.Key {
 		fields["key"] = "immutable"
 	}
+	cityIDs := c.CityIDs
+	if in.CityIDs != nil {
+		cityIDs = *in.CityIDs
+	}
+	if err := validateCampaignCities(ctx, tx, cityIDs, fields); err != nil {
+		return err
+	}
+	if c.Template == TemplatePassengerCredit && c.Status != StatusDraft && in.CityIDs != nil {
+		fields["city_ids"] = "locked_after_activation"
+	}
 	if len(fields) > 0 {
 		return httpx.Validation(fields)
 	}
 	next := c.Version + 1
-	if err := insertVersion(ctx, tx, c.ID, next, title, desc, rules, starts, ends, in.ChangeNote, adminID); err != nil {
+	if err := insertVersion(ctx, tx, c.ID, next, title, desc, rules, starts, ends, in.ChangeNote, adminID, cityIDs); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE marketing_campaigns SET current_version = $2 WHERE id = $1`, c.ID, next); err != nil {
@@ -481,7 +504,7 @@ func newVersion(ctx context.Context, tx pgx.Tx, c Campaign, in campaignInput, ad
 // listVersions returns every version of a campaign, newest first.
 func listVersions(ctx context.Context, q db.Querier, campaignID uuid.UUID) ([]Version, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, version, title, description, rules, starts_at, ends_at, change_note, created_by, created_at
+		SELECT id, version, title, description, rules, starts_at, ends_at, change_note, created_by, created_at, city_ids
 		FROM marketing_campaign_versions WHERE campaign_id = $1 ORDER BY version DESC`, campaignID)
 	if err != nil {
 		return nil, fmt.Errorf("marketing: versions: %w", err)
@@ -489,7 +512,7 @@ func listVersions(ctx context.Context, q db.Querier, campaignID uuid.UUID) ([]Ve
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Version, error) {
 		var v Version
 		var t, d []byte
-		err := row.Scan(&v.ID, &v.Version, &t, &d, &v.Rules, &v.StartsAt, &v.EndsAt, &v.ChangeNote, &v.CreatedBy, &v.CreatedAt)
+		err := row.Scan(&v.ID, &v.Version, &t, &d, &v.Rules, &v.StartsAt, &v.EndsAt, &v.ChangeNote, &v.CreatedBy, &v.CreatedAt, &v.CityIDs)
 		_ = json.Unmarshal(t, &v.Title)
 		_ = json.Unmarshal(d, &v.Description)
 		return v, err
@@ -608,6 +631,9 @@ func applyTransition(ctx context.Context, tx pgx.Tx, c Campaign, action string, 
 			return err
 		}
 		return fmt.Errorf("marketing: %s campaign: %w", action, err)
+	}
+	if action == ActionActivate {
+		return queueCampaignAnnouncement(ctx, tx, c, adminID)
 	}
 	return nil
 }

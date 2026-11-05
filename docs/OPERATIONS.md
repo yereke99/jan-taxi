@@ -254,6 +254,19 @@ carry `component=marketing` or `component=broadcast_worker`.
   rewards still require the invited friend's first qualifying completed ride.
   Existing campaigns keep their saved access policy. With `coupon_redeemed`,
   activate «Алғашқы сапар» before or together with «Досыңды шақыр».
+- In a campaign's regions choose cities and settlements from the existing catalog, or leave
+  «Все регионы» selected. These choices are versioned with the rules. Regional earnings check
+  the trip's actual pickup within the settlement boundary, independently of tariff fallback
+  and driver search radius. A location that cannot be determined does not qualify for a
+  restricted offer. Passenger-credit regions are locked after draft with its frozen audience.
+- After migration 00018, a newly activated invitation, first-ride coupon or driver milestone
+  campaign creates one automatic launch message in the existing broadcast queue. It respects
+  opt-outs and the awards/broadcast switches, and skips users currently in the corresponding
+  Mini App (a foreground heartbeat is fresh for 90 seconds). The gift remains available in
+  the app. Resume and rule edits do not announce it again; already-active campaigns are not
+  announced retroactively. The automatic message's button requests fullscreen through the
+  configured bot's direct Mini App link. Delivery status remains visible in the existing
+  broadcast report.
 - Pause stops new awards; coupons already issued stay usable until they expire,
   and rides completed during the pause never earn later. Freeze redemptions stops
   the campaign's coupons on new orders; orders that already reserved one complete
@@ -334,6 +347,11 @@ docker compose exec db psql -U jantaxi -d jantaxi -c \
 
 - Marketing → Referrals, status `review`. Reasons: `short_ride` (the ride was
   shorter than the campaign's `min_ride_seconds`, 60 s) and `budget_exhausted`.
+- At the 60-second default, a first ride lasting exactly 60 seconds qualifies for
+  automatic reward (subject to the other checks); a shorter one waits for review.
+  Test rides must be reviewed here instead of disabling the duration check or
+  editing bonus balances in SQL. The passenger sees that the bonus awaits an
+  administrator, separately from a rejected invitation.
 - Look at the ride in Orders (route, duration, who drove), then approve or
   reject with a reason (`marketing.approve`). Approve pays the inviter once; an
   inviter who was already rewarded ends `capped`. `409 budget_insufficient`:

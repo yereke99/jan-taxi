@@ -11,6 +11,7 @@ import { CREATABLE_TEMPLATES, campaignsApi, segmentsApi, type CampaignDetail, ty
 import { AppButton, Drawer, FormField, TextArea, TextInput, toast } from '../../components'
 import { useErrors } from '../../composables/useErrors'
 import { useResource } from '../../composables/useResource'
+import { useFormat } from '../../composables/useFormat'
 import { useAuthStore } from '../../stores/auth'
 import {
   CAMPAIGN_LIMITS,
@@ -30,6 +31,7 @@ const emit = defineEmits<{ 'update:open': [open: boolean]; saved: [campaign: Cam
 
 const { t } = useI18n()
 const errors = useErrors()
+const fmt = useFormat()
 const auth = useAuthStore()
 
 const form = reactive<CampaignForm>(emptyCampaignForm())
@@ -44,6 +46,11 @@ const rulesLocked = computed(() => !!props.campaign && props.campaign.template =
 const canBudget = computed(() => auth.can('marketing.approve'))
 
 const segments = useResource((signal) => segmentsApi.list(signal))
+const regions = useResource((signal) => campaignsApi.regions(signal))
+const regionOptions = computed(() => regions.data.value?.items ?? [])
+function toggleRegion(id: string): void {
+  form.cityIds = form.cityIds.includes(id) ? form.cityIds.filter((v) => v !== id) : [...form.cityIds, id]
+}
 
 watch(
   () => props.open,
@@ -53,6 +60,7 @@ watch(
     fieldErrors.value = {}
     formError.value = ''
     if (!segments.data.value) void segments.reload()
+    if (!regions.data.value) void regions.reload()
   },
 )
 
@@ -92,6 +100,24 @@ async function save(): Promise<void> {
   <Drawer :open="open" :title="campaign ? t('marketing.edit_campaign') : t('marketing.new_campaign')" width="640px" @update:open="(v) => emit('update:open', v)">
     <form class="jt-form" novalidate @submit.prevent="save">
       <p v-if="live" class="notice" role="note">{{ t('marketing.live_warning') }}</p>
+
+      <section v-if="form.template !== 'manual_grant'" class="block campaign-regions">
+        <h3 class="block__title">{{ t('marketing.regions_title') }}</h3>
+        <p class="jt-muted">{{ t('marketing.regions_hint') }}</p>
+        <p v-if="regions.error.value" class="field-error" role="alert">{{ errors.text(regions.error.value) }}</p>
+        <AppButton v-if="regions.error.value" @click="regions.reload()">{{ t('common.retry') }}</AppButton>
+        <label class="region-option">
+          <input type="checkbox" :checked="form.cityIds.length === 0" :disabled="rulesLocked || !regions.data.value" @change="form.cityIds = []" />
+          <span>{{ t('marketing.regions_all') }}</span>
+        </label>
+        <div class="region-options">
+          <label v-for="region in regionOptions" :key="region.id" class="region-option">
+            <input type="checkbox" :checked="form.cityIds.includes(region.id)" :disabled="rulesLocked" @change="toggleRegion(region.id)" />
+            <span>{{ fmt.name(region.name) }}</span>
+          </label>
+        </div>
+        <p v-if="fieldErrors.city_ids" class="field-error" role="alert">{{ fieldErrors.city_ids }}</p>
+      </section>
 
       <section v-if="!campaign" class="block">
         <h3 class="block__title">{{ t('marketing.form_template') }}</h3>
@@ -174,6 +200,9 @@ async function save(): Promise<void> {
 </template>
 
 <style scoped>
+.region-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 4px 12px; }
+.region-option { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; font: var(--jt-font-body); }
+.region-option input { width: 18px; height: 18px; flex: none; accent-color: var(--jt-color-primary); }
 .block {
   display: flex;
   flex-direction: column;

@@ -3,6 +3,11 @@
 // emergency switches.
 
 const kk = {
+  regions_title: 'Акция аймағы',
+  regions_all: 'Барлық өңірлер',
+  regions_hint: 'Бонус тек таңдалған қалалар мен елді мекендердегі сапарлар үшін беріледі.',
+  referral_reason_region_not_eligible: 'Сапар акция аймағынан тыс орындалды',
+
   // Shared words
   campaign: 'Акция',
   template: 'Түрі',
@@ -566,6 +571,11 @@ const kk = {
 export type MarketingMessages = typeof kk
 
 const ru: MarketingMessages = {
+  regions_title: 'Регион действия акции',
+  regions_all: 'Все регионы',
+  regions_hint: 'Бонус начисляется за поездки в выбранных городах и посёлках.',
+  referral_reason_region_not_eligible: 'Поездка вне региона действия акции',
+
   campaign: 'Акция',
   template: 'Тип',
   title: 'Название',
@@ -1110,6 +1120,11 @@ const ru: MarketingMessages = {
 }
 
 const en: MarketingMessages = {
+  regions_title: 'Promotion region',
+  regions_all: 'All regions',
+  regions_hint: 'Earn rewards for trips in the selected cities and settlements.',
+  referral_reason_region_not_eligible: 'Ride outside the promotion region',
+
   campaign: 'Campaign',
   template: 'Type',
   title: 'Title',

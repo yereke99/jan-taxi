@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 
+	"github.com/yereke99/jantaxi/admin/backend/internal/cities"
 	"github.com/yereke99/jantaxi/admin/backend/internal/notifications"
 	"github.com/yereke99/jantaxi/admin/backend/internal/platform/db"
 	"github.com/yereke99/jantaxi/admin/backend/internal/settings"
@@ -31,9 +32,13 @@ type Sender interface {
 
 // WorkerOptions configure the broadcast worker.
 type WorkerOptions struct {
-	PassengerMiniAppURL string
-	DriverMiniAppURL    string
-	Log                 *slog.Logger
+	PassengerMiniAppURL       string
+	DriverMiniAppURL          string
+	PassengerBotUsername      string
+	DriverBotUsername         string
+	PassengerMiniAppShortName string
+	DriverMiniAppShortName    string
+	Log                       *slog.Logger
 	// BacklogLimit: while more operational messages than this wait in the
 	// notification outbox, broadcasts yield [20].
 	BacklogLimit int
@@ -286,14 +291,21 @@ func (w *BroadcastWorker) render(d delivery) (string, *telegram.InlineKeyboardMa
 	var rows [][]telegram.InlineKeyboardButton
 	if d.b.Button != nil {
 		base := w.opt.PassengerMiniAppURL
+		bot, shortName := w.opt.PassengerBotUsername, w.opt.PassengerMiniAppShortName
 		if d.audience == AudienceDrivers {
 			base = w.opt.DriverMiniAppURL
+			bot, shortName = w.opt.DriverBotUsername, w.opt.DriverMiniAppShortName
 		}
-		if link, ok := miniAppLink(base, d.b.Button.StartParam); ok {
-			label := d.b.Button.Label.Get(d.lang)
-			if label == "" {
-				label = d.b.Button.Label.KK
-			}
+		label := d.b.Button.Label.Get(d.lang)
+		if label == "" {
+			label = d.b.Button.Label.KK
+		}
+		// A launch announcement uses Telegram's direct Mini App link so it
+		// can request fullscreen before the app loads. Manual broadcasts keep
+		// their existing web_app keyboard, as does a missing bot configuration.
+		if link := cities.DirectLink(bot, shortName, d.b.Button.StartParam); d.b.IsAutomatic && link != "" {
+			rows = append(rows, []telegram.InlineKeyboardButton{{Text: label, URL: link}})
+		} else if link, ok := miniAppLink(base, d.b.Button.StartParam); ok {
 			rows = append(rows, []telegram.InlineKeyboardButton{{Text: label, WebApp: &telegram.WebAppInfo{URL: link}}})
 		}
 	}
@@ -346,6 +358,17 @@ func (w *BroadcastWorker) deliver(ctx context.Context, d delivery) {
 	if suppressed {
 		w.finish(ctx, d, RecipientSuppressed, nil, "opted out or blocked", 0, 0)
 		return
+	}
+	if d.b.IsAutomatic {
+		eligible, err := automaticRecipientEligible(ctx, w.pool, d.b, d.userID, bot)
+		if err != nil {
+			w.release(ctx, d, 5*time.Second)
+			return
+		}
+		if !eligible {
+			w.finish(ctx, d, RecipientSuppressed, nil, "campaign unavailable, already earned or Mini App active", 0, 0)
+			return
+		}
 	}
 	lim := w.limiters[bot]
 	if lim == nil {

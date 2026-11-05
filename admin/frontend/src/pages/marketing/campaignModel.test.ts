@@ -143,6 +143,7 @@ describe('rules form', () => {
     f.changeNote = '  Customer asked for 72 hours '
     const { payload } = validateCampaignForm(f, 'version')
     expect(payload).toEqual({
+      city_ids: [],
       title: { kk: 'Алғашқы сапар', ru: 'Первая поездка', en: 'First ride' },
       description: { kk: '', ru: '', en: '' },
       rules: couponRules,

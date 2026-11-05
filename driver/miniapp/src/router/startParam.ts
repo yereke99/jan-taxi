@@ -9,6 +9,7 @@ import { ROUTE } from './names'
 
 export type DriverStartIntent =
   | { kind: 'home' }
+  | { kind: 'promotions' }
   | { kind: 'register' }
   | { kind: 'orders' }
   | { kind: 'order'; orderId: string }
@@ -32,6 +33,7 @@ export function parseStartParam(param: string | null | undefined): DriverStartIn
   if (!param || !START_PARAM_RE.test(param)) return { kind: 'home' }
   switch (param) {
     case 'register':
+    case 'promotions':
     case 'orders':
     case 'trip':
     case 'wallet':
@@ -59,6 +61,8 @@ export function intentLocation(intent: DriverStartIntent, router: Pick<Router, '
   switch (intent.kind) {
     case 'home':
       return home
+    case 'promotions':
+      return to(ROUTE.promotions)
     case 'register':
       return to(ROUTE.register)
     case 'orders':

@@ -81,18 +81,19 @@ type Broadcast struct {
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
 	Stats          map[string]int     `json:"stats"`
+	IsAutomatic    bool               `json:"is_automatic"`
 }
 
 const broadcastColumns = `b.id, b.campaign_id, b.title, b.audience, b.segment_id, b.filters, b.content, b.button,
 	b.status, b.scheduled_at, b.started_at, b.completed_at, b.cancelled_at, b.recipient_count, b.created_by,
-	b.approved_by, b.approval_note, b.version, b.created_at, b.updated_at`
+	b.approved_by, b.approval_note, b.version, b.created_at, b.updated_at, b.is_automatic`
 
 func scanBroadcast(row pgx.Row) (Broadcast, error) {
 	var b Broadcast
 	var content, button []byte
 	err := row.Scan(&b.ID, &b.CampaignID, &b.Title, &b.Audience, &b.SegmentID, &b.Filters, &content, &button,
 		&b.Status, &b.ScheduledAt, &b.StartedAt, &b.CompletedAt, &b.CancelledAt, &b.RecipientCount, &b.CreatedBy,
-		&b.ApprovedBy, &b.ApprovalNote, &b.Version, &b.CreatedAt, &b.UpdatedAt)
+		&b.ApprovedBy, &b.ApprovalNote, &b.Version, &b.CreatedAt, &b.UpdatedAt, &b.IsAutomatic)
 	if err != nil {
 		return Broadcast{}, err
 	}

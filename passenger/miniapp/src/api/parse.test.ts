@@ -237,6 +237,23 @@ describe('parseReferral / parseBonusPage', () => {
     expect(parseReferral({ state: 'unlocked', code: 'a b', link: 'javascript:alert(1)' })).toMatchObject({ code: null, link: null, friends: [] })
   })
 
+  it('distinguishes a pending review while accepting older referral responses', () => {
+    const v = parseReferral({
+      friends: [
+        { name: 'Pending', status: 'not_counted', under_review: true },
+        { name: 'Rejected', status: 'not_counted' },
+        { name: 'Malformed', status: 'not_counted', under_review: 'true' },
+        { name: 'Paid', status: 'rewarded', under_review: true },
+      ],
+    })
+    expect(v.friends).toEqual([
+      { name: 'Pending', status: 'not_counted', under_review: true, attributed_at: '' },
+      { name: 'Rejected', status: 'not_counted', attributed_at: '' },
+      { name: 'Malformed', status: 'not_counted', attributed_at: '' },
+      { name: 'Paid', status: 'rewarded', attributed_at: '' },
+    ])
+  })
+
   it('maps the bonus history with signed amounts and the cursor', () => {
     const page = parseBonusPage({
       items: [

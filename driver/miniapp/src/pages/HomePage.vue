@@ -12,6 +12,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import DriverPage from '../components/driver/DriverPage.vue'
 import HomeMap from '../components/driver/HomeMap.vue'
+import DriverPromoGift from '../components/driver/DriverPromoGift.vue'
 import OnlineCard from '../components/driver/OnlineCard.vue'
 import PrivateImage from '../components/driver/PrivateImage.vue'
 import { JButton, JListGroup, JListRow } from '../components/ui'
@@ -102,7 +103,10 @@ onMounted(() => {
       </JButton>
     </section>
 
-    <HomeMap />
+    <div class="home-map-wrap">
+      <HomeMap />
+      <DriverPromoGift v-if="!trip.active" class="home-promo-gift" />
+    </div>
 
     <JListGroup>
       <JListRow
@@ -132,6 +136,8 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.home-map-wrap { position: relative; }
+.home-promo-gift { position: absolute; bottom: 12px; left: calc(var(--jt-side-margin) + 12px); z-index: 3; max-width: 210px; }
 /* The screen's header: starts right under the Telegram header (DriverPage :bar="false"). */
 .who {
   display: flex;

@@ -18,6 +18,12 @@ const routes: RouteRecordRaw[] = [
     meta: { back: false, access: 'approved', tab: 'home' },
   },
   {
+    path: '/promotions',
+    name: ROUTE.promotions,
+    component: () => import('../pages/PromotionsPage.vue'),
+    meta: { access: 'approved', hideTabBar: true, backTo: { name: ROUTE.home } },
+  },
+  {
     path: '/register',
     name: ROUTE.register,
     component: () => import('../pages/registration/RegistrationPage.vue'),

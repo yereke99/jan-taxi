@@ -3,6 +3,7 @@
 //
 // Every screen of the presentation is reachable by URL (base /passenger/):
 //   ?demo=home        map, live location, pickup A filled from GPS
+//   ?demo=gift        home with an available invitation gift (not earned yet)
 //   ?demo=route       route editor with stops A–D
 //   ?demo=confirm     order confirmation, 700 ₸, comment filled in
 //   ?demo=searching   live order, searching (turns into "driver found" after
@@ -266,6 +267,7 @@ const REFERRAL_CODE = 'JT7K2M9Q'
 
 /** The invitation as GET /promotions sums it up: open once the first-ride coupon was used. */
 function referralSummary() {
+  if (params.get('demo') === 'gift') return { state: 'unlocked', reward_amount: 300, rewarded: false }
   return promos.coupon.status === 'redeemed'
     ? { state: 'unlocked', reward_amount: 300, rewarded: true }
     : { state: 'locked', lock_reason: 'coupon_not_redeemed', reward_amount: 300, rewarded: false }
@@ -313,11 +315,11 @@ function referralDto() {
     code: REFERRAL_CODE,
     link: `https://t.me/jantaxi_bot?start=ref_${REFERRAL_CODE}`,
     app_link: `https://t.me/jantaxi_bot?startapp=ref_${REFERRAL_CODE}`,
-    earned: 300,
-    friends: [
+    earned: summary.rewarded ? 300 : 0,
+    friends: summary.rewarded ? [
       { name: 'Дана Қ.', status: 'attributed', attributed_at: isoAgo(5 * 3600) },
       { name: 'Арман Б.', status: 'rewarded', attributed_at: isoAgo(5 * 86_400) },
-    ],
+    ] : [],
   }
 }
 
@@ -661,6 +663,7 @@ function api(): DemoApi {
     })
     .on('GET', '/promotions', () => promotionsDto())
     .on('GET', '/promotions/referral', () => referralDto())
+    .on('POST', '/promotions/presence', () => undefined)
     .on('GET', '/promotions/bonus/history', () => ({ items: bonusHistory(), next_cursor: null }))
     .on('PUT', '/promotions/subscription', (r) => {
       promos.subscribed = (r.body as { subscribed?: boolean } | undefined)?.subscribed !== false

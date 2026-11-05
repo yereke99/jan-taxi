@@ -681,7 +681,12 @@ function parseFriend(v: unknown): ReferralFriend | null {
   const r = rec(v)
   const st = oneOf(REFERRAL_FRIEND_STATUSES, r.status)
   if (!st) return null
-  return { name: str(r.name).trim() || 'Telegram', status: st, attributed_at: str(r.attributed_at) }
+  return {
+    name: str(r.name).trim() || 'Telegram',
+    status: st,
+    ...(st === 'not_counted' && r.under_review === true ? { under_review: true } : {}),
+    attributed_at: str(r.attributed_at),
+  }
 }
 
 /** GET /promotions/referral. */

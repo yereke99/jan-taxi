@@ -27,6 +27,7 @@ func (a *App) wireMarketing() error {
 	svc := marketing.New(a.Pool, marketing.Options{PassengerBotUsername: a.Cfg.PassengerBotUsername, Log: a.Log})
 	// /api/v1/promotions*
 	svc.MountPassenger(a.Passenger)
+	svc.MountDriver(a.Driver)
 	// /api/v1/admin/marketing/*
 	svc.MountAdmin(a.Admin)
 	// /internal/v1/passenger/{tg_id}/referral, /internal/v1/bots/{bot}/users/{tg_id}/marketing
@@ -52,6 +53,10 @@ func (a *App) wireMarketing() error {
 		return err
 	})
 	a.AddJob("marketing_reconcile", marketingReconcile, svc.ReconcileJob)
+	a.AddJob("marketing_presence_cleanup", time.Hour, func(ctx context.Context) error {
+		_, err := a.Pool.Exec(ctx, `DELETE FROM marketing_app_presence WHERE seen_at<now()-interval '7 days'`)
+		return err
+	})
 
 	if !a.Cfg.NotificationWorkerEnabled {
 		return nil
@@ -66,6 +71,8 @@ func (a *App) wireMarketing() error {
 	}
 	worker := marketing.NewBroadcastWorker(a.Pool, notifications.NewTelegramSender(passenger, driver),
 		marketing.WorkerOptions{PassengerMiniAppURL: a.Cfg.PassengerMiniAppURL, DriverMiniAppURL: a.Cfg.DriverMiniAppURL,
+			PassengerBotUsername: a.Cfg.PassengerBotUsername, DriverBotUsername: a.Cfg.DriverBotUsername,
+			PassengerMiniAppShortName: a.Cfg.PassengerMiniAppShortName, DriverMiniAppShortName: a.Cfg.DriverMiniAppShortName,
 			Log: a.Log})
 	// One replica sends at a time, so the per-bot rate is global.
 	a.AddWorker("broadcast_worker", func(ctx context.Context) error {

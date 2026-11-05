@@ -457,6 +457,8 @@ export type ReferralFriendStatus = (typeof REFERRAL_FRIEND_STATUSES)[number]
 export interface ReferralFriend {
   name: string
   status: ReferralFriendStatus
+  /** Waiting for an administrator's decision, rather than rejected. */
+  under_review?: boolean
   attributed_at: string
 }
 

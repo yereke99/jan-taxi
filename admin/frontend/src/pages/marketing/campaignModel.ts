@@ -364,6 +364,7 @@ const GROUP_RE = /^[a-z0-9_]{1,40}$/
 const LANGS = ['kk', 'ru', 'en'] as const
 
 export interface CampaignForm {
+  cityIds: string[]
   template: CampaignTemplate
   key: string
   title: LocalizedText
@@ -381,6 +382,7 @@ export interface CampaignForm {
 
 export function emptyCampaignForm(template: CampaignTemplate = 'first_ride_coupon'): CampaignForm {
   return {
+  cityIds: [],
     template,
     key: '',
     title: { kk: '', ru: '', en: '' },
@@ -398,6 +400,7 @@ export function emptyCampaignForm(template: CampaignTemplate = 'first_ride_coupo
 /** Form of the campaign's current version, for a new version. */
 export function campaignToForm(c: Campaign): CampaignForm {
   return {
+  cityIds: [...(c.city_ids ?? [])],
     template: c.template,
     key: c.key,
     title: { ...c.title },
@@ -455,6 +458,8 @@ export function validateCampaignForm(
   if (mode === 'version' || LANGS.some((l) => description[l] !== '')) payload.description = description
 
   if (!opts.rulesLocked) {
+    if (form.cityIds.length > 50) errors.city_ids = 'too_many'
+    payload.city_ids = [...form.cityIds]
     const r = formToRules(form.template, form.rules)
     Object.assign(errors, r.errors)
     if (r.rules) payload.rules = r.rules

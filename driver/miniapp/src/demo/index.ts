@@ -6,6 +6,8 @@
 //   ?demo=order       order detail: map with the route A–D and the car's approach
 //   ?demo=topup       Kaspi top-up of 5 000 ₸ waiting for payment
 //   ?demo=home        driver home
+//   ?demo=gift        home with an active driver milestone gift
+//   ?demo=promotions  driver milestone progress
 //   ?demo=register    registration, the vehicle page (body type preset to Sedan)
 //   ?demo=wallet      wallet with the welcome bonus and a promotion compensation in the journal
 // Without ?demo the app opens on home; accepting an order and the trip
@@ -380,6 +382,13 @@ function api(): DemoApi {
     })
     .on('GET', '/driver/availability', availability)
     .on('POST', '/driver/location', () => undefined)
+    .on('POST', '/driver/promotions/presence', () => undefined)
+    .on('GET', '/driver/promotions', () => ({ offers: ['gift', 'promotions'].includes(params.get('demo') ?? '') ? [{
+      id: 'e4b1c8a2-6d3f-4a9e-8b7c-1f2e3d4c5b6a',
+      title: { kk: 'Жолдағы сыйлық', ru: 'Подарок за поездки', en: 'A gift for your trips' },
+      description: { kk: 'Акция кезінде 10 сапар орындап, бонус алыңыз.', ru: 'Выполните 10 поездок за время акции и получите бонус.', en: 'Complete 10 trips during the promotion to earn a bonus.' },
+      amount: 500, rides: 10, completed: 3, categories: ['taxi'], ends_at: isoIn(7 * 86_400), rewarded: false,
+    }] : [] }))
     .on('GET', '/driver/orders', () => ({ items: accepted ? [] : CARDS.map(card), eligibility: { eligible: online && !accepted, reason: online ? null : 'offline' } }))
     .on('GET', '/driver/orders/active', () => (accepted ? detail(CARDS[0]) : undefined))
     .on('GET', '/driver/orders/history', () => ({ items: [], next_cursor: null }))
@@ -427,6 +436,9 @@ export async function openDemoScreen(_pinia: Pinia, router: Router): Promise<voi
       break
     case 'wallet':
       await router.replace({ name: 'wallet' })
+      break
+    case 'promotions':
+      await router.replace({ name: 'promotions' })
       break
     case 'register':
       await router.replace({ name: 'register', query: { step: 'vehicle' } })
